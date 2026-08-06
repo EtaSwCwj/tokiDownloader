@@ -34,6 +34,21 @@ TAG_COLORS = {
     "purple": "#8856c6",
     "gray": "#7b8794",
 }
+SETTING_KEYS = frozenset(
+    {
+        "outputDir",
+        "logVisible",
+        "showBrowser",
+        "workConcurrency",
+        "imageConcurrency",
+        "retryCount",
+        "retryBackoffSeconds",
+        "logMaxMiB",
+        "logBackupCount",
+    }
+)
+_LOG_MAX_BYTES = 2 * 1024 * 1024
+_LOG_BACKUP_COUNT = 1
 ACTIVE_JOB_STATES = frozenset({"대기", "실행 중", "일시정지", "재시도 대기"})
 ERROR_CATEGORIES = frozenset(
     {
@@ -76,7 +91,86 @@ def default_config() -> dict[str, Any]:
         "imageConcurrency": 5,
         "retryCount": 2,
         "retryBackoffSeconds": 2,
+        "logMaxMiB": 2,
+        "logBackupCount": 1,
     }
+
+
+def _safe_normalize(
+    normalizer: Callable[[Any], Any], value: Any, fallback: Any
+) -> Any:
+    try:
+        return normalizer(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def normalize_log_max_mib(value: int | None) -> int:
+    normalized = 2 if value is None else int(value)
+    if not 1 <= normalized <= 100:
+        raise ValueError("로그 파일 최대 크기는 1~100 MiB여야 합니다.")
+    return normalized
+
+
+def normalize_log_backup_count(value: int | None) -> int:
+    normalized = 1 if value is None else int(value)
+    if not 1 <= normalized <= 10:
+        raise ValueError("로그 백업 개수는 1~10개여야 합니다.")
+    return normalized
+
+
+def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    defaults = default_config()
+    source = config if isinstance(config, dict) else {}
+    normalized = {**source}
+    output_dir = source.get("outputDir")
+    normalized["outputDir"] = (
+        str(output_dir).strip()
+        if isinstance(output_dir, str) and str(output_dir).strip()
+        else defaults["outputDir"]
+    )
+    for key in ("logVisible", "showBrowser"):
+        value = source.get(key)
+        normalized[key] = value if isinstance(value, bool) else defaults[key]
+    normalized["workConcurrency"] = _safe_normalize(
+        normalize_work_concurrency,
+        source.get("workConcurrency"),
+        defaults["workConcurrency"],
+    )
+    normalized["imageConcurrency"] = _safe_normalize(
+        normalize_image_concurrency,
+        source.get("imageConcurrency"),
+        defaults["imageConcurrency"],
+    )
+    normalized["retryCount"] = _safe_normalize(
+        normalize_retry_count,
+        source.get("retryCount"),
+        defaults["retryCount"],
+    )
+    normalized["retryBackoffSeconds"] = _safe_normalize(
+        normalize_retry_backoff,
+        source.get("retryBackoffSeconds"),
+        defaults["retryBackoffSeconds"],
+    )
+    normalized["logMaxMiB"] = _safe_normalize(
+        normalize_log_max_mib,
+        source.get("logMaxMiB"),
+        defaults["logMaxMiB"],
+    )
+    normalized["logBackupCount"] = _safe_normalize(
+        normalize_log_backup_count,
+        source.get("logBackupCount"),
+        defaults["logBackupCount"],
+    )
+    window = source.get("window")
+    normalized["window"] = window if isinstance(window, dict) else defaults["window"]
+    return normalized
+
+
+def _apply_log_policy(config: dict[str, Any]) -> None:
+    global _LOG_MAX_BYTES, _LOG_BACKUP_COUNT
+    _LOG_MAX_BYTES = int(config["logMaxMiB"]) * 1024 * 1024
+    _LOG_BACKUP_COUNT = int(config["logBackupCount"])
 
 
 def load_config() -> dict[str, Any]:
@@ -88,14 +182,66 @@ def load_config() -> dict[str, Any]:
                 config.update(loaded)
         except (OSError, json.JSONDecodeError):
             pass
-    return config
+    normalized = normalize_config(config)
+    _apply_log_policy(normalized)
+    return normalized
 
 
 def save_config(config: dict[str, Any]) -> None:
-    CONFIG_PATH.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+    normalized = normalize_config(config)
+    temporary = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    os.replace(temporary, CONFIG_PATH)
+    config.clear()
+    config.update(normalized)
+    _apply_log_policy(normalized)
+
+
+def settings_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    return {key: source[key] for key in sorted(SETTING_KEYS)}
+
+
+def update_app_settings(
+    updates: dict[str, Any], *, reset: bool = False
+) -> dict[str, Any]:
+    unknown = sorted(set(updates) - SETTING_KEYS)
+    if unknown:
+        raise ValueError(f"지원하지 않는 설정입니다: {', '.join(unknown)}")
+    current = load_config()
+    if reset:
+        window = current.get("window")
+        current.update(default_config())
+        if isinstance(window, dict):
+            current["window"] = window
+    if "outputDir" in updates:
+        raw_output = str(updates["outputDir"] or "").strip()
+        if not raw_output:
+            raise ValueError("저장 폴더 경로를 입력해주세요.")
+        output_path = Path(raw_output).expanduser().resolve()
+        output_path.mkdir(parents=True, exist_ok=True)
+        current["outputDir"] = str(output_path)
+    for key in ("logVisible", "showBrowser"):
+        if key in updates:
+            if not isinstance(updates[key], bool):
+                raise ValueError(f"{key} 설정은 true 또는 false여야 합니다.")
+            current[key] = updates[key]
+    normalizers: dict[str, Callable[[Any], int]] = {
+        "workConcurrency": normalize_work_concurrency,
+        "imageConcurrency": normalize_image_concurrency,
+        "retryCount": normalize_retry_count,
+        "retryBackoffSeconds": normalize_retry_backoff,
+        "logMaxMiB": normalize_log_max_mib,
+        "logBackupCount": normalize_log_backup_count,
+    }
+    for key, normalizer in normalizers.items():
+        if key in updates:
+            current[key] = normalizer(updates[key])
+    save_config(current)
+    return settings_snapshot(current)
 
 
 def append_log(message: str, level: str = "INFO", job_id: str = "-") -> str:
@@ -110,14 +256,21 @@ def append_log(message: str, level: str = "INFO", job_id: str = "-") -> str:
     return line
 
 
-def _rotate_log_if_needed(max_bytes: int = 2 * 1024 * 1024) -> None:
+def _rotate_log_if_needed(
+    max_bytes: int | None = None, backup_count: int | None = None
+) -> None:
     try:
-        if LOG_PATH.stat().st_size <= max_bytes:
+        size_limit = _LOG_MAX_BYTES if max_bytes is None else max_bytes
+        keep_count = _LOG_BACKUP_COUNT if backup_count is None else backup_count
+        if LOG_PATH.stat().st_size <= size_limit:
             return
-        backup = LOG_PATH.with_suffix(".log.1")
-        if backup.exists():
-            backup.unlink()
-        LOG_PATH.replace(backup)
+        oldest = LOG_PATH.with_suffix(f".log.{keep_count}")
+        oldest.unlink(missing_ok=True)
+        for index in range(keep_count - 1, 0, -1):
+            source = LOG_PATH.with_suffix(f".log.{index}")
+            if source.exists():
+                source.replace(LOG_PATH.with_suffix(f".log.{index + 1}"))
+        LOG_PATH.replace(LOG_PATH.with_suffix(".log.1"))
         LOG_PATH.write_text("", encoding="utf-8")
     except OSError:
         pass

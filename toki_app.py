@@ -55,7 +55,9 @@ from toki_core import (
     retry_backoff_seconds,
     save_config,
     save_jobs,
+    settings_snapshot,
     should_auto_retry,
+    update_app_settings,
     update_job_note,
     verify_job_files,
 )
@@ -480,6 +482,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     set_output = subparsers.add_parser("set-output", help="기본 저장 폴더 설정")
     set_output.add_argument("path", help="저장 폴더 경로")
+
+    settings = subparsers.add_parser("settings", help="전체 일반 설정 조회")
+    settings.add_argument("--json", action="store_true", help="JSON으로 출력")
+    settings.add_argument("--show-gui", action="store_true", help="GUI 설정 창 표시")
+    settings.add_argument(
+        "--tab",
+        choices=("general", "network", "advanced"),
+        default="general",
+        help="GUI에서 처음 표시할 설정 탭",
+    )
+
+    set_settings = subparsers.add_parser("set-settings", help="일반 설정 일괄 변경")
+    set_settings.add_argument("--output", help="기본 저장 폴더")
+    set_settings.add_argument("--works", type=int, help="동시 실행 작품 수 1~4")
+    set_settings.add_argument("--images", type=int, help="이미지 연결 수 1~16")
+    set_settings.add_argument("--retry-count", type=int, help="재시도 횟수 0~5")
+    set_settings.add_argument("--retry-backoff", type=int, help="기본 대기 초 1~60")
+    set_settings.add_argument(
+        "--show-browser", choices=("on", "off"), help="브라우저 표시 기본값"
+    )
+    set_settings.add_argument(
+        "--log-visible", choices=("on", "off"), help="GUI 로그 패널 표시"
+    )
+    set_settings.add_argument("--log-max-mib", type=int, help="로그 파일당 최대 MiB 1~100")
+    set_settings.add_argument("--log-backups", type=int, help="보존할 이전 로그 수 1~10")
+    set_settings.add_argument("--defaults", action="store_true", help="일반 설정 기본값 복원")
+    set_settings.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     open_folder = subparsers.add_parser("open-folder", help="저장 폴더 열기")
     open_folder.add_argument("--job", help="작업 ID")
@@ -1275,6 +1304,66 @@ def run_cli(args: argparse.Namespace) -> int:
         )
         print_json(result)
         return 0 if result.get("cancelled") else 2
+    if command == "settings":
+        if args.show_gui:
+            ensure_gui_running()
+            result = control_request({"action": "show_settings", "tab": args.tab})
+            print_json(result)
+            return 0
+        result = (
+            control_request({"action": "settings"})
+            if gui_is_running()
+            else settings_snapshot()
+        )
+        if args.json:
+            print_json(result)
+        else:
+            print(f"저장 폴더: {result['outputDir']}")
+            print(
+                f"동시 작업: 작품 {result['workConcurrency']} · "
+                f"이미지 {result['imageConcurrency']}"
+            )
+            print(
+                f"자동 재시도: {result['retryCount']}회 · "
+                f"기본 대기 {result['retryBackoffSeconds']}초"
+            )
+            print(
+                f"브라우저 표시: {'켜짐' if result['showBrowser'] else '꺼짐'} · "
+                f"로그 패널: {'표시' if result['logVisible'] else '숨김'}"
+            )
+            print(
+                f"로그 보존: 파일당 {result['logMaxMiB']} MiB · "
+                f"백업 {result['logBackupCount']}개"
+            )
+        return 0
+    if command == "set-settings":
+        mapping = {
+            "outputDir": args.output,
+            "workConcurrency": args.works,
+            "imageConcurrency": args.images,
+            "retryCount": args.retry_count,
+            "retryBackoffSeconds": args.retry_backoff,
+            "logMaxMiB": args.log_max_mib,
+            "logBackupCount": args.log_backups,
+        }
+        updates = {key: value for key, value in mapping.items() if value is not None}
+        if args.show_browser is not None:
+            updates["showBrowser"] = args.show_browser == "on"
+        if args.log_visible is not None:
+            updates["logVisible"] = args.log_visible == "on"
+        if not updates and not args.defaults:
+            raise ControlError("변경할 설정 또는 --defaults를 지정해주세요.")
+        if gui_is_running():
+            result = control_request(
+                {"action": "set_settings", "updates": updates, "reset": args.defaults}
+            )
+        else:
+            result = update_app_settings(updates, reset=args.defaults)
+        if args.json:
+            print_json(result)
+        else:
+            print(f"설정 저장 완료: {result['outputDir']}")
+        return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())
         Path(resolved).mkdir(parents=True, exist_ok=True)

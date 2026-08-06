@@ -104,6 +104,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd set-concurrency --works 2 --images 5
 .\toki-cli.cmd retry-policy --json
 .\toki-cli.cmd set-retry-policy --count 2 --backoff 2
+.\toki-cli.cmd settings --json
+.\toki-cli.cmd settings --show-gui --tab network
+.\toki-cli.cmd set-settings --works 2 --images 8 --retry-count 2 --retry-backoff 2
+.\toki-cli.cmd set-settings --show-browser off --log-visible on --log-max-mib 2 --log-backups 1
 .\toki-cli.cmd rescan --job 작업ID --mode new
 .\toki-cli.cmd rescan --job 작업ID --mode full
 .\toki-cli.cmd rescan --job 작업ID --mode range --start 10 --last 25
@@ -146,6 +150,14 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며
 목록 행의 왼쪽에 색상 표시를 추가합니다. 같은 기능은 작품 우클릭 메뉴에서도 사용할 수
 있습니다.
+
+`도구 → 설정...` 또는 `settings --show-gui`는 일반·네트워크·고급 탭을 엽니다.
+기본 저장 폴더, 자동화 브라우저 표시, 로그 패널, 작품/이미지 동시성, 재시도 정책과
+로그 순환 크기·백업 수를 한 화면에서 바꿀 수 있습니다. 같은 값은 `settings --json`으로
+조회하고 `set-settings`로 변경할 수 있으며 `status --json`의 `settings`에도 포함됩니다.
+설정 파일의 잘못된 타입이나 범위 값은 시작할 때 안전한 기본값으로 정규화되고 저장은
+임시 파일을 거친 원자 교체로 처리됩니다. GUI 로그는 설정한 최대 크기를 넘으면
+`gui.log.1`, `gui.log.2` 순서로 지정 개수만큼 순환 보존합니다.
 
 작품 목록은 작품당 한 줄만 유지하고, 다운로드·전체 재검사·범위 다운로드를 실행할
 때마다 별도의 실행 ID를 `runs` 이력에 누적합니다. `info`는 작품 메타데이터와 전체 실행

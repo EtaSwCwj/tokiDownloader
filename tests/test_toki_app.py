@@ -117,6 +117,66 @@ class CliParserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_cli(args)
 
+    def test_settings_query_update_and_show_gui_are_cli_controlled(self) -> None:
+        values = {
+            "outputDir": r"C:\Manga",
+            "workConcurrency": 2,
+            "imageConcurrency": 8,
+            "retryCount": 3,
+            "retryBackoffSeconds": 4,
+            "showBrowser": False,
+            "logVisible": True,
+            "logMaxMiB": 5,
+            "logBackupCount": 2,
+        }
+        query = build_parser().parse_args(["settings", "--json"])
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=values) as snapshot,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(query), 0)
+        snapshot.assert_called_once_with()
+
+        update = build_parser().parse_args(
+            [
+                "set-settings", "--works", "3", "--images", "10",
+                "--show-browser", "on", "--log-visible", "off",
+                "--log-max-mib", "8", "--log-backups", "4", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=values) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(update), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_settings",
+                "updates": {
+                    "workConcurrency": 3,
+                    "imageConcurrency": 10,
+                    "logMaxMiB": 8,
+                    "logBackupCount": 4,
+                    "showBrowser": True,
+                    "logVisible": False,
+                },
+                "reset": False,
+            }
+        )
+
+        show = build_parser().parse_args(
+            ["settings", "--show-gui", "--tab", "network"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show), 0)
+        request.assert_called_once_with({"action": "show_settings", "tab": "network"})
+
     def test_retry_policy_arguments_and_gui_request(self) -> None:
         current = build_parser().parse_args(["retry-policy", "--json"])
         self.assertTrue(current.json)

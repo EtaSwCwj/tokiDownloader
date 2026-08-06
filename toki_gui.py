@@ -47,7 +47,9 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -69,6 +71,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
@@ -123,12 +126,14 @@ from toki_core import (
     save_config,
     save_jobs,
     save_runs,
+    settings_snapshot,
     set_job_pause_state,
     set_process_tree_paused,
     retry_backoff_seconds,
     should_auto_retry,
     update_job_note,
     update_job_markers,
+    update_app_settings,
     validate_url,
 )
 
@@ -776,6 +781,149 @@ class ImagePreviewDialog(QDialog):
             open_in_explorer(self.current_path)
 
 
+class SettingsDialog(QDialog):
+    def __init__(self, owner: "MainWindow") -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.setWindowTitle("설정")
+        self.resize(680, 520)
+        layout = QVBoxLayout(self)
+        heading = QLabel("tokiDownloader 설정")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+
+        general_page = QWidget()
+        general_page.setObjectName("settingsPage")
+        general_form = QFormLayout(general_page)
+        output_row = QHBoxLayout()
+        self.output_edit = QLineEdit()
+        self.output_edit.setReadOnly(True)
+        output_row.addWidget(self.output_edit, 1)
+        output_button = QPushButton("폴더 선택...")
+        output_button.clicked.connect(self._choose_output)
+        output_row.addWidget(output_button)
+        general_form.addRow("기본 저장 폴더", output_row)
+        self.show_browser_check = QCheckBox(
+            "사이트 진단이 필요할 때 자동화 브라우저 창 표시"
+        )
+        general_form.addRow("브라우저", self.show_browser_check)
+        self.log_visible_check = QCheckBox("메인 화면에 실행 로그 패널 표시")
+        general_form.addRow("로그 패널", self.log_visible_check)
+        general_note = QLabel(
+            "브라우저 표시는 기본적으로 끄는 것을 권장합니다. 개인 Chrome 프로필은 사용하지 않습니다."
+        )
+        general_note.setObjectName("mutedLabel")
+        general_note.setWordWrap(True)
+        general_form.addRow("", general_note)
+        self.tabs.addTab(general_page, "일반")
+
+        network_page = QWidget()
+        network_page.setObjectName("settingsPage")
+        network_form = QFormLayout(network_page)
+        self.work_spin = QSpinBox()
+        self.work_spin.setRange(1, 4)
+        network_form.addRow("최대 동시 작품", self.work_spin)
+        self.image_spin = QSpinBox()
+        self.image_spin.setRange(1, 16)
+        network_form.addRow("작품당 이미지 연결", self.image_spin)
+        self.retry_count_spin = QSpinBox()
+        self.retry_count_spin.setRange(0, 5)
+        network_form.addRow("자동 재시도 횟수", self.retry_count_spin)
+        self.retry_backoff_spin = QSpinBox()
+        self.retry_backoff_spin.setRange(1, 60)
+        self.retry_backoff_spin.setSuffix("초")
+        network_form.addRow("기본 재시도 대기", self.retry_backoff_spin)
+        network_note = QLabel(
+            "동시성 상한은 사이트와 PC 부하를 고려한 안전 범위입니다. 재시도 대기는 실패마다 지수 증가합니다."
+        )
+        network_note.setObjectName("mutedLabel")
+        network_note.setWordWrap(True)
+        network_form.addRow("", network_note)
+        self.tabs.addTab(network_page, "네트워크")
+
+        advanced_page = QWidget()
+        advanced_page.setObjectName("settingsPage")
+        advanced_form = QFormLayout(advanced_page)
+        self.log_max_spin = QSpinBox()
+        self.log_max_spin.setRange(1, 100)
+        self.log_max_spin.setSuffix(" MiB")
+        advanced_form.addRow("로그 파일 최대 크기", self.log_max_spin)
+        self.log_backups_spin = QSpinBox()
+        self.log_backups_spin.setRange(1, 10)
+        self.log_backups_spin.setSuffix("개")
+        advanced_form.addRow("이전 로그 보존", self.log_backups_spin)
+        advanced_note = QLabel(
+            "현재 로그가 최대 크기를 넘으면 gui.log.1부터 순환 보존합니다. 다운로드 파일에는 영향을 주지 않습니다."
+        )
+        advanced_note.setObjectName("mutedLabel")
+        advanced_note.setWordWrap(True)
+        advanced_form.addRow("", advanced_note)
+        self.tabs.addTab(advanced_page, "고급")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.RestoreDefaults
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("저장")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).setText(
+            "기본값"
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        buttons.button(
+            QDialogButtonBox.StandardButton.RestoreDefaults
+        ).clicked.connect(self._load_defaults)
+        layout.addWidget(buttons)
+        self._load_values(settings_snapshot(owner.config))
+
+    def _load_values(self, values: dict[str, Any]) -> None:
+        self.output_edit.setText(str(values["outputDir"]))
+        self.show_browser_check.setChecked(bool(values["showBrowser"]))
+        self.log_visible_check.setChecked(bool(values["logVisible"]))
+        self.work_spin.setValue(int(values["workConcurrency"]))
+        self.image_spin.setValue(int(values["imageConcurrency"]))
+        self.retry_count_spin.setValue(int(values["retryCount"]))
+        self.retry_backoff_spin.setValue(int(values["retryBackoffSeconds"]))
+        self.log_max_spin.setValue(int(values["logMaxMiB"]))
+        self.log_backups_spin.setValue(int(values["logBackupCount"]))
+
+    def _load_defaults(self) -> None:
+        from toki_core import default_config
+
+        defaults = settings_snapshot(default_config())
+        self._load_values(defaults)
+
+    def _choose_output(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self, "기본 저장 폴더 선택", self.output_edit.text()
+        )
+        if selected:
+            self.output_edit.setText(selected)
+
+    def _save(self) -> None:
+        updates = {
+            "outputDir": self.output_edit.text(),
+            "showBrowser": self.show_browser_check.isChecked(),
+            "logVisible": self.log_visible_check.isChecked(),
+            "workConcurrency": self.work_spin.value(),
+            "imageConcurrency": self.image_spin.value(),
+            "retryCount": self.retry_count_spin.value(),
+            "retryBackoffSeconds": self.retry_backoff_spin.value(),
+            "logMaxMiB": self.log_max_spin.value(),
+            "logBackupCount": self.log_backups_spin.value(),
+        }
+        try:
+            self.owner.apply_settings(updates)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "설정을 저장할 수 없음", str(error))
+            return
+        self.accept()
+
+
 class ImageConversionDialog(QDialog):
     def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
         super().__init__(owner)
@@ -1048,6 +1196,7 @@ class MainWindow(QMainWindow):
         self.active_image_conversion_progress_dialog: (
             ImageConversionProgressDialog | None
         ) = None
+        self.active_settings_dialog: SettingsDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -1155,6 +1304,10 @@ class MainWindow(QMainWindow):
         self.cleanup_records_action = QAction("완료·오류 기록 정리...", self)
         self.cleanup_records_action.triggered.connect(self.confirm_cleanup_records)
 
+        self.settings_action = QAction("설정...", self)
+        self.settings_action.setShortcut("Ctrl+,")
+        self.settings_action.triggered.connect(self.show_settings_dialog)
+
         self.exit_action = QAction("종료", self)
         self.exit_action.triggered.connect(self.close)
 
@@ -1175,6 +1328,8 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.details_action)
         tools_menu.addAction(self.refresh_list_action)
         tools_menu.addAction(self.cleanup_records_action)
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.settings_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.screenshot_action)
         tools_menu.addAction(self.self_test_action)
@@ -1377,8 +1532,8 @@ class MainWindow(QMainWindow):
         self.task_list.customContextMenuRequested.connect(self.show_job_context_menu)
         self.task_list.verticalScrollBar().valueChanged.connect(self._maybe_load_more_history)
 
-        log_box = QGroupBox("실행 로그")
-        log_layout = QVBoxLayout(log_box)
+        self.log_box = QGroupBox("실행 로그")
+        log_layout = QVBoxLayout(self.log_box)
         log_actions = QHBoxLayout()
         log_actions.addStretch(1)
         copy_log_button = QPushButton("복사")
@@ -1404,7 +1559,8 @@ class MainWindow(QMainWindow):
         root.addLayout(queue_header)
         root.addLayout(filter_bar)
         root.addWidget(self.task_list, 1)
-        root.addWidget(log_box)
+        root.addWidget(self.log_box)
+        self.log_box.setVisible(bool(self.config.get("logVisible", True)))
         self.setCentralWidget(central)
 
         status = QStatusBar()
@@ -1426,6 +1582,14 @@ class MainWindow(QMainWindow):
             QMenuBar::item:selected { background: #e9f1ff; }
             QMenu { background: #ffffff; color: #20262e; border: 1px solid #cfd6df; }
             QMenu::item:selected { background: #e9f1ff; }
+            QTabWidget::pane { background: #ffffff; border: 1px solid #cfd6df; }
+            QTabBar::tab {
+                background: #e9edf2; color: #20262e; border: 1px solid #cfd6df;
+                border-bottom: 0; padding: 8px 18px;
+            }
+            QTabBar::tab:selected { background: #ffffff; color: #20262e; font-weight: 700; }
+            QTabWidget > QWidget { background: #ffffff; color: #20262e; }
+            #settingsPage { background: #ffffff; color: #20262e; }
             #inputBox { background: #ffffff; border: 1px solid #d8dde5; border-radius: 5px; }
             QLineEdit, QSpinBox, QPlainTextEdit, QListView, QTableWidget {
                 background: #ffffff; color: #20262e; border: 1px solid #cfd6df; border-radius: 4px;
@@ -2328,6 +2492,59 @@ class MainWindow(QMainWindow):
         selected = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.output_edit.text())
         if selected:
             self.set_output_folder(selected)
+
+    def show_settings_dialog(self, tab: str = "general") -> bool:
+        if self.active_settings_dialog:
+            self.active_settings_dialog.close()
+        dialog = SettingsDialog(self)
+        tab_index = {"general": 0, "network": 1, "advanced": 2}.get(str(tab), 0)
+        dialog.tabs.setCurrentIndex(tab_index)
+        self.active_settings_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_settings_dialog", None)
+                if self.active_settings_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log("설정 창 표시")
+        return True
+
+    def apply_settings(
+        self, updates: dict[str, Any], *, reset: bool = False
+    ) -> dict[str, Any]:
+        result = update_app_settings(updates, reset=reset)
+        self.config.update(result)
+        self.output_edit.setText(str(result["outputDir"]))
+        self.show_browser_check.setChecked(bool(result["showBrowser"]))
+        widgets = (
+            self.work_concurrency_spin,
+            self.image_concurrency_spin,
+            self.retry_count_spin,
+            self.retry_backoff_spin,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            self.work_concurrency_spin.setValue(int(result["workConcurrency"]))
+            self.image_concurrency_spin.setValue(int(result["imageConcurrency"]))
+            self.retry_count_spin.setValue(int(result["retryCount"]))
+            self.retry_backoff_spin.setValue(int(result["retryBackoffSeconds"]))
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+        self.log_box.setVisible(bool(result["logVisible"]))
+        self.log(
+            "설정 저장: 작품 동시성 "
+            f"{result['workConcurrency']}, 이미지 {result['imageConcurrency']}, "
+            f"재시도 {result['retryCount']}회"
+        )
+        QTimer.singleShot(0, self._start_next_job)
+        return result
 
     def set_output_folder(self, output_dir: str) -> str:
         if not output_dir:
@@ -3281,7 +3498,9 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if (
+        if self.active_settings_dialog and self.active_settings_dialog.isVisible():
+            screenshot = self.active_settings_dialog.grab()
+        elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
         ):
@@ -3430,6 +3649,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-concurrency [--works 1~4] [--images 1~16]\n"
             "toki-cli.cmd retry-policy [--json]\n"
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
+            "toki-cli.cmd settings [--json|--show-gui --tab general|network|advanced]\n"
+            "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off]\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -3484,6 +3705,7 @@ class MainWindow(QMainWindow):
             "workConcurrency": self.work_concurrency_spin.value(),
             "retryCount": self.retry_count_spin.value(),
             "retryBackoffSeconds": self.retry_backoff_spin.value(),
+            "settings": settings_snapshot(self.config),
             "startupRecovery": self.startup_recovery,
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
@@ -3627,6 +3849,15 @@ class MainWindow(QMainWindow):
             return job.to_dict()
         if action == "set_output":
             return {"outputDir": self.set_output_folder(str(request.get("path") or ""))}
+        if action == "settings":
+            return settings_snapshot(self.config)
+        if action == "set_settings":
+            updates = request.get("updates")
+            if not isinstance(updates, dict):
+                raise ValueError("설정 변경 내용이 올바르지 않습니다.")
+            return self.apply_settings(updates, reset=bool(request.get("reset")))
+        if action == "show_settings":
+            return {"shown": self.show_settings_dialog(str(request.get("tab") or "general"))}
         if action == "set_image_concurrency":
             return self.set_image_concurrency(int(request.get("value") or 0))
         if action == "set_concurrency":

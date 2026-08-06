@@ -16,6 +16,27 @@ class _ValueStub:
         return self._value
 
 
+class _SettingWidgetStub:
+    def __init__(self) -> None:
+        self.value = None
+        self.blocked = False
+
+    def blockSignals(self, blocked: bool) -> None:
+        self.blocked = blocked
+
+    def setValue(self, value: int) -> None:
+        self.value = value
+
+    def setText(self, value: str) -> None:
+        self.value = value
+
+    def setChecked(self, value: bool) -> None:
+        self.value = value
+
+    def setVisible(self, value: bool) -> None:
+        self.value = value
+
+
 class _SignalStub:
     def __init__(self) -> None:
         self.callbacks = []
@@ -76,6 +97,57 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_apply_settings_updates_all_live_controls_without_signal_writes(self) -> None:
+        result = {
+            "outputDir": r"C:\Manga",
+            "showBrowser": True,
+            "logVisible": False,
+            "workConcurrency": 3,
+            "imageConcurrency": 11,
+            "retryCount": 4,
+            "retryBackoffSeconds": 6,
+            "logMaxMiB": 8,
+            "logBackupCount": 3,
+        }
+        harness = type("SettingsHarness", (), {})()
+        harness.config = {}
+        harness.output_edit = _SettingWidgetStub()
+        harness.show_browser_check = _SettingWidgetStub()
+        harness.work_concurrency_spin = _SettingWidgetStub()
+        harness.image_concurrency_spin = _SettingWidgetStub()
+        harness.retry_count_spin = _SettingWidgetStub()
+        harness.retry_backoff_spin = _SettingWidgetStub()
+        harness.log_box = _SettingWidgetStub()
+        harness.log = lambda *_args, **_kwargs: None
+        harness._start_next_job = lambda: None
+
+        with (
+            patch("toki_gui.update_app_settings", return_value=result) as update,
+            patch("toki_gui.QTimer.singleShot"),
+        ):
+            applied = MainWindow.apply_settings(
+                harness, {"workConcurrency": 3, "logVisible": False}
+            )
+
+        update.assert_called_once_with(
+            {"workConcurrency": 3, "logVisible": False}, reset=False
+        )
+        self.assertEqual(applied, result)
+        self.assertEqual(harness.output_edit.value, r"C:\Manga")
+        self.assertEqual(harness.work_concurrency_spin.value, 3)
+        self.assertFalse(harness.log_box.value)
+        self.assertTrue(
+            all(
+                not widget.blocked
+                for widget in (
+                    harness.work_concurrency_spin,
+                    harness.image_concurrency_spin,
+                    harness.retry_count_spin,
+                    harness.retry_backoff_spin,
+                )
+            )
+        )
+
     def test_image_conversion_gui_execution_uses_confirmed_cli_contract(self) -> None:
         job = DownloadJob(
             job_id="convert-job",

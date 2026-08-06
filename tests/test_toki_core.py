@@ -18,6 +18,7 @@ from toki_core import (
     count_jobs,
     count_runs,
     convert_job_images,
+    default_config,
     delete_job_record,
     delete_job_records,
     hydrate_job_metadata,
@@ -35,6 +36,7 @@ from toki_core import (
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_error_category,
+    normalize_config,
     normalize_work_concurrency,
     move_job_folder,
     plan_job_folder_move,
@@ -51,6 +53,8 @@ from toki_core import (
     set_job_pause_state,
     set_process_tree_paused,
     should_auto_retry,
+    settings_snapshot,
+    update_app_settings,
     update_job_note,
     verify_job_files,
     update_job_markers,
@@ -58,6 +62,79 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_settings_normalize_invalid_values_and_update_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "outputDir": "",
+                        "showBrowser": "yes",
+                        "workConcurrency": 99,
+                        "imageConcurrency": 0,
+                        "retryCount": -1,
+                        "retryBackoffSeconds": 999,
+                        "logMaxMiB": 0,
+                        "logBackupCount": 99,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(toki_core, "CONFIG_PATH", config_path):
+                loaded = toki_core.load_config()
+                defaults = default_config()
+                self.assertEqual(loaded["outputDir"], defaults["outputDir"])
+                self.assertFalse(loaded["showBrowser"])
+                self.assertEqual(loaded["workConcurrency"], 1)
+                self.assertEqual(loaded["logMaxMiB"], 2)
+
+                output = root / "새 저장 폴더"
+                updated = update_app_settings(
+                    {
+                        "outputDir": str(output),
+                        "showBrowser": True,
+                        "logVisible": False,
+                        "workConcurrency": 3,
+                        "imageConcurrency": 12,
+                        "retryCount": 4,
+                        "retryBackoffSeconds": 7,
+                        "logMaxMiB": 5,
+                        "logBackupCount": 3,
+                    }
+                )
+                self.assertTrue(output.is_dir())
+                self.assertEqual(updated["workConcurrency"], 3)
+                self.assertEqual(updated["logBackupCount"], 3)
+                self.assertFalse((root / "config.json.tmp").exists())
+                persisted = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(settings_snapshot(persisted), updated)
+                with self.assertRaises(ValueError):
+                    update_app_settings({"unknownSetting": True})
+
+    def test_config_normalization_preserves_unknown_future_fields(self) -> None:
+        normalized = normalize_config({"futureField": {"enabled": True}})
+        self.assertEqual(normalized["futureField"], {"enabled": True})
+        self.assertEqual(normalized["logBackupCount"], 1)
+
+    def test_log_rotation_honors_configurable_backup_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "gui.log"
+            log_path.write_text("new-current", encoding="utf-8")
+            log_path.with_suffix(".log.1").write_text("older-one", encoding="utf-8")
+            log_path.with_suffix(".log.2").write_text("oldest", encoding="utf-8")
+            with patch.object(toki_core, "LOG_PATH", log_path):
+                toki_core._rotate_log_if_needed(max_bytes=1, backup_count=2)
+            self.assertEqual(log_path.read_text(encoding="utf-8"), "")
+            self.assertEqual(
+                log_path.with_suffix(".log.1").read_text(encoding="utf-8"),
+                "new-current",
+            )
+            self.assertEqual(
+                log_path.with_suffix(".log.2").read_text(encoding="utf-8"),
+                "older-one",
+            )
+
     def test_work_key_ignores_rotating_domain(self) -> None:
         self.assertEqual(build_work_key("https://newtoki1.org/manhwa/34360"), "manatoki:34360")
         self.assertEqual(build_work_key("https://newtoki999.org/comic/34360"), "manatoki:34360")
