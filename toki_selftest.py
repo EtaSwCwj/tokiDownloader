@@ -56,6 +56,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "tokiDownloader.js",
         ROOT_DIR / "package.json",
         ROOT_DIR / "requirements-image-tools.txt",
+        ROOT_DIR / "setup-gui.ps1",
         ROOT_DIR / "start-gui.cmd",
         ROOT_DIR / "toki-cli.cmd",
     ]

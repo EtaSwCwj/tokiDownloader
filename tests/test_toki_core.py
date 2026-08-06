@@ -63,6 +63,7 @@ from toki_core import (
     reorder_pending_jobs,
     resource_admission,
     resource_budget,
+    ROOT_DIR,
     run_job_database_benchmark,
     run_stability_recovery_test,
     save_jobs,
@@ -80,6 +81,16 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_windows_setup_script_uses_lockfile_check_mode_and_doctor(self) -> None:
+        script = (ROOT_DIR / "setup-gui.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[switch]$CheckOnly", script)
+        self.assertIn("'ci', '--no-audit', '--no-fund'", script)
+        self.assertIn("toki_app.py') doctor --json", script)
+        self.assertNotIn(
+            "pause", (ROOT_DIR / "setup-gui.cmd").read_text(encoding="utf-8")
+        )
+
     def test_dependency_doctor_separates_required_and_optional_tools(self) -> None:
         report = dependency_diagnostics()
         checks = {item["name"]: item for item in report["checks"]}

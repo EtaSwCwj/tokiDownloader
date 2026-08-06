@@ -501,7 +501,7 @@ SQLite `integrity_check`, 복구 ID, 임시 DB 제거와 메모리 변화를 JSO
 목표: 개발 환경 지식 없이도 설치하고 실행할 수 있는 배포 형태를 만든다.
 
 - [ ] 새 PC 기준 설치·실행 점검
-- [ ] 개발자용 재현 가능한 설치 스크립트 정리
+- [x] 개발자용 재현 가능한 설치 스크립트 정리
 - [ ] PyInstaller GUI 실행 파일과 Node/Puppeteer 런타임 묶음 검토
 - [ ] 업데이트 및 데이터베이스 마이그레이션 절차
 - [ ] 오류 보고용 진단 정보 내보내기
@@ -513,6 +513,13 @@ PyQt6, psutil, Node.js, npm, Puppeteer 및 Pillow·FFmpeg·yt-dlp·PyInstaller�
 버전과 경로를 공용 서비스에서 조회한다. 필수와 선택 기능을 분리해 선택 도구가 없어도 기본
 다운로더는 정상으로 판정한다. 이 PC는 필수 5/5, 선택 1/4이며 `logs/doctor.json`과
 `logs/doctor-gui.png`에서 CLI와 GUI를 검증했다. Python 109건과 GUI IPC를 통과했다.
+
+2026-08-07 재현 가능한 Windows 설치: `setup-gui.ps1`이 Python 3.10+, Node.js/npm과 필수
+저장소 파일을 먼저 검사하고 `.venv` 생성, requirements 설치, `package-lock.json` 기반
+`npm ci`, 공용 `doctor` 최종 검증을 순서대로 실행한다. `setup-gui.cmd`는 인자를 전달하는
+얇은 호환 실행기이며 오류 `pause`를 제거했다. `-CheckOnly`는 다운로드나 재설치 없이 현재
+설치만 검증하고 `-WithImageTools`는 Pillow를 선택 설치한다. 실제 현재 환경의 CheckOnly와
+CMD 전달 경로를 통과했으며 Python 110건을 통과했다.
 
 완료 조건:
 

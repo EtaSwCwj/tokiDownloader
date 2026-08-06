@@ -44,9 +44,9 @@ Node.js, Python 3
 
 ## Windows GUI
 
-처음 한 번 `setup-gui.cmd`를 실행하면 저장소 전용 Python 가상환경과 PyQt6,
-Node.js 의존성을 설치합니다. 이후에는 `start-gui.cmd`를 더블클릭하면 실제 Windows
-창으로 실행됩니다.
+Python 3.10 이상과 Node.js/npm을 설치한 뒤 처음 한 번 `setup-gui.cmd`를 실행하면 저장소
+전용 Python 가상환경과 PyQt6, 잠금파일 기준 Node.js 의존성을 설치합니다. 이후에는 콘솔이
+보이지 않는 `start-gui.vbs`를 더블클릭해 실제 Windows 창으로 실행합니다.
 
 GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 있습니다. 작업은 한 번에
 하나씩 실행되고 다음 작업은 대기열에 들어갑니다. 진행률, 현재 회차와 이미지 수,
@@ -54,8 +54,12 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 
 ```powershell
 .\setup-gui.cmd
-.\start-gui.cmd
+.\setup-gui.cmd -CheckOnly
+.\start-gui.vbs
 ```
+
+`-CheckOnly`는 다운로드나 재설치 없이 `.venv`, Puppeteer와 공용 `doctor` 결과만 검증합니다.
+이미지 변환용 Pillow까지 함께 설치하려면 `setup-gui.cmd -WithImageTools`를 사용합니다.
 
 ### GUI 제어 CLI
 
