@@ -110,6 +110,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd set-settings --show-browser off --log-visible on --log-max-mib 2 --log-backups 1
 .\toki-cli.cmd set-settings --row-density compact
 .\toki-cli.cmd set-settings --theme dark
+.\toki-cli.cmd set-settings --tray on --close-to-tray on --notify-complete on --notify-error on
+.\toki-cli.cmd tray status
+.\toki-cli.cmd tray show
+.\toki-cli.cmd tray hide
 .\toki-cli.cmd rescan --job 작업ID --mode new
 .\toki-cli.cmd rescan --job 작업ID --mode full
 .\toki-cli.cmd rescan --job 작업ID --mode range --start 10 --last 25
@@ -168,6 +172,12 @@ compact|comfortable`로 같은 선택을 즉시 적용할 수 있습니다.
 메뉴, 목록 카드, 진행률, 로그, 설정과 상세 대화상자는 같은 색상 토큰을 사용하므로 일부
 창만 흰 배경이나 흰 글씨로 남지 않습니다. `set-settings --theme system|light|dark`로
 실행 중에도 즉시 바꿀 수 있습니다.
+일반 설정의 트레이 옵션을 켜면 트레이 메뉴에서 창 표시·숨기기·실행/대기 수 확인·종료를
+할 수 있습니다. 닫기 또는 최소화 시 트레이로 숨기는 동작은 각각 따로 선택하며 기본값은
+꺼짐입니다. 완료와 오류 알림도 별도로 끌 수 있습니다. `tray status|show|hide|notify`와
+`set-settings --tray ...`가 같은 기능을 CLI에서 제공하고 `status --json`은 현재 트레이
+사용 가능 여부와 표시 상태를 반환합니다. 트레이 메뉴의 종료는 실행 중 작업이 있으면
+기존 중지 확인 창을 그대로 거칩니다.
 
 작품 목록은 작품당 한 줄만 유지하고, 다운로드·전체 재검사·범위 다운로드를 실행할
 때마다 별도의 실행 ID를 `runs` 이력에 누적합니다. `info`는 작품 메타데이터와 전체 실행

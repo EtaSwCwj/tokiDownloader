@@ -515,8 +515,29 @@ def build_parser() -> argparse.ArgumentParser:
     set_settings.add_argument(
         "--theme", choices=("system", "light", "dark"), help="GUI 색상 테마"
     )
+    set_settings.add_argument("--tray", choices=("on", "off"), help="시스템 트레이 사용")
+    set_settings.add_argument(
+        "--close-to-tray", choices=("on", "off"), help="창 닫기 시 트레이로 숨김"
+    )
+    set_settings.add_argument(
+        "--minimize-to-tray", choices=("on", "off"), help="최소화 시 트레이로 숨김"
+    )
+    set_settings.add_argument(
+        "--notify-complete", choices=("on", "off"), help="작업 완료 알림"
+    )
+    set_settings.add_argument(
+        "--notify-error", choices=("on", "off"), help="작업 오류 알림"
+    )
     set_settings.add_argument("--defaults", action="store_true", help="일반 설정 기본값 복원")
     set_settings.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    tray = subparsers.add_parser("tray", help="GUI 시스템 트레이 제어")
+    tray.add_argument(
+        "action",
+        choices=("status", "show", "hide", "notify"),
+        help="트레이 상태 조회, 창 표시/숨김 또는 테스트 알림",
+    )
+    tray.add_argument("--message", default="tokiDownloader 테스트 알림", help="테스트 알림 내용")
 
     open_folder = subparsers.add_parser("open-folder", help="저장 폴더 열기")
     open_folder.add_argument("--job", help="작업 ID")
@@ -1361,6 +1382,15 @@ def run_cli(args: argparse.Namespace) -> int:
             updates["showBrowser"] = args.show_browser == "on"
         if args.log_visible is not None:
             updates["logVisible"] = args.log_visible == "on"
+        for argument, key in (
+            (args.tray, "trayEnabled"),
+            (args.close_to_tray, "closeToTray"),
+            (args.minimize_to_tray, "minimizeToTray"),
+            (args.notify_complete, "notifyOnComplete"),
+            (args.notify_error, "notifyOnError"),
+        ):
+            if argument is not None:
+                updates[key] = argument == "on"
         if not updates and not args.defaults:
             raise ControlError("변경할 설정 또는 --defaults를 지정해주세요.")
         if gui_is_running():
@@ -1373,6 +1403,13 @@ def run_cli(args: argparse.Namespace) -> int:
             print_json(result)
         else:
             print(f"설정 저장 완료: {result['outputDir']}")
+        return 0
+    if command == "tray":
+        ensure_gui_running()
+        result = control_request(
+            {"action": "tray", "command": args.action, "message": args.message}
+        )
+        print_json(result)
         return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())

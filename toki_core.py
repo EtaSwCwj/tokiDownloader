@@ -47,6 +47,11 @@ SETTING_KEYS = frozenset(
         "logBackupCount",
         "rowDensity",
         "theme",
+        "trayEnabled",
+        "closeToTray",
+        "minimizeToTray",
+        "notifyOnComplete",
+        "notifyOnError",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -97,6 +102,11 @@ def default_config() -> dict[str, Any]:
         "logBackupCount": 1,
         "rowDensity": "comfortable",
         "theme": "system",
+        "trayEnabled": False,
+        "closeToTray": False,
+        "minimizeToTray": False,
+        "notifyOnComplete": True,
+        "notifyOnError": True,
     }
 
 
@@ -147,7 +157,15 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(output_dir, str) and str(output_dir).strip()
         else defaults["outputDir"]
     )
-    for key in ("logVisible", "showBrowser"):
+    for key in (
+        "logVisible",
+        "showBrowser",
+        "trayEnabled",
+        "closeToTray",
+        "minimizeToTray",
+        "notifyOnComplete",
+        "notifyOnError",
+    ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
     normalized["workConcurrency"] = _safe_normalize(
@@ -252,7 +270,15 @@ def update_app_settings(
         output_path = Path(raw_output).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         current["outputDir"] = str(output_path)
-    for key in ("logVisible", "showBrowser"):
+    for key in (
+        "logVisible",
+        "showBrowser",
+        "trayEnabled",
+        "closeToTray",
+        "minimizeToTray",
+        "notifyOnComplete",
+        "notifyOnError",
+    ):
         if key in updates:
             if not isinstance(updates[key], bool):
                 raise ValueError(f"{key} 설정은 true 또는 false여야 합니다.")

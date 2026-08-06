@@ -76,6 +76,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QStyleOptionViewItem,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -965,6 +966,16 @@ class SettingsDialog(QDialog):
         general_form.addRow("브라우저", self.show_browser_check)
         self.log_visible_check = QCheckBox("메인 화면에 실행 로그 패널 표시")
         general_form.addRow("로그 패널", self.log_visible_check)
+        self.tray_enabled_check = QCheckBox("시스템 트레이 아이콘 사용")
+        general_form.addRow("트레이", self.tray_enabled_check)
+        self.close_to_tray_check = QCheckBox("창 닫기 버튼을 누르면 트레이로 숨김")
+        general_form.addRow("닫기 동작", self.close_to_tray_check)
+        self.minimize_to_tray_check = QCheckBox("최소화하면 트레이로 숨김")
+        general_form.addRow("최소화 동작", self.minimize_to_tray_check)
+        self.notify_complete_check = QCheckBox("다운로드 완료 알림 표시")
+        general_form.addRow("완료 알림", self.notify_complete_check)
+        self.notify_error_check = QCheckBox("다운로드 오류·인증 필요 알림 표시")
+        general_form.addRow("오류 알림", self.notify_error_check)
         general_note = QLabel(
             "브라우저 표시는 기본적으로 끄는 것을 권장합니다. 개인 Chrome 프로필은 사용하지 않습니다."
         )
@@ -1058,6 +1069,11 @@ class SettingsDialog(QDialog):
         self.output_edit.setText(str(values["outputDir"]))
         self.show_browser_check.setChecked(bool(values["showBrowser"]))
         self.log_visible_check.setChecked(bool(values["logVisible"]))
+        self.tray_enabled_check.setChecked(bool(values["trayEnabled"]))
+        self.close_to_tray_check.setChecked(bool(values["closeToTray"]))
+        self.minimize_to_tray_check.setChecked(bool(values["minimizeToTray"]))
+        self.notify_complete_check.setChecked(bool(values["notifyOnComplete"]))
+        self.notify_error_check.setChecked(bool(values["notifyOnError"]))
         self.work_spin.setValue(int(values["workConcurrency"]))
         self.image_spin.setValue(int(values["imageConcurrency"]))
         self.retry_count_spin.setValue(int(values["retryCount"]))
@@ -1087,6 +1103,11 @@ class SettingsDialog(QDialog):
             "outputDir": self.output_edit.text(),
             "showBrowser": self.show_browser_check.isChecked(),
             "logVisible": self.log_visible_check.isChecked(),
+            "trayEnabled": self.tray_enabled_check.isChecked(),
+            "closeToTray": self.close_to_tray_check.isChecked(),
+            "minimizeToTray": self.minimize_to_tray_check.isChecked(),
+            "notifyOnComplete": self.notify_complete_check.isChecked(),
+            "notifyOnError": self.notify_error_check.isChecked(),
             "workConcurrency": self.work_spin.value(),
             "imageConcurrency": self.image_spin.value(),
             "retryCount": self.retry_count_spin.value(),
@@ -1368,6 +1389,10 @@ class MainWindow(QMainWindow):
             "runIds": [],
         }
         self.force_close = False
+        self.exit_requested = False
+        self.tray_icon: QSystemTrayIcon | None = None
+        self.tray_menu: QMenu | None = None
+        self.tray_status_action: QAction | None = None
         self.control_sockets: set[Any] = set()
         self.active_context_menu: QMenu | None = None
         self.active_detail_dialog: WorkDetailDialog | None = None
@@ -1397,6 +1422,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_ui()
         self._apply_style()
+        self._configure_tray()
         self._start_control_server()
         self._restore_job_history()
 
@@ -1491,7 +1517,7 @@ class MainWindow(QMainWindow):
         self.settings_action.triggered.connect(self.show_settings_dialog)
 
         self.exit_action = QAction("종료", self)
-        self.exit_action.triggered.connect(self.close)
+        self.exit_action.triggered.connect(self.request_exit)
 
     def _build_ui(self) -> None:
         work_menu = self.menuBar().addMenu("작업")
@@ -2437,6 +2463,7 @@ class MainWindow(QMainWindow):
             self.active_detail_dialog.job = job
             self.active_detail_dialog.refresh()
         self._update_active_summary()
+        self._notify_job_result(job)
         QTimer.singleShot(250, self._start_next_job)
 
     def _restart_context(self, job_id: str, generation: int) -> None:
@@ -2536,6 +2563,7 @@ class MainWindow(QMainWindow):
         if not contexts:
             self.status_label.setText("준비")
             self.overall_progress.setValue(0)
+            self._update_tray_status()
             return
         paused_count = sum(context.paused for context in contexts)
         retry_wait_count = sum(
@@ -2548,6 +2576,7 @@ class MainWindow(QMainWindow):
             f"실행 {running_count} · 재시도 대기 {retry_wait_count} · "
             f"일시정지 {paused_count} · 평균 {average}%"
         )
+        self._update_tray_status()
 
     def pause_selected_active_job(self, job_id: str | None = None) -> None:
         try:
@@ -2755,6 +2784,7 @@ class MainWindow(QMainWindow):
             self.task_list.viewport().update()
         if self.active_settings_dialog:
             self.active_settings_dialog._load_values(result)
+        self._configure_tray()
         self.log(
             "설정 저장: 작품 동시성 "
             f"{result['workConcurrency']}, 이미지 {result['imageConcurrency']}, "
@@ -2762,6 +2792,106 @@ class MainWindow(QMainWindow):
         )
         QTimer.singleShot(0, self._start_next_job)
         return result
+
+    def _configure_tray(self) -> None:
+        enabled = bool(self.config.get("trayEnabled", False))
+        if not enabled or not QSystemTrayIcon.isSystemTrayAvailable():
+            if self.tray_icon:
+                self.tray_icon.hide()
+                self.tray_icon.deleteLater()
+            self.tray_icon = None
+            self.tray_menu = None
+            self.tray_status_action = None
+            return
+        if self.tray_icon is None:
+            tray = QSystemTrayIcon(self.windowIcon(), self)
+            tray.setToolTip("tokiDownloader")
+            menu = QMenu()
+            show_action = menu.addAction("창 표시")
+            show_action.triggered.connect(self.show_from_tray)
+            hide_action = menu.addAction("창 숨기기")
+            hide_action.triggered.connect(self.hide_to_tray)
+            menu.addSeparator()
+            self.tray_status_action = menu.addAction("준비")
+            self.tray_status_action.setEnabled(False)
+            menu.addSeparator()
+            quit_action = menu.addAction("종료")
+            quit_action.triggered.connect(self.request_exit)
+            tray.setContextMenu(menu)
+            tray.activated.connect(
+                lambda reason: self.show_from_tray()
+                if reason == QSystemTrayIcon.ActivationReason.DoubleClick
+                else None
+            )
+            self.tray_icon = tray
+            self.tray_menu = menu
+        self._update_tray_status()
+        self.tray_icon.show()
+
+    def _update_tray_status(self) -> None:
+        if not self.tray_status_action:
+            return
+        self.tray_status_action.setText(
+            f"실행 {len(self.active_contexts)} · 대기 {len(self.pending_jobs)}"
+        )
+
+    def tray_snapshot(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.config.get("trayEnabled", False)),
+            "available": QSystemTrayIcon.isSystemTrayAvailable(),
+            "visible": bool(self.tray_icon and self.tray_icon.isVisible()),
+            "windowVisible": self.isVisible(),
+            "activeCount": len(self.active_contexts),
+            "pendingCount": len(self.pending_jobs),
+        }
+
+    def show_from_tray(self) -> bool:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        return True
+
+    def hide_to_tray(self) -> bool:
+        if not self.tray_icon or not self.tray_icon.isVisible():
+            raise ValueError("시스템 트레이가 활성화되어 있지 않습니다.")
+        self.hide()
+        return True
+
+    def show_tray_notification(self, message: str) -> bool:
+        if not self.tray_icon or not self.tray_icon.isVisible():
+            return False
+        self.tray_icon.showMessage(
+            "tokiDownloader",
+            message,
+            QSystemTrayIcon.MessageIcon.Information,
+            5000,
+        )
+        return True
+
+    def handle_tray_command(self, command: str, message: str = "") -> dict[str, Any]:
+        if command == "show":
+            self.show_from_tray()
+        elif command == "hide":
+            self.hide_to_tray()
+        elif command == "notify":
+            if not self.show_tray_notification(message or "tokiDownloader 테스트 알림"):
+                raise ValueError("시스템 트레이가 활성화되어 있지 않습니다.")
+        elif command != "status":
+            raise ValueError(f"지원하지 않는 트레이 명령입니다: {command}")
+        return self.tray_snapshot()
+
+    def _notify_job_result(self, job: DownloadJob) -> None:
+        if job.state == "완료" and self.config.get("notifyOnComplete", True):
+            self.show_tray_notification(f"다운로드 완료: {job.title}")
+        elif job.state in {"오류", "인증 필요"} and self.config.get(
+            "notifyOnError", True
+        ):
+            detail = job.error or job.state
+            self.show_tray_notification(f"{job.title}: {detail}")
+
+    def request_exit(self) -> None:
+        self.exit_requested = True
+        self.close()
 
     def set_output_folder(self, output_dir: str) -> str:
         if not output_dir:
@@ -3868,6 +3998,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
+            "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -3934,6 +4065,7 @@ class MainWindow(QMainWindow):
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
+            "tray": self.tray_snapshot(),
             "lastSelfTest": self.last_self_test,
             "listFilter": {
                 "query": self.history_query,
@@ -4075,6 +4207,11 @@ class MainWindow(QMainWindow):
             return self.apply_settings(updates, reset=bool(request.get("reset")))
         if action == "show_settings":
             return {"shown": self.show_settings_dialog(str(request.get("tab") or "general"))}
+        if action == "tray":
+            return self.handle_tray_command(
+                str(request.get("command") or "status"),
+                str(request.get("message") or ""),
+            )
         if action == "set_image_concurrency":
             return self.set_image_concurrency(int(request.get("value") or 0))
         if action == "set_concurrency":
@@ -4197,6 +4334,7 @@ class MainWindow(QMainWindow):
             return {"shown": True}
         if action == "quit":
             self.force_close = bool(request.get("force"))
+            self.exit_requested = True
             if self.force_close:
                 for job_id in list(self.active_contexts):
                     self.stop_active_job(job_id)
@@ -4207,6 +4345,17 @@ class MainWindow(QMainWindow):
         raise ValueError(f"지원하지 않는 CLI 동작입니다: {action}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if (
+            not self.force_close
+            and not self.exit_requested
+            and self.config.get("closeToTray", False)
+            and self.tray_icon
+            and self.tray_icon.isVisible()
+        ):
+            self.hide()
+            event.ignore()
+            self.statusBar().showMessage("시스템 트레이로 숨겼습니다.", 3000)
+            return
         if not self.force_close and (
             self.active_contexts or self.image_conversion_processes
         ):
@@ -4216,6 +4365,7 @@ class MainWindow(QMainWindow):
                 "다운로드 또는 이미지 변환이 진행 중입니다. 작업을 중지하고 종료할까요?",
             )
             if answer != QMessageBox.StandardButton.Yes:
+                self.exit_requested = False
                 event.ignore()
                 return
             for job_id in list(self.active_contexts):
@@ -4235,6 +4385,8 @@ class MainWindow(QMainWindow):
         self.persist_timer.stop()
         self._flush_job_history()
         self.control_server.close()
+        if self.tray_icon:
+            self.tray_icon.hide()
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
         event.accept()
 
@@ -4252,3 +4404,11 @@ class MainWindow(QMainWindow):
                 if isinstance(delegate, JobItemDelegate):
                     delegate.set_theme(resolved)
                     self.task_list.viewport().update()
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and self.config.get("minimizeToTray", False)
+            and self.tray_icon
+            and self.tray_icon.isVisible()
+        ):
+            QTimer.singleShot(0, self.hide)

@@ -79,6 +79,7 @@ class CoreContractTests(unittest.TestCase):
                         "logBackupCount": 99,
                         "rowDensity": "giant",
                         "theme": "sepia",
+                        "trayEnabled": "yes",
                     }
                 ),
                 encoding="utf-8",
@@ -92,6 +93,7 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(loaded["logMaxMiB"], 2)
                 self.assertEqual(loaded["rowDensity"], "comfortable")
                 self.assertEqual(loaded["theme"], "system")
+                self.assertFalse(loaded["trayEnabled"])
 
                 output = root / "새 저장 폴더"
                 updated = update_app_settings(
@@ -107,6 +109,9 @@ class CoreContractTests(unittest.TestCase):
                         "logBackupCount": 3,
                         "rowDensity": "compact",
                         "theme": "dark",
+                        "trayEnabled": True,
+                        "closeToTray": True,
+                        "notifyOnComplete": False,
                     }
                 )
                 self.assertTrue(output.is_dir())
@@ -114,6 +119,9 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(updated["logBackupCount"], 3)
                 self.assertEqual(updated["rowDensity"], "compact")
                 self.assertEqual(updated["theme"], "dark")
+                self.assertTrue(updated["trayEnabled"])
+                self.assertTrue(updated["closeToTray"])
+                self.assertFalse(updated["notifyOnComplete"])
                 self.assertFalse((root / "config.json.tmp").exists())
                 persisted = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(settings_snapshot(persisted), updated)

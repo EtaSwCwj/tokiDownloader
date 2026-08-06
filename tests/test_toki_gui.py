@@ -104,6 +104,38 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_job_result_notifications_follow_settings(self) -> None:
+        messages = []
+        harness = type("NotificationHarness", (), {})()
+        harness.config = {"notifyOnComplete": True, "notifyOnError": True}
+        harness.show_tray_notification = lambda message: messages.append(message) or True
+        completed = DownloadJob(
+            job_id="done",
+            url="https://newtoki1.org/manhwa/9901",
+            output_dir=r"C:\Manga",
+            title="완료 작품",
+            state="완료",
+        )
+        failed = DownloadJob(
+            job_id="failed",
+            url="https://newtoki1.org/manhwa/9902",
+            output_dir=r"C:\Manga",
+            title="실패 작품",
+            state="오류",
+            error="네트워크 오류",
+        )
+
+        MainWindow._notify_job_result(harness, completed)
+        MainWindow._notify_job_result(harness, failed)
+
+        self.assertEqual(
+            messages,
+            ["다운로드 완료: 완료 작품", "실패 작품: 네트워크 오류"],
+        )
+        harness.config["notifyOnError"] = False
+        MainWindow._notify_job_result(harness, failed)
+        self.assertEqual(len(messages), 2)
+
     def test_windows_background_process_disables_console_window(self) -> None:
         options = hidden_process_options()
         if os.name == "nt":
@@ -149,6 +181,7 @@ class WorkSchedulerTests(unittest.TestCase):
         harness._start_next_job = lambda: None
         harness._resolve_theme = lambda mode: mode
         harness._apply_style = lambda: None
+        harness._configure_tray = lambda: None
         harness.resolved_theme = "light"
         harness.theme_mode = "system"
         harness.active_settings_dialog = None
@@ -293,6 +326,7 @@ class WorkSchedulerTests(unittest.TestCase):
         harness._process_finished = lambda _job_id, _code, _status: None
         harness._refresh_pending_positions = lambda: None
         harness._update_active_summary = lambda: None
+        harness._notify_job_result = lambda _job: None
         _ProcessStub.instances = []
 
         with (
@@ -387,6 +421,7 @@ class WorkSchedulerTests(unittest.TestCase):
         harness._handle_process_line = lambda *_args: None
         harness._update_job_card = lambda _job: None
         harness._update_active_summary = lambda: None
+        harness._notify_job_result = lambda _job: None
         harness._start_next_job = lambda: None
         harness.log = lambda *_args, **_kwargs: None
         timers = []

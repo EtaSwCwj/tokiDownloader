@@ -130,6 +130,11 @@ class CliParserTests(unittest.TestCase):
             "logBackupCount": 2,
             "rowDensity": "comfortable",
             "theme": "system",
+            "trayEnabled": False,
+            "closeToTray": False,
+            "minimizeToTray": False,
+            "notifyOnComplete": True,
+            "notifyOnError": True,
         }
         query = build_parser().parse_args(["settings", "--json"])
         with (
@@ -181,6 +186,22 @@ class CliParserTests(unittest.TestCase):
         ):
             self.assertEqual(run_cli(show), 0)
         request.assert_called_once_with({"action": "show_settings", "tab": "network"})
+
+        tray = build_parser().parse_args(
+            ["tray", "notify", "--message", "완료 테스트"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"enabled": True, "visible": True},
+            ) as tray_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(tray), 0)
+        tray_request.assert_called_once_with(
+            {"action": "tray", "command": "notify", "message": "완료 테스트"}
+        )
 
     def test_retry_policy_arguments_and_gui_request(self) -> None:
         current = build_parser().parse_args(["retry-policy", "--json"])
