@@ -31,6 +31,7 @@ from toki_core import (
     normalize_scan_request,
     normalize_work_concurrency,
     read_run_log,
+    recover_interrupted_jobs,
     resolve_cover_path,
     reorder_pending_jobs,
     save_jobs,
@@ -270,6 +271,45 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.job_id, "latest")
         self.assertEqual(loaded.title, "최신 제목")
+
+    def test_restart_recovery_scans_beyond_first_history_page(self) -> None:
+        interrupted = DownloadJob(
+            job_id="interrupted",
+            url="https://newtoki1.org/manhwa/9000",
+            output_dir=r"C:\Manga",
+            state="실행 중",
+            progress=37,
+        )
+        save_jobs([interrupted])
+        save_runs([DownloadRun.from_job(interrupted)])
+        completed = [
+            DownloadJob(
+                job_id=f"completed-{index}",
+                url=f"https://newtoki1.org/manhwa/{10000 + index}",
+                output_dir=r"C:\Manga",
+                state="완료",
+                progress=100,
+            )
+            for index in range(1000)
+        ]
+        save_jobs(completed)
+        self.assertNotIn(
+            interrupted.job_id,
+            {job.job_id for job in load_jobs_page(limit=200)},
+        )
+
+        result = recover_interrupted_jobs()
+
+        self.assertEqual(result["jobIds"], [interrupted.job_id])
+        self.assertEqual(result["runIds"], [interrupted.job_id])
+        recovered_job = toki_core.load_job_by_id(interrupted.job_id)
+        recovered_run = load_run(interrupted.job_id)
+        self.assertEqual(recovered_job.state, "중지됨")
+        self.assertEqual(recovered_job.progress, 37)
+        self.assertIn("이전 GUI", recovered_job.error)
+        self.assertEqual(recovered_run.state, "중지됨")
+        self.assertTrue(recovered_run.finished_at)
+        self.assertEqual(count_jobs(state="완료"), 1000)
 
     def test_same_work_keeps_multiple_execution_runs(self) -> None:
         first = DownloadJob(

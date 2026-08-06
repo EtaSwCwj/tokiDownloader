@@ -700,6 +700,83 @@ def load_jobs_page(
     return jobs
 
 
+def recover_interrupted_jobs(
+    reason: str = "이전 GUI가 종료되어 작업이 중단되었습니다.",
+) -> dict[str, Any]:
+    interrupted_states = ("대기", "실행 중", "일시정지")
+    placeholders = ", ".join("?" for _ in interrupted_states)
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    recovered_jobs: list[DownloadJob] = []
+    recovered_run_ids: list[str] = []
+    job_field_names = set(DownloadJob.__dataclass_fields__)
+    connection = _connect_job_db()
+    try:
+        job_rows = connection.execute(
+            f"SELECT job_id, payload FROM jobs WHERE state IN ({placeholders})",
+            interrupted_states,
+        ).fetchall()
+        run_rows = connection.execute(
+            f"SELECT run_id, payload FROM runs WHERE state IN ({placeholders})",
+            interrupted_states,
+        ).fetchall()
+        with connection:
+            for job_id, payload in job_rows:
+                try:
+                    data = json.loads(payload)
+                    job = DownloadJob(
+                        **{
+                            key: value
+                            for key, value in data.items()
+                            if key in job_field_names
+                        }
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                job.state = "중지됨"
+                job.error = job.error or reason
+                connection.execute(
+                    "UPDATE jobs SET state = ?, updated_at = ?, payload = ? WHERE job_id = ?",
+                    (
+                        job.state,
+                        now,
+                        json.dumps(job.to_dict(), ensure_ascii=False),
+                        job_id,
+                    ),
+                )
+                recovered_jobs.append(job)
+
+            for run_id, payload in run_rows:
+                run = _decode_run(payload)
+                if run is None:
+                    continue
+                run.state = "중지됨"
+                run.error = run.error or reason
+                run.finished_at = run.finished_at or now
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = ?, finished_at = ?, updated_at = ?, payload = ?
+                    WHERE run_id = ?
+                    """,
+                    (
+                        run.state,
+                        run.finished_at,
+                        now,
+                        json.dumps(run.to_dict(), ensure_ascii=False),
+                        run_id,
+                    ),
+                )
+                recovered_run_ids.append(run_id)
+    finally:
+        connection.close()
+    return {
+        "jobCount": len(recovered_jobs),
+        "runCount": len(recovered_run_ids),
+        "jobIds": [job.job_id for job in recovered_jobs],
+        "runIds": recovered_run_ids,
+    }
+
+
 def load_recent_jobs(limit: int = 500) -> list[DownloadJob]:
     return load_jobs_page(limit=limit, offset=0)
 

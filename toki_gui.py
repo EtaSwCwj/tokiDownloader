@@ -81,6 +81,7 @@ from toki_core import (
     open_in_explorer,
     read_log_tail,
     read_run_log,
+    recover_interrupted_jobs,
     rescan_job_parameters,
     resolve_cover_path,
     reorder_pending_jobs,
@@ -594,6 +595,12 @@ class MainWindow(QMainWindow):
         self.self_test_stdout = ""
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
+        self.startup_recovery: dict[str, Any] = {
+            "jobCount": 0,
+            "runCount": 0,
+            "jobIds": [],
+            "runIds": [],
+        }
         self.force_close = False
         self.control_sockets: set[Any] = set()
         self.active_context_menu: QMenu | None = None
@@ -1105,7 +1112,7 @@ class MainWindow(QMainWindow):
         self.task_list.scrollTo(index)
 
     def _restore_job_history(self) -> None:
-        recovered: list[DownloadJob] = []
+        self.startup_recovery = recover_interrupted_jobs()
         metadata_updates: list[DownloadJob] = []
         self.history_all_total = count_jobs()
         self.history_total = count_jobs(self.history_query, self.history_state)
@@ -1119,26 +1126,19 @@ class MainWindow(QMainWindow):
         for job in page:
             if hydrate_job_metadata(job):
                 metadata_updates.append(job)
-            if job.state in {"대기", "실행 중", "일시정지"}:
-                job.state = "중지됨"
-                job.error = job.error or "이전 GUI가 종료되어 작업이 중단되었습니다."
-                recovered.append(job)
             self.jobs[job.job_id] = job
             self.jobs_by_work[job.work_key] = job
         self.task_model.append_jobs(page)
         self.history_loaded = len(page)
-        if recovered:
-            recovered_runs: list[DownloadRun] = []
-            for job in recovered:
-                run = load_run(job.job_id) or DownloadRun.from_job(job)
-                run.state = job.state
-                run.error = job.error
-                run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
-                recovered_runs.append(run)
-            save_runs(recovered_runs)
-        changed_jobs = {job.job_id: job for job in [*metadata_updates, *recovered]}
+        changed_jobs = {job.job_id: job for job in metadata_updates}
         if changed_jobs:
             save_jobs(list(changed_jobs.values()))
+        if self.startup_recovery["jobCount"] or self.startup_recovery["runCount"]:
+            self.log(
+                "이전 종료 작업 복구: "
+                f"작품 {self.startup_recovery['jobCount']}개, "
+                f"실행 이력 {self.startup_recovery['runCount']}개를 중지됨으로 변경"
+            )
         if self.task_model.rowCount():
             self.task_list.setCurrentIndex(self.task_model.index(0, 0))
             self.task_list.scrollToTop()
@@ -2336,6 +2336,7 @@ class MainWindow(QMainWindow):
             "outputDir": self.output_edit.text(),
             "imageConcurrency": self.image_concurrency_spin.value(),
             "workConcurrency": self.work_concurrency_spin.value(),
+            "startupRecovery": self.startup_recovery,
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
             "screenshotPath": str(LOG_PATH.parent / "gui-screenshot.png"),

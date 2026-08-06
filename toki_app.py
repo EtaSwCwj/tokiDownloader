@@ -189,6 +189,9 @@ def run_gui_self_test_probe() -> dict[str, Any]:
         if int(status.get("activeCount") or 0) != len(active_jobs):
             raise ControlError("GUI 실행 작품 개수와 목록이 일치하지 않습니다.")
         normalize_work_concurrency(status.get("workConcurrency"))
+        startup_recovery = status.get("startupRecovery")
+        if not isinstance(startup_recovery, dict):
+            raise ControlError("GUI 상태에 재시작 복구 결과가 없습니다.")
         queue_status = control_request({"action": "queue_list"})
         screenshot = control_request({"action": "screenshot", "path": str(screenshot_path)})
         if not screenshot_path.is_file() or screenshot_path.stat().st_size <= 0:
@@ -249,6 +252,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             "loadedJobCount": status.get("loadedJobCount", 0),
             "activeJobCount": len(active_jobs),
             "workConcurrency": status.get("workConcurrency"),
+            "startupRecovery": startup_recovery,
             "pendingQueueCount": queue_status.get("total", 0),
             "screenshotPath": screenshot.get("path"),
             "workDetails": detail_probe,
@@ -632,6 +636,11 @@ def run_cli(args: argparse.Namespace) -> int:
                     )
             else:
                 print("현재 작업: 없음")
+            recovery = result.get("startupRecovery") or {}
+            print(
+                f"시작 복구: 작품 {recovery.get('jobCount', 0)} | "
+                f"실행 이력 {recovery.get('runCount', 0)}"
+            )
             print(f"저장 폴더: {result.get('outputDir')}")
             print(f"로그: {result.get('logPath')}")
         return 0
