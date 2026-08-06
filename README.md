@@ -156,6 +156,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd performance event-policy --event image_saved --json
 .\toki-cli.cmd thumbnail-cache status --json
 .\toki-cli.cmd thumbnail-cache cleanup --execute --json
+.\toki-cli.cmd retention status --json
+.\toki-cli.cmd retention cleanup-runs --max-per-work 500 --max-age-days 365 --json
+.\toki-cli.cmd retention cleanup-runs --max-per-work 500 --max-age-days 365 --execute --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -197,6 +200,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `thumbnail-cache status`는 정리 예정량만 조회하고 `cleanup --execute`가 실제 캐시만
 제거합니다. 다운로드 폴더의 원본 표지와 작품 파일은 건드리지 않습니다. 실행 중 GUI가 있으면
 같은 도구 메뉴 동작을 호출해 메모리 캐시도 함께 비웁니다.
+
+`retention status`는 현재 설정의 로그 파일 크기·백업 수와 오래된 실행 이력 정리 예정량을
+함께 보여줍니다. 로그는 설정의 크기와 백업 개수에 따라 자동 순환합니다. 실행 이력은 기본
+작품별 500건·365일 정책을 사용하되 작품별 최신 1건과 대기·실행·일시정지·재시도 중인 기록은
+항상 보존합니다. `cleanup-runs`는 기본 미리보기이고 `--execute`를 붙여야 DB의 오래된 실행
+이력만 제거합니다. 작품 목록 레코드와 다운로드 폴더·이미지 파일은 삭제하지 않습니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

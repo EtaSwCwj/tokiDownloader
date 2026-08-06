@@ -11,6 +11,43 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_retention_cli_reports_status_and_executes_via_gui(self) -> None:
+        status_args = build_parser().parse_args(["retention", "status", "--json"])
+        with (
+            patch(
+                "toki_app.log_retention_status",
+                return_value={"ok": True, "fileCount": 2, "totalBytes": 2048},
+            ),
+            patch(
+                "toki_app.cleanup_run_history",
+                return_value={"ok": True, "candidateRuns": 4},
+            ),
+            redirect_stdout(StringIO()) as output,
+        ):
+            status_exit = run_cli(status_args)
+        self.assertEqual(status_exit, 0)
+        self.assertEqual(json.loads(output.getvalue())["runs"]["candidateRuns"], 4)
+
+        execute_args = build_parser().parse_args(
+            [
+                "retention", "cleanup-runs", "--max-per-work", "20",
+                "--max-age-days", "90", "--execute", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={"ok": True, "candidateRuns": 4, "removedRuns": 4},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            execute_exit = run_cli(execute_args)
+        self.assertEqual(execute_exit, 0)
+        request.assert_called_once_with(
+            {"action": "cleanup_run_history", "maxPerWork": 20, "maxAgeDays": 90}
+        )
+
     def test_thumbnail_cache_cli_previews_and_executes_through_running_gui(self) -> None:
         report = {
             "ok": True,

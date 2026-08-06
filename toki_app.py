@@ -25,6 +25,7 @@ from toki_core import (
     build_downloader_args,
     clear_log_file,
     cleanup_thumbnail_cache,
+    cleanup_run_history,
     find_node,
     hydrate_job_metadata,
     job_database_diagnostics,
@@ -39,6 +40,7 @@ from toki_core import (
     load_config,
     load_job_by_id,
     load_jobs_page,
+    log_retention_status,
     list_job_episode_images,
     load_run,
     load_runs_page,
@@ -488,6 +490,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute", action="store_true", help="실제로 앱 캐시 파일 제거"
     )
     thumbnail_cache_cleanup.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    retention = subparsers.add_parser("retention", help="로그와 오래된 실행 이력 보존 정책")
+    retention_commands = retention.add_subparsers(dest="retention_command", required=True)
+    retention_status = retention_commands.add_parser(
+        "status", help="로그 순환과 실행 이력 정리 예정량 조회"
+    )
+    retention_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    retention_cleanup = retention_commands.add_parser(
+        "cleanup-runs", help="최신·진행 중 기록을 제외한 오래된 실행 이력 정리"
+    )
+    retention_cleanup.add_argument(
+        "--max-per-work", type=int, default=500, help="작품별 최대 보존 실행 수"
+    )
+    retention_cleanup.add_argument(
+        "--max-age-days", type=int, default=365, help="최대 보존 일수"
+    )
+    retention_cleanup.add_argument(
+        "--execute", action="store_true", help="실제로 오래된 실행 이력 제거"
+    )
+    retention_cleanup.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     list_state = subparsers.add_parser(
         "list-state", help="작품 목록의 빈 화면·로딩·오류 상태 조회 및 GUI 점검"
@@ -1102,6 +1124,40 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"{int(result['existingBytes']) / (1024 * 1024):.1f} MiB | "
                 f"{action} {int(result['removeFiles']):,}개"
             )
+        return 0 if result.get("ok") else 2
+    if command == "retention":
+        if args.retention_command == "status":
+            result = {
+                "ok": True,
+                "logs": log_retention_status(),
+                "runs": cleanup_run_history(execute=False),
+            }
+        else:
+            if args.execute and gui_is_running():
+                result = control_request(
+                    {
+                        "action": "cleanup_run_history",
+                        "maxPerWork": args.max_per_work,
+                        "maxAgeDays": args.max_age_days,
+                    }
+                )
+            else:
+                result = cleanup_run_history(
+                    max_per_work=args.max_per_work,
+                    max_age_days=args.max_age_days,
+                    execute=args.execute,
+                )
+        if args.json:
+            print_json(result)
+        elif args.retention_command == "status":
+            print(
+                f"로그 {int(result['logs']['fileCount'])}개, "
+                f"{int(result['logs']['totalBytes']) / (1024 * 1024):.1f} MiB | "
+                f"실행 이력 정리 예정 {int(result['runs']['candidateRuns']):,}건"
+            )
+        else:
+            label = "제거" if args.execute else "제거 예정"
+            print(f"실행 이력 {label}: {int(result['candidateRuns']):,}건")
         return 0 if result.get("ok") else 2
     if command == "status":
         result = control_request({"action": "status"})

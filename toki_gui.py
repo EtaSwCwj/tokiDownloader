@@ -99,6 +99,7 @@ from toki_core import (
     build_work_key,
     build_downloader_args,
     clear_log_file,
+    cleanup_run_history,
     cleanup_thumbnail_cache,
     count_jobs,
     count_runs,
@@ -115,6 +116,7 @@ from toki_core import (
     load_job_by_id,
     load_job_by_work_key,
     load_jobs_page,
+    log_retention_status,
     load_run,
     load_runs_page,
     mark_job_cancelled,
@@ -1610,6 +1612,10 @@ class MainWindow(QMainWindow):
             self.thumbnail_cache_report = cleanup_thumbnail_cache(execute=True)
         except OSError as error:
             self.thumbnail_cache_report = {"ok": False, "error": str(error)}
+        try:
+            self.run_retention_report = cleanup_run_history(execute=False)
+        except (OSError, sqlite3.Error) as error:
+            self.run_retention_report = {"ok": False, "error": str(error)}
         self._configure_tray()
         self._start_control_server()
         self._restore_job_history()
@@ -1721,6 +1727,9 @@ class MainWindow(QMainWindow):
         self.cleanup_records_action = QAction("완료·오류 기록 정리...", self)
         self.cleanup_records_action.triggered.connect(self.confirm_cleanup_records)
 
+        self.run_retention_action = QAction("오래된 실행 이력 정리...", self)
+        self.run_retention_action.triggered.connect(self.confirm_run_history_cleanup)
+
         self.settings_action = QAction("설정...", self)
         self.settings_action.setShortcuts(
             [QKeySequence(key) for key in keyboard_shortcut_keys("settings.open")]
@@ -1791,6 +1800,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.refresh_list_action)
         tools_menu.addAction(self.thumbnail_cache_action)
         tools_menu.addAction(self.cleanup_records_action)
+        tools_menu.addAction(self.run_retention_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.settings_action)
         tools_menu.addSeparator()
@@ -2755,6 +2765,12 @@ class MainWindow(QMainWindow):
             len(delegate.cover_cache) if isinstance(delegate, JobItemDelegate) else 0
         )
         return {**current, "memoryEntries": memory_entries}
+
+    def retention_snapshot(self) -> dict[str, Any]:
+        return {
+            "logs": log_retention_status(),
+            "runs": self.run_retention_report,
+        }
 
     def _start_next_job(self) -> None:
         concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
@@ -4401,6 +4417,40 @@ class MainWindow(QMainWindow):
             "filesDeleted": False,
         }
 
+    def confirm_run_history_cleanup(self) -> None:
+        preview = cleanup_run_history(execute=False)
+        self.run_retention_report = preview
+        candidate_count = int(preview.get("candidateRuns") or 0)
+        if candidate_count <= 0:
+            QMessageBox.information(
+                self, "실행 이력 정리", "현재 보존 정책을 넘는 실행 이력이 없습니다."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "오래된 실행 이력 정리",
+            f"오래된 실행 이력 {candidate_count:,}건을 제거할까요?\n\n"
+            "작품별 최신 기록과 진행 중 기록은 보존하며 다운로드 파일은 삭제하지 않습니다.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.cleanup_run_history_now()
+
+    def cleanup_run_history_now(
+        self, max_per_work: int = 500, max_age_days: int = 365
+    ) -> dict[str, Any]:
+        report = cleanup_run_history(
+            max_per_work=max_per_work,
+            max_age_days=max_age_days,
+            execute=True,
+        )
+        self.run_retention_report = report
+        message = f"오래된 실행 이력 정리: {int(report['removedRuns']):,}건"
+        self.log(message)
+        self.statusBar().showMessage(message, 4000)
+        if self.active_detail_dialog:
+            self.active_detail_dialog.refresh()
+        return report
+
     def clear_logs(self) -> None:
         clear_log_file()
         self.log_edit.clear()
@@ -4706,6 +4756,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd performance benchmark [--sizes N...] [--page-size N --json|--via-gui]\n"
             "toki-cli.cmd performance event-policy --event EVENT --json\n"
             "toki-cli.cmd thumbnail-cache status|cleanup [--execute --json]\n"
+            "toki-cli.cmd retention status|cleanup-runs [--execute --json]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
@@ -4815,6 +4866,7 @@ class MainWindow(QMainWindow):
             "performanceBenchmark": self.performance_benchmark_snapshot(),
             "eventUpdates": self.event_update_snapshot(),
             "thumbnailCache": self.thumbnail_cache_snapshot(),
+            "retention": self.retention_snapshot(),
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
@@ -5164,6 +5216,11 @@ class MainWindow(QMainWindow):
             return self.thumbnail_cache_snapshot()
         if action == "cleanup_thumbnail_cache":
             return self.cleanup_thumbnail_cache_now()
+        if action == "cleanup_run_history":
+            return self.cleanup_run_history_now(
+                int(request.get("maxPerWork") or 500),
+                int(request.get("maxAgeDays") or 365),
+            )
         if action == "list_view_state":
             return dict(self.list_view_state)
         if action == "preview_list_view_state":

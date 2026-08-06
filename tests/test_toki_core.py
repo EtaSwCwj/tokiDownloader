@@ -7,6 +7,7 @@ import os
 import sqlite3
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from toki_core import (
     build_job_list_view_state,
     build_work_key,
     cleanup_thumbnail_cache,
+    cleanup_run_history,
     count_jobs,
     count_runs,
     convert_job_images,
@@ -551,6 +553,47 @@ class CoreContractTests(unittest.TestCase):
 
 
 class JobRepositoryTests(unittest.TestCase):
+    def test_run_retention_preserves_latest_and_active_records(self) -> None:
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        runs = [
+            DownloadRun(
+                run_id="latest", work_key="work:one", state="완료", created_at=now
+            ),
+            DownloadRun(
+                run_id="old-one", work_key="work:one", state="완료",
+                created_at="2020-01-01T00:00:00+09:00",
+            ),
+            DownloadRun(
+                run_id="old-two", work_key="work:one", state="오류",
+                created_at="2019-01-01T00:00:00+09:00",
+            ),
+            DownloadRun(
+                run_id="active-old", work_key="work:one", state="실행 중",
+                created_at="2018-01-01T00:00:00+09:00",
+            ),
+            DownloadRun(
+                run_id="only-old", work_key="work:two", state="완료",
+                created_at="2017-01-01T00:00:00+09:00",
+            ),
+        ]
+        save_runs(runs)
+
+        preview = cleanup_run_history(
+            max_per_work=2, max_age_days=30, execute=False
+        )
+        self.assertEqual(preview["candidateRuns"], 2)
+        self.assertEqual(count_runs(), 5)
+
+        executed = cleanup_run_history(
+            max_per_work=2, max_age_days=30, execute=True
+        )
+        self.assertTrue(executed["ok"])
+        self.assertEqual(executed["removedRuns"], 2)
+        self.assertEqual(count_runs(), 3)
+        self.assertIsNotNone(load_run("latest"))
+        self.assertIsNotNone(load_run("active-old"))
+        self.assertIsNotNone(load_run("only-old"))
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp_dir.name) / "jobs.db"

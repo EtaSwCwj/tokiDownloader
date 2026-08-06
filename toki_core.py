@@ -10,7 +10,7 @@ import tempfile
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -1301,6 +1301,140 @@ def load_runs_page(
     finally:
         connection.close()
     return [run for (payload,) in rows if (run := _decode_run(payload)) is not None]
+
+
+def log_retention_status(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    policy = normalize_config(config) if config is not None else load_config()
+    max_bytes = int(policy["logMaxMiB"]) * 1024 * 1024
+    backup_count = int(policy["logBackupCount"])
+    paths = [LOG_PATH]
+    if LOG_PATH.parent.exists():
+        paths.extend(
+            sorted(
+                path
+                for path in LOG_PATH.parent.glob(f"{LOG_PATH.name}.*")
+                if path.is_file()
+            )
+        )
+    files = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append(
+            {
+                "path": str(path.resolve()),
+                "bytes": int(stat.st_size),
+                "modifiedAt": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(
+                    timespec="seconds"
+                ),
+            }
+        )
+    return {
+        "ok": True,
+        "path": str(LOG_PATH.resolve()),
+        "maxBytes": max_bytes,
+        "backupCount": backup_count,
+        "fileCount": len(files),
+        "totalBytes": sum(item["bytes"] for item in files),
+        "files": files,
+    }
+
+
+def cleanup_run_history(
+    *,
+    max_per_work: int = 500,
+    max_age_days: int = 365,
+    execute: bool = False,
+    database_path: Path | None = None,
+) -> dict[str, Any]:
+    """Preview or delete old terminal runs while preserving latest and active runs."""
+    safe_max_per_work = max(1, min(10_000, int(max_per_work)))
+    safe_max_age_days = max(1, min(10_000, int(max_age_days)))
+    cutoff = (
+        datetime.now().astimezone() - timedelta(days=safe_max_age_days)
+    ).isoformat(timespec="seconds")
+    active_states = tuple(sorted(ACTIVE_JOB_STATES))
+    placeholders = ", ".join("?" for _state in active_states)
+    ranked_sql = f"""
+        WITH ranked AS (
+            SELECT run_id, work_key, state, created_at, LENGTH(payload) AS payload_bytes,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY work_key
+                       ORDER BY created_at DESC, run_id DESC
+                   ) AS work_position
+            FROM runs
+        )
+    """
+    candidate_where = f"""
+        work_position > 1
+        AND state NOT IN ({placeholders})
+        AND (work_position > ? OR created_at < ?)
+    """
+    parameters: list[Any] = [*active_states, safe_max_per_work, cutoff]
+    connection = _connect_job_db(database_path)
+    try:
+        total_before = int(connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+        candidate_row = connection.execute(
+            ranked_sql
+            + f"""
+                SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0),
+                       COUNT(DISTINCT work_key)
+                FROM ranked WHERE {candidate_where}
+            """,
+            parameters,
+        ).fetchone()
+        sample_ids = [
+            str(row[0])
+            for row in connection.execute(
+                ranked_sql
+                + f"""
+                    SELECT run_id FROM ranked WHERE {candidate_where}
+                    ORDER BY created_at ASC, run_id ASC LIMIT 100
+                """,
+                parameters,
+            ).fetchall()
+        ]
+        candidate_count = int(candidate_row[0] or 0)
+        candidate_bytes = int(candidate_row[1] or 0)
+        work_count = int(candidate_row[2] or 0)
+        removed_count = 0
+        if execute and candidate_count:
+            with connection:
+                connection.execute(
+                    ranked_sql
+                    + f"""
+                        DELETE FROM runs WHERE run_id IN (
+                            SELECT run_id FROM ranked WHERE {candidate_where}
+                        )
+                    """,
+                    parameters,
+                )
+                removed_count = int(connection.execute("SELECT changes()").fetchone()[0])
+        total_after = int(connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+    finally:
+        connection.close()
+    return {
+        "ok": not execute or removed_count == candidate_count,
+        "executed": bool(execute),
+        "totalBefore": total_before,
+        "totalAfter": total_after,
+        "candidateRuns": candidate_count,
+        "candidateBytes": candidate_bytes,
+        "affectedWorks": work_count,
+        "removedRuns": removed_count,
+        "sampleRunIds": sample_ids,
+        "cutoff": cutoff,
+        "policy": {
+            "maxPerWork": safe_max_per_work,
+            "maxAgeDays": safe_max_age_days,
+            "preserveLatestPerWork": True,
+            "preserveActive": True,
+        },
+    }
 
 
 def _decode_run(payload: str) -> DownloadRun | None:
