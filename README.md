@@ -213,6 +213,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 대기 포함 I/O 작업은 스레드 수의 4배로 제한됩니다. 이미지 변환은 CPU 수와 가용 메모리에
 따라 1~4개의 숨김 프로세스로 제한되어 GUI와 다운로드 스케줄러를 막지 않습니다. 다운로드
 대기열은 최대 1,000개이며 상한 도달 시 새 작업을 명확히 거부합니다.
+GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 건수와 SQLite 검색·정렬 및
+`list --offset` 조회는 전체 기록을 계속 대상으로 합니다. 프로세스별 stdout/stderr 버퍼는
+각 2MiB로 제한되며 생략된 출력량은 `performance resources --json`의 `memory` 진단에
+누적됩니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

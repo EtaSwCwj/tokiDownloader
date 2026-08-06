@@ -93,6 +93,7 @@ from toki_core import (
     TAG_COLORS,
     DownloadJob,
     DownloadRun,
+    append_bounded_text,
     available_work_slots,
     append_log,
     build_job_list_view_state,
@@ -188,6 +189,8 @@ class HiddenProcess(QObject):
         self._process: subprocess.Popen[bytes] | None = None
         self._stdout = bytearray()
         self._stderr = bytearray()
+        self._max_output_bytes = int(resource_budget()["maxProcessOutputBytes"])
+        self._dropped_output_bytes = {"stdout": 0, "stderr": 0}
         self._lock = threading.Lock()
         self._error = ""
         self._reader_threads: list[threading.Thread] = []
@@ -219,12 +222,22 @@ class HiddenProcess(QObject):
         self.started.emit()
         stdout_thread = threading.Thread(
             target=self._read_stream,
-            args=(self._process.stdout, self._stdout, self.readyReadStandardOutput),
+            args=(
+                self._process.stdout,
+                self._stdout,
+                "stdout",
+                self.readyReadStandardOutput,
+            ),
             daemon=True,
         )
         stderr_thread = threading.Thread(
             target=self._read_stream,
-            args=(self._process.stderr, self._stderr, self.readyReadStandardError),
+            args=(
+                self._process.stderr,
+                self._stderr,
+                "stderr",
+                self.readyReadStandardError,
+            ),
             daemon=True,
         )
         self._reader_threads = [stdout_thread, stderr_thread]
@@ -232,12 +245,18 @@ class HiddenProcess(QObject):
         stderr_thread.start()
         threading.Thread(target=self._wait, daemon=True).start()
 
-    def _read_stream(self, stream: Any, target: bytearray, signal: Any) -> None:
+    def _read_stream(
+        self, stream: Any, target: bytearray, stream_name: str, signal: Any
+    ) -> None:
         if stream is None:
             return
         for chunk in iter(stream.readline, b""):
             with self._lock:
                 target.extend(chunk)
+                overflow = max(0, len(target) - self._max_output_bytes)
+                if overflow:
+                    del target[:overflow]
+                    self._dropped_output_bytes[stream_name] += overflow
             signal.emit()
         stream.close()
 
@@ -277,6 +296,10 @@ class HiddenProcess(QObject):
 
     def errorString(self) -> str:
         return self._error
+
+    def droppedOutputBytes(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._dropped_output_bytes)
 
     def kill(self) -> None:
         if self._process and self._process.poll() is None:
@@ -341,6 +364,19 @@ class JobListModel(QAbstractListModel):
         self.endInsertRows()
         for row in range(start, len(self.rows)):
             self.row_by_key[self.rows[row].work_key] = row
+
+    def trim_to_limit(self, limit: int) -> list[DownloadJob]:
+        safe_limit = max(1, int(limit))
+        if len(self.rows) <= safe_limit:
+            return []
+        first = safe_limit
+        last = len(self.rows) - 1
+        self.beginRemoveRows(QModelIndex(), first, last)
+        removed = self.rows[first:]
+        del self.rows[first:]
+        self.endRemoveRows()
+        self._rebuild_positions()
+        return removed
 
     def remove_work_key(self, work_key: str) -> bool:
         row = self.row_by_key.get(work_key)
@@ -1522,6 +1558,8 @@ class ProcessContext:
     process: QProcess | None = None
     stdout_buffer: str = ""
     stderr_buffer: str = ""
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
     cancel_requested: bool = False
     paused: bool = False
     attempt_count: int = 0
@@ -1534,6 +1572,8 @@ class ImageConversionProcessContext:
     execute: bool
     stdout_buffer: str = ""
     stderr_buffer: str = ""
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
 
@@ -1572,9 +1612,12 @@ class MainWindow(QMainWindow):
         self.image_thread_pool = self.io_thread_pool
         self.self_test_stdout = ""
         self.self_test_stderr = ""
+        self.self_test_output_dropped_bytes = 0
         self.last_self_test: dict[str, Any] | None = None
         self.performance_benchmark_stdout = ""
         self.performance_benchmark_stderr = ""
+        self.performance_output_dropped_bytes = 0
+        self.total_output_dropped_bytes = 0
         self.last_performance_benchmark: dict[str, Any] | None = None
         self.startup_recovery: dict[str, Any] = {
             "jobCount": 0,
@@ -2336,10 +2379,31 @@ class MainWindow(QMainWindow):
             self.task_model.remove_work_key(job.work_key)
             return
         self.task_model.upsert_job(job)
+        self._enforce_loaded_job_limit()
         index = self.task_model.index(0, 0)
         self.task_list.setCurrentIndex(index)
         self.task_list.scrollTo(index)
         self._update_list_view_state()
+
+    def _enforce_loaded_job_limit(self) -> list[str]:
+        limit = int(self.resource_limits["maxLoadedJobs"])
+        removed = self.task_model.trim_to_limit(limit)
+        if not removed:
+            return []
+        protected_ids = {
+            *(job.job_id for job in self.pending_jobs),
+            *self.active_contexts,
+            *self.dirty_job_ids,
+        }
+        for job in removed:
+            if job.job_id in protected_ids:
+                continue
+            if self.jobs.get(job.job_id) is job:
+                self.jobs.pop(job.job_id, None)
+            if self.jobs_by_work.get(job.work_key) is job:
+                self.jobs_by_work.pop(job.work_key, None)
+        self.history_loaded = self.task_model.rowCount()
+        return [job.job_id for job in removed]
 
     def _set_list_view_state(self, view_state: dict[str, Any]) -> dict[str, Any]:
         self.list_view_state = dict(view_state)
@@ -2693,23 +2757,34 @@ class MainWindow(QMainWindow):
         self._load_more_history()
 
     def _load_more_history(self) -> None:
-        if self.history_loading or self.history_loaded >= self.history_total:
+        loaded_limit = int(self.resource_limits["maxLoadedJobs"])
+        remaining = loaded_limit - self.task_model.rowCount()
+        if (
+            self.history_loading
+            or self.history_loaded >= self.history_total
+            or remaining <= 0
+        ):
             return
         self.history_loading = True
         try:
             page = load_jobs_page(
-                self.history_page_size,
+                min(self.history_page_size, remaining),
                 self.history_loaded,
                 self.history_query,
                 self.history_state,
                 self.history_sort,
             )
             self.history_loaded += len(page)
-            unseen = [job for job in page if job.work_key not in self.jobs_by_work]
-            for job in unseen:
-                self.jobs[job.job_id] = job
-                self.jobs_by_work[job.work_key] = job
-            self.task_model.append_jobs(unseen)
+            display_jobs: list[DownloadJob] = []
+            for stored_job in page:
+                job = self.jobs_by_work.get(stored_job.work_key) or stored_job
+                if stored_job.work_key not in self.jobs_by_work:
+                    self.jobs[job.job_id] = job
+                    self.jobs_by_work[job.work_key] = job
+                if not self.task_model.contains_work_key(job.work_key):
+                    display_jobs.append(job)
+            self.task_model.append_jobs(display_jobs)
+            self._enforce_loaded_job_limit()
         except (OSError, sqlite3.Error, ValueError) as error:
             self._update_list_view_state(error=str(error))
             self.log(f"추가 작업 목록 로딩 실패: {error}", "ERROR")
@@ -2826,6 +2901,20 @@ class MainWindow(QMainWindow):
                 "pending": len(self.pending_jobs),
                 "pendingLimit": int(self.resource_limits["maxPendingDownloads"]),
             },
+            "memory": {
+                "loadedJobs": self.task_model.rowCount(),
+                "loadedJobLimit": int(self.resource_limits["maxLoadedJobs"]),
+                "catalogTotal": self.history_total,
+                "catalogCapped": (
+                    self.task_model.rowCount()
+                    >= int(self.resource_limits["maxLoadedJobs"])
+                    and self.history_total > self.task_model.rowCount()
+                ),
+                "processOutputLimitBytes": int(
+                    self.resource_limits["maxProcessOutputBytes"]
+                ),
+                "droppedProcessOutputBytes": self.total_output_dropped_bytes,
+            },
         }
 
     def _start_next_job(self) -> None:
@@ -2924,7 +3013,16 @@ class MainWindow(QMainWindow):
         while "\n" in buffer_value:
             line, buffer_value = buffer_value.split("\n", 1)
             self._handle_process_line(job_id, line.rstrip("\r"), is_stderr)
+        buffer_value, dropped = append_bounded_text(
+            "", buffer_value, int(self.resource_limits["maxProcessOutputBytes"])
+        )
         setattr(context, buffer_name, buffer_value)
+        if dropped:
+            dropped_name = (
+                "stderr_dropped_bytes" if is_stderr else "stdout_dropped_bytes"
+            )
+            setattr(context, dropped_name, getattr(context, dropped_name) + dropped)
+            self.total_output_dropped_bytes += dropped
 
     def _read_stdout(self, job_id: str) -> None:
         context = self.active_contexts.get(job_id)
@@ -3034,6 +3132,18 @@ class MainWindow(QMainWindow):
         context = self.active_contexts.get(job_id)
         if not context:
             return
+        if isinstance(context.process, HiddenProcess):
+            hidden_drops = context.process.droppedOutputBytes()
+            context.stdout_dropped_bytes += int(hidden_drops.get("stdout") or 0)
+            context.stderr_dropped_bytes += int(hidden_drops.get("stderr") or 0)
+            self.total_output_dropped_bytes += sum(hidden_drops.values())
+        dropped_output = context.stdout_dropped_bytes + context.stderr_dropped_bytes
+        if dropped_output:
+            self.log(
+                f"프로세스 출력 메모리 상한으로 {dropped_output:,}바이트를 생략했습니다.",
+                "WARNING",
+                job_id,
+            )
         if context.stdout_buffer.strip():
             self._handle_process_line(job_id, context.stdout_buffer, False)
         if context.stderr_buffer.strip():
@@ -3979,20 +4089,35 @@ class MainWindow(QMainWindow):
         context = self.image_conversion_processes.get(job_id)
         if context is None:
             return
-        context.stdout_buffer += bytes(context.process.readAllStandardOutput()).decode(
+        addition = bytes(context.process.readAllStandardOutput()).decode(
             "utf-8", errors="replace"
         )
+        context.stdout_buffer += addition
         while "\n" in context.stdout_buffer:
             line, context.stdout_buffer = context.stdout_buffer.split("\n", 1)
             self._handle_image_conversion_output_line(job_id, line)
+        context.stdout_buffer, dropped = append_bounded_text(
+            "",
+            context.stdout_buffer,
+            int(self.resource_limits["maxProcessOutputBytes"]),
+        )
+        context.stdout_dropped_bytes += dropped
+        self.total_output_dropped_bytes += dropped
 
     def _read_image_conversion_stderr(self, job_id: str) -> None:
         context = self.image_conversion_processes.get(job_id)
         if context is None:
             return
-        context.stderr_buffer += bytes(context.process.readAllStandardError()).decode(
+        addition = bytes(context.process.readAllStandardError()).decode(
             "utf-8", errors="replace"
         )
+        context.stderr_buffer, dropped = append_bounded_text(
+            context.stderr_buffer,
+            addition,
+            int(self.resource_limits["maxProcessOutputBytes"]),
+        )
+        context.stderr_dropped_bytes += dropped
+        self.total_output_dropped_bytes += dropped
 
     def _handle_image_conversion_output_line(self, job_id: str, line: str) -> None:
         context = self.image_conversion_processes.get(job_id)
@@ -4001,7 +4126,13 @@ class MainWindow(QMainWindow):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            context.stderr_buffer += f"\n잘못된 진행 출력: {line}"
+            context.stderr_buffer, dropped = append_bounded_text(
+                context.stderr_buffer,
+                f"\n잘못된 진행 출력: {line}",
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            context.stderr_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
             return
         if event.get("event") == "result":
             result = event.get("result")
@@ -4051,16 +4182,32 @@ class MainWindow(QMainWindow):
                     job_id, context.stdout_buffer.strip()
                 )
         else:
-            context.stdout_buffer += bytes(process.readAllStandardOutput()).decode(
-                "utf-8", errors="replace"
+            context.stdout_buffer, dropped_stdout = append_bounded_text(
+                context.stdout_buffer,
+                bytes(process.readAllStandardOutput()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
             )
-            context.stderr_buffer += bytes(process.readAllStandardError()).decode(
-                "utf-8", errors="replace"
+            context.stderr_buffer, dropped_stderr = append_bounded_text(
+                context.stderr_buffer,
+                bytes(process.readAllStandardError()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
             )
+            context.stdout_dropped_bytes += dropped_stdout
+            context.stderr_dropped_bytes += dropped_stderr
+            self.total_output_dropped_bytes += dropped_stdout + dropped_stderr
             try:
                 context.result = json.loads(context.stdout_buffer.strip())
             except json.JSONDecodeError:
                 pass
+        if isinstance(process, HiddenProcess):
+            hidden_drops = process.droppedOutputBytes()
+            context.stdout_dropped_bytes += int(hidden_drops.get("stdout") or 0)
+            context.stderr_dropped_bytes += int(hidden_drops.get("stderr") or 0)
+            self.total_output_dropped_bytes += sum(hidden_drops.values())
         self.image_conversion_processes.pop(job_id, None)
         process.deleteLater()
         if self.active_image_conversion_progress_dialog:
@@ -4069,6 +4216,13 @@ class MainWindow(QMainWindow):
             self.log("이미지 변환이 사용자 요청으로 중지되었습니다.", "WARNING", job_id)
             self.statusBar().showMessage("이미지 변환을 중지했습니다.", 4000)
             return
+        dropped_output = context.stdout_dropped_bytes + context.stderr_dropped_bytes
+        if dropped_output:
+            self.log(
+                f"이미지 변환 출력 상한으로 {dropped_output:,}바이트를 생략했습니다.",
+                "WARNING",
+                job_id,
+            )
         result = context.result
         if result is None:
             message = (
@@ -4595,6 +4749,7 @@ class MainWindow(QMainWindow):
         self.self_test_process = process
         self.self_test_stdout = ""
         self.self_test_stderr = ""
+        self.self_test_output_dropped_bytes = 0
         self.last_self_test = None
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(sys.executable)
@@ -4612,15 +4767,27 @@ class MainWindow(QMainWindow):
 
     def _read_self_test_stdout(self) -> None:
         if self.self_test_process:
-            self.self_test_stdout += bytes(
-                self.self_test_process.readAllStandardOutput()
-            ).decode("utf-8", errors="replace")
+            self.self_test_stdout, dropped = append_bounded_text(
+                self.self_test_stdout,
+                bytes(self.self_test_process.readAllStandardOutput()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            self.self_test_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
 
     def _read_self_test_stderr(self) -> None:
         if self.self_test_process:
-            self.self_test_stderr += bytes(
-                self.self_test_process.readAllStandardError()
-            ).decode("utf-8", errors="replace")
+            self.self_test_stderr, dropped = append_bounded_text(
+                self.self_test_stderr,
+                bytes(self.self_test_process.readAllStandardError()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            self.self_test_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
 
     def _self_test_process_error(self, _error: QProcess.ProcessError) -> None:
         if not self.self_test_process:
@@ -4632,6 +4799,11 @@ class MainWindow(QMainWindow):
     def _self_test_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
         self._read_self_test_stdout()
         self._read_self_test_stderr()
+        if isinstance(self.self_test_process, HiddenProcess):
+            hidden_drops = self.self_test_process.droppedOutputBytes()
+            dropped = sum(hidden_drops.values())
+            self.self_test_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
         try:
             result = json.loads(self.self_test_stdout.strip())
             if not isinstance(result, dict):
@@ -4652,6 +4824,7 @@ class MainWindow(QMainWindow):
             "durationMs": result.get("durationMs"),
             "summary": summary,
             "reportPath": result.get("reportPath"),
+            "outputDroppedBytes": self.self_test_output_dropped_bytes,
         }
         message = f"자체 점검 {'통과' if ok else '실패'}: {passed}/{total}"
         self.log(message, "INFO" if ok else "ERROR", job_id="self-test")
@@ -4690,6 +4863,7 @@ class MainWindow(QMainWindow):
         self.performance_benchmark_process = process
         self.performance_benchmark_stdout = ""
         self.performance_benchmark_stderr = ""
+        self.performance_output_dropped_bytes = 0
         self.last_performance_benchmark = None
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(sys.executable)
@@ -4721,15 +4895,27 @@ class MainWindow(QMainWindow):
 
     def _read_performance_benchmark_stdout(self) -> None:
         if self.performance_benchmark_process:
-            self.performance_benchmark_stdout += bytes(
-                self.performance_benchmark_process.readAllStandardOutput()
-            ).decode("utf-8", errors="replace")
+            self.performance_benchmark_stdout, dropped = append_bounded_text(
+                self.performance_benchmark_stdout,
+                bytes(
+                    self.performance_benchmark_process.readAllStandardOutput()
+                ).decode("utf-8", errors="replace"),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            self.performance_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
 
     def _read_performance_benchmark_stderr(self) -> None:
         if self.performance_benchmark_process:
-            self.performance_benchmark_stderr += bytes(
-                self.performance_benchmark_process.readAllStandardError()
-            ).decode("utf-8", errors="replace")
+            self.performance_benchmark_stderr, dropped = append_bounded_text(
+                self.performance_benchmark_stderr,
+                bytes(
+                    self.performance_benchmark_process.readAllStandardError()
+                ).decode("utf-8", errors="replace"),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            self.performance_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
 
     def _performance_benchmark_process_error(
         self, _error: QProcess.ProcessError
@@ -4748,6 +4934,11 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._read_performance_benchmark_stdout()
         self._read_performance_benchmark_stderr()
+        if isinstance(self.performance_benchmark_process, HiddenProcess):
+            hidden_drops = self.performance_benchmark_process.droppedOutputBytes()
+            dropped = sum(hidden_drops.values())
+            self.performance_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
         try:
             result = json.loads(self.performance_benchmark_stdout.strip())
             if not isinstance(result, dict):
@@ -4760,6 +4951,7 @@ class MainWindow(QMainWindow):
                 "results": [],
             }
         result["ok"] = bool(result.get("ok")) and exit_code == 0
+        result["outputDroppedBytes"] = self.performance_output_dropped_bytes
         self.last_performance_benchmark = result
         message = f"목록 벤치마크 {'통과' if result['ok'] else '실패'}"
         self.log(message, "INFO" if result["ok"] else "ERROR", job_id="performance")
@@ -4945,6 +5137,12 @@ class MainWindow(QMainWindow):
                 "sort": self.history_sort,
                 "loaded": self.task_model.rowCount(),
                 "total": self.history_total,
+                "capped": (
+                    self.task_model.rowCount()
+                    >= int(self.resource_limits["maxLoadedJobs"])
+                    and self.history_total > self.task_model.rowCount()
+                ),
+                "loadedLimit": int(self.resource_limits["maxLoadedJobs"]),
             },
             "listViewState": dict(self.list_view_state),
             "keyboard": self.keyboard_focus_snapshot(),
@@ -5069,8 +5267,13 @@ class MainWindow(QMainWindow):
 
     def _update_summary(self) -> None:
         states = [job.state for job in self.task_model.rows]
+        cap_reached = (
+            len(states) >= int(self.resource_limits["maxLoadedJobs"])
+            and self.history_total > len(states)
+        )
         self.queue_summary.setText(
-            f"전체 {self.history_all_total} · 검색 {self.history_total} · 로딩 {len(states)} · "
+            f"전체 {self.history_all_total} · 검색 {self.history_total} · "
+            f"로딩 {len(states)}{'(상한)' if cap_reached else ''} · "
             f"대기 {states.count('대기')} · 실행 {states.count('실행 중')} · "
             f"재시도 {states.count('재시도 대기')} · "
             f"일시정지 {states.count('일시정지')} · 완료 {states.count('완료')} · "

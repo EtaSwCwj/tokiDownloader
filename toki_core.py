@@ -615,6 +615,22 @@ def resource_admission(
     }
 
 
+def append_bounded_text(
+    current: str,
+    addition: str,
+    max_bytes: int,
+) -> tuple[str, int]:
+    limit = max(1, int(max_bytes))
+    combined = f"{current}{addition}".encode("utf-8", errors="replace")
+    if len(combined) <= limit:
+        return combined.decode("utf-8"), 0
+    tail = combined[-limit:]
+    while tail and (tail[0] & 0xC0) == 0x80:
+        tail = tail[1:]
+    kept = tail.decode("utf-8", errors="ignore")
+    return kept, len(combined) - len(kept.encode("utf-8"))
+
+
 def normalize_scan_mode(value: str | None) -> str:
     mode = str(value or "new").strip().lower()
     if mode not in {"new", "full", "range"}:

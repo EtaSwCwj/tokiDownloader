@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import toki_core
 from toki_core import (
+    append_bounded_text,
     available_work_slots,
     DownloadJob,
     DownloadRun,
@@ -77,6 +78,13 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_bounded_text_keeps_utf8_tail_and_reports_dropped_bytes(self) -> None:
+        text, dropped = append_bounded_text("앞" * 10, "끝" * 10, 17)
+
+        self.assertLessEqual(len(text.encode("utf-8")), 17)
+        self.assertTrue(text.endswith("끝"))
+        self.assertGreater(dropped, 0)
+
     def test_resource_budget_limits_io_cpu_and_download_queue(self) -> None:
         normal = resource_budget(cpu_count=16, available_memory_bytes=16 * 1024**3)
         low_memory = resource_budget(cpu_count=16, available_memory_bytes=2 * 1024**3)

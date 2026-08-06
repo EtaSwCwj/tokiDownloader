@@ -9,6 +9,7 @@ from unittest.mock import patch
 from toki_core import DownloadJob, DownloadRun
 from toki_gui import (
     ImageConversionProcessContext,
+    JobListModel,
     MainWindow,
     ProcessContext,
     hidden_process_options,
@@ -104,6 +105,45 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_job_model_trims_tail_to_loaded_memory_limit(self) -> None:
+        model = JobListModel()
+        jobs = [
+            DownloadJob(
+                job_id=f"job-{index}",
+                url=f"https://newtoki1.org/manhwa/{9400 + index}",
+                output_dir=r"C:\Manga",
+            )
+            for index in range(5)
+        ]
+        model.append_jobs(jobs)
+
+        removed = model.trim_to_limit(3)
+
+        self.assertEqual(model.rowCount(), 3)
+        self.assertEqual([job.job_id for job in removed], ["job-3", "job-4"])
+        self.assertEqual(set(model.row_by_key), {job.work_key for job in jobs[:3]})
+
+    def test_downloader_partial_line_buffer_is_bounded(self) -> None:
+        job = DownloadJob(
+            job_id="buffer-job",
+            url="https://newtoki1.org/manhwa/9500",
+            output_dir=r"C:\Manga",
+        )
+        context = ProcessContext(job=job, run=DownloadRun.from_job(job))
+        harness = type("BufferHarness", (), {})()
+        harness.active_contexts = {job.job_id: context}
+        harness.resource_limits = {"maxProcessOutputBytes": 32}
+        harness.total_output_dropped_bytes = 0
+        harness._handle_process_line = lambda *_args: None
+
+        MainWindow._consume_lines(harness, job.job_id, "가" * 100, False)
+
+        self.assertLessEqual(len(context.stdout_buffer.encode("utf-8")), 32)
+        self.assertGreater(context.stdout_dropped_bytes, 0)
+        self.assertEqual(
+            harness.total_output_dropped_bytes, context.stdout_dropped_bytes
+        )
+
     def test_image_progress_events_merge_into_one_card_render(self) -> None:
         class TimerStub:
             def __init__(self) -> None:
