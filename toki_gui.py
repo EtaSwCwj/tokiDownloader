@@ -3,17 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QProcess, QSize, Qt, QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QFont, QPixmap
+from PyQt6.QtCore import QByteArray, QAbstractListModel, QModelIndex, QPoint, QProcess, QRect, QSize, Qt, QTimer
+from PyQt6.QtGui import QAction, QColor, QCloseEvent, QFont, QPainter, QPen, QPixmap
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -21,9 +23,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
+    QListView,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -31,6 +33,8 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QStatusBar,
     QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -38,18 +42,24 @@ from PyQt6.QtWidgets import (
 from toki_core import (
     CONTROL_SERVER_NAME,
     EVENT_PREFIX,
+    JOB_DB_PATH,
     LOG_PATH,
     ROOT_DIR,
     DownloadJob,
     append_log,
+    build_work_key,
     build_downloader_args,
     clear_log_file,
+    count_jobs,
     find_node,
     load_config,
+    load_job_by_work_key,
+    load_jobs_page,
     normalize_range,
     open_in_explorer,
     read_log_tail,
     save_config,
+    save_jobs,
     validate_url,
 )
 
@@ -57,64 +67,130 @@ from toki_core import (
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
-class TaskCard(QWidget):
-    def __init__(self, job: DownloadJob, parent: QWidget | None = None) -> None:
+class JobListModel(QAbstractListModel):
+    JobRole = int(Qt.ItemDataRole.UserRole) + 1
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.job_id = job.job_id
-        self.setObjectName("taskCard")
-        self.loaded_cover_path = ""
+        self.rows: list[DownloadJob] = []
+        self.row_by_key: dict[str, int] = {}
 
-        self.cover_label = QLabel("표지")
-        self.cover_label.setObjectName("coverLabel")
-        self.cover_label.setFixedSize(72, 94)
-        self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.rows)
 
-        self.state_label = QLabel(job.state)
-        self.state_label.setObjectName("stateLabel")
-        self.state_label.setFixedWidth(72)
-        self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    def data(self, index: QModelIndex, role: int = int(Qt.ItemDataRole.DisplayRole)) -> Any:
+        if not index.isValid() or not 0 <= index.row() < len(self.rows):
+            return None
+        job = self.rows[index.row()]
+        if role == self.JobRole:
+            return job
+        if role == int(Qt.ItemDataRole.DisplayRole):
+            return job.title
+        if role == int(Qt.ItemDataRole.SizeHintRole):
+            return QSize(100, 92)
+        return None
 
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(10)
-        self.title_label = QLabel(job.title)
-        self.title_label.setFont(title_font)
-        self.title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    def job_at(self, row: int) -> DownloadJob | None:
+        return self.rows[row] if 0 <= row < len(self.rows) else None
 
-        self.detail_label = QLabel(job.url)
-        self.detail_label.setObjectName("detailLabel")
-        self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    def upsert_job(self, job: DownloadJob) -> bool:
+        existing_row = self.row_by_key.get(job.work_key)
+        replaced = existing_row is not None
+        if existing_row is not None:
+            self.beginRemoveRows(QModelIndex(), existing_row, existing_row)
+            self.rows.pop(existing_row)
+            self.endRemoveRows()
+        self.beginInsertRows(QModelIndex(), 0, 0)
+        self.rows.insert(0, job)
+        self.endInsertRows()
+        self._rebuild_positions()
+        return replaced
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(job.progress)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(self.state_label)
-        header.addWidget(self.title_label, 1)
-
-        details_layout = QVBoxLayout()
-        details_layout.setContentsMargins(0, 0, 0, 0)
-        details_layout.setSpacing(5)
-        details_layout.addLayout(header)
-        details_layout.addWidget(self.detail_label)
-        details_layout.addWidget(self.progress)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(9, 8, 10, 8)
-        layout.setSpacing(10)
-        layout.addWidget(self.cover_label)
-        layout.addLayout(details_layout, 1)
-        self.update_job(job)
+    def append_jobs(self, jobs: list[DownloadJob]) -> None:
+        if not jobs:
+            return
+        start = len(self.rows)
+        self.beginInsertRows(QModelIndex(), start, start + len(jobs) - 1)
+        self.rows.extend(jobs)
+        self.endInsertRows()
+        for row in range(start, len(self.rows)):
+            self.row_by_key[self.rows[row].work_key] = row
 
     def update_job(self, job: DownloadJob) -> None:
-        self._update_cover(job.cover_path)
-        self.title_label.setText(job.title)
-        self.state_label.setText(job.state)
-        self.state_label.setProperty("state", job.state)
-        self.state_label.style().unpolish(self.state_label)
-        self.state_label.style().polish(self.state_label)
+        row = self.row_by_key.get(job.work_key)
+        if row is None:
+            return
+        index = self.index(row, 0)
+        self.dataChanged.emit(index, index, [self.JobRole, int(Qt.ItemDataRole.DisplayRole)])
+
+    def _rebuild_positions(self) -> None:
+        self.row_by_key = {job.work_key: row for row, job in enumerate(self.rows)}
+
+
+class JobItemDelegate(QStyledItemDelegate):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.cover_cache: OrderedDict[str, QPixmap] = OrderedDict()
+        self.cache_limit = 128
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        return QSize(option.rect.width(), 92)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        job = index.data(JobListModel.JobRole)
+        if not isinstance(job, DownloadJob):
+            return
+
+        painter.save()
+        card = option.rect.adjusted(4, 3, -4, -3)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        painter.setPen(QPen(QColor("#9ebfe7" if selected else "#d8dde5"), 1))
+        painter.setBrush(QColor("#dcecff" if selected else "#ffffff"))
+        painter.drawRoundedRect(card, 5, 5)
+
+        cover_rect = card.adjusted(9, 8, 0, -8)
+        cover_rect.setWidth(52)
+        painter.setPen(QPen(QColor("#d8dde5"), 1))
+        painter.setBrush(QColor("#eef1f4"))
+        painter.drawRoundedRect(cover_rect, 4, 4)
+        cover = self._cover(job.cover_path)
+        if cover:
+            x = cover_rect.x() + (cover_rect.width() - cover.width()) // 2
+            y = cover_rect.y() + (cover_rect.height() - cover.height()) // 2
+            painter.drawPixmap(x, y, cover)
+        else:
+            painter.setPen(QColor("#7b8794"))
+            painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "표지")
+
+        body_x = cover_rect.right() + 11
+        state_rect = card.adjusted(body_x - card.left(), 9, 0, 0)
+        state_rect.setWidth(66)
+        state_rect.setHeight(23)
+        state_colors = {
+            "실행 중": "#1a73e8",
+            "완료": "#3b7d44",
+            "오류": "#d13b32",
+            "중지됨": "#cf7a18",
+        }
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(state_colors.get(job.state, "#7b8794")))
+        painter.drawRoundedRect(state_rect, 3, 3)
+        painter.setPen(QColor("#ffffff"))
+        state_font = QFont(option.font)
+        state_font.setBold(True)
+        painter.setFont(state_font)
+        painter.drawText(state_rect, Qt.AlignmentFlag.AlignCenter, job.state)
+
+        title_rect = card.adjusted(state_rect.right() - card.left() + 8, 7, -10, 0)
+        title_rect.setHeight(27)
+        title_font = QFont(option.font)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.setPen(QColor("#20262e"))
+        title = painter.fontMetrics().elidedText(
+            job.title, Qt.TextElideMode.ElideRight, max(20, title_rect.width())
+        )
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter, title)
 
         details: list[str] = []
         if job.episode_total:
@@ -125,26 +201,47 @@ class TaskCard(QWidget):
             details.append(f"이미지 {job.image_current}/{job.image_total}")
         if not details:
             details.append(job.url)
-        if job.error:
-            details.append(job.error.splitlines()[0])
-        self.detail_label.setText(" · ".join(details))
-        self.progress.setValue(max(0, min(100, job.progress)))
-
-    def _update_cover(self, cover_path: str) -> None:
-        if not cover_path or cover_path == self.loaded_cover_path:
-            return
-        pixmap = QPixmap(cover_path)
-        if pixmap.isNull():
-            return
-        self.loaded_cover_path = cover_path
-        self.cover_label.setText("")
-        self.cover_label.setPixmap(
-            pixmap.scaled(
-                self.cover_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        detail_text = " · ".join(details)
+        detail_rect = card.adjusted(body_x - card.left(), 35, -10, 0)
+        detail_rect.setHeight(20)
+        painter.setFont(option.font)
+        painter.setPen(QColor("#667282"))
+        detail_text = painter.fontMetrics().elidedText(
+            detail_text, Qt.TextElideMode.ElideRight, max(20, detail_rect.width())
         )
+        painter.drawText(detail_rect, Qt.AlignmentFlag.AlignVCenter, detail_text)
+
+        progress_rect = card.adjusted(body_x - card.left(), 60, -10, -9)
+        painter.setPen(QPen(QColor("#cfd6df"), 1))
+        painter.setBrush(QColor("#eef1f4"))
+        painter.drawRect(progress_rect)
+        progress = max(0, min(100, job.progress))
+        chunk = progress_rect.adjusted(1, 1, -1, -1)
+        chunk.setWidth(int(chunk.width() * progress / 100))
+        painter.fillRect(chunk, QColor("#2f7de1"))
+        painter.setPen(QColor("#20262e"))
+        painter.drawText(progress_rect, Qt.AlignmentFlag.AlignCenter, f"{progress}%")
+        painter.restore()
+
+    def _cover(self, cover_path: str) -> QPixmap | None:
+        if not cover_path:
+            return None
+        cached = self.cover_cache.get(cover_path)
+        if cached is not None:
+            self.cover_cache.move_to_end(cover_path)
+            return cached
+        source = QPixmap(cover_path)
+        if source.isNull():
+            return None
+        scaled = source.scaled(
+            QSize(50, 66),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.cover_cache[cover_path] = scaled
+        if len(self.cover_cache) > self.cache_limit:
+            self.cover_cache.popitem(last=False)
+        return scaled
 
 
 class MainWindow(QMainWindow):
@@ -152,8 +249,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = load_config()
         self.jobs: dict[str, DownloadJob] = {}
-        self.cards: dict[str, TaskCard] = {}
-        self.items: dict[str, QListWidgetItem] = {}
+        self.jobs_by_work: dict[str, DownloadJob] = {}
+        self.history_page_size = 200
+        self.history_loaded = 0
+        self.history_total = 0
+        self.history_loading = False
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_job: DownloadJob | None = None
         self.process: QProcess | None = None
@@ -162,21 +262,57 @@ class MainWindow(QMainWindow):
         self.stdout_buffer = ""
         self.stderr_buffer = ""
         self.control_sockets: set[Any] = set()
+        self.active_context_menu: QMenu | None = None
+        self.dirty_job_ids: set[str] = set()
+        self.persist_timer = QTimer(self)
+        self.persist_timer.setSingleShot(True)
+        self.persist_timer.setInterval(600)
+        self.persist_timer.timeout.connect(self._flush_job_history)
 
         self.setWindowTitle("tokiDownloader")
         window_config = self.config.get("window", {})
-        self.resize(int(window_config.get("width", 860)), int(window_config.get("height", 720)))
         self.setMinimumSize(QSize(720, 580))
+        self.restore_maximized = bool(window_config.get("maximized", False))
+        self.restore_position: QPoint | None = None
+        self.geometry_restored = False
+        self._restore_window_geometry(window_config)
         self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
 
         self._build_actions()
         self._build_ui()
         self._apply_style()
         self._start_control_server()
+        self._restore_job_history()
 
         for line in read_log_tail(120):
             self.log_edit.appendPlainText(line)
         self.log("GUI 시작")
+
+    def _restore_window_geometry(self, window_config: dict[str, Any]) -> None:
+        encoded_geometry = window_config.get("qtGeometry")
+        if isinstance(encoded_geometry, str) and encoded_geometry:
+            saved_geometry = QByteArray.fromBase64(encoded_geometry.encode("ascii"))
+            if not saved_geometry.isEmpty() and self.restoreGeometry(saved_geometry):
+                self.geometry_restored = True
+                return
+
+        width = max(self.minimumWidth(), int(window_config.get("width") or 860))
+        height = max(self.minimumHeight(), int(window_config.get("height") or 720))
+        self.resize(width, height)
+
+        saved_x = window_config.get("x")
+        saved_y = window_config.get("y")
+        if isinstance(saved_x, (int, float)) and isinstance(saved_y, (int, float)):
+            desired = QRect(int(saved_x), int(saved_y), width, height)
+            if any(screen.availableGeometry().intersects(desired) for screen in QApplication.screens()):
+                self.restore_position = desired.topLeft()
+                return
+
+        primary = QApplication.primaryScreen()
+        if primary:
+            available = primary.availableGeometry()
+            centered = available.center() - QPoint(width // 2, height // 2)
+            self.restore_position = centered
 
     def _build_actions(self) -> None:
         self.start_action = QAction("다운로드 시작", self)
@@ -187,7 +323,7 @@ class MainWindow(QMainWindow):
         self.stop_action.setShortcut("Ctrl+K")
         self.stop_action.triggered.connect(self.stop_active_job)
 
-        self.retry_action = QAction("선택 작업 재시도", self)
+        self.retry_action = QAction("선택 작품 전체 재검사", self)
         self.retry_action.setShortcut("Ctrl+R")
         self.retry_action.triggered.connect(self.retry_selected_job)
 
@@ -248,6 +384,12 @@ class MainWindow(QMainWindow):
         self.last_spin.setSpecialValueText("마지막")
         self.last_spin.setToolTip("0이면 마지막 회차까지")
 
+        self.show_browser_check = QCheckBox("브라우저 표시")
+        self.show_browser_check.setChecked(bool(self.config.get("showBrowser", False)))
+        self.show_browser_check.setToolTip(
+            "기본은 백그라운드 실행입니다. 사이트 인증 문제를 확인할 때만 켜세요."
+        )
+
         self.output_edit = QLineEdit(str(self.config.get("outputDir", ROOT_DIR)))
         self.output_edit.setReadOnly(True)
 
@@ -261,7 +403,10 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_from_form)
         self.stop_button = QPushButton("중지")
         self.stop_button.clicked.connect(self.stop_active_job)
-        self.retry_button = QPushButton("재시도")
+        self.retry_button = QPushButton("전체 재검사")
+        self.retry_button.setToolTip(
+            "작품의 전체 회차를 다시 확인하고 기존 파일은 건너뜁니다."
+        )
         self.retry_button.clicked.connect(self.retry_selected_job)
 
         input_layout.addWidget(QLabel("URL"), 0, 0)
@@ -271,6 +416,7 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.start_spin, 1, 1)
         input_layout.addWidget(QLabel("~"), 1, 2)
         input_layout.addWidget(self.last_spin, 1, 3)
+        input_layout.addWidget(self.show_browser_check, 1, 4)
         input_layout.addWidget(self.stop_button, 1, 5)
         input_layout.addWidget(self.retry_button, 1, 6)
         input_layout.addWidget(QLabel("저장"), 2, 0)
@@ -290,9 +436,22 @@ class MainWindow(QMainWindow):
         queue_header.addStretch(1)
         queue_header.addWidget(self.queue_summary)
 
-        self.task_list = QListWidget()
-        self.task_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.task_list.setSpacing(4)
+        self.task_model = JobListModel(self)
+        self.task_list = QListView()
+        self.task_list.setModel(self.task_model)
+        self.task_list.setItemDelegate(JobItemDelegate(self.task_list))
+        self.task_list.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self.task_list.setUniformItemSizes(True)
+        self.task_list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.task_list.setSpacing(2)
+        self.task_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.task_list.setToolTip(
+            "한 번 클릭하면 작업을 선택하고, 더블클릭하면 다운로드 폴더를 엽니다."
+        )
+        self.task_list.doubleClicked.connect(self.open_job_index_folder)
+        self.task_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.task_list.customContextMenuRequested.connect(self.show_job_context_menu)
+        self.task_list.verticalScrollBar().valueChanged.connect(self._maybe_load_more_history)
 
         log_box = QGroupBox("실행 로그")
         log_layout = QVBoxLayout(log_box)
@@ -339,7 +498,7 @@ class MainWindow(QMainWindow):
             QMenu { background: #ffffff; color: #20262e; border: 1px solid #cfd6df; }
             QMenu::item:selected { background: #e9f1ff; }
             #inputBox { background: #ffffff; border: 1px solid #d8dde5; border-radius: 5px; }
-            QLineEdit, QSpinBox, QPlainTextEdit, QListWidget {
+            QLineEdit, QSpinBox, QPlainTextEdit, QListView {
                 background: #ffffff; color: #20262e; border: 1px solid #cfd6df; border-radius: 4px;
                 padding: 5px; selection-background-color: #2f7de1;
                 selection-color: #ffffff;
@@ -350,12 +509,8 @@ class MainWindow(QMainWindow):
             QPushButton:pressed { background: #dfeeff; }
             #primaryButton { background: #2f7de1; color: white; border-color: #2469bd; font-weight: 700; }
             #primaryButton:hover { background: #3b89ee; }
-            QListWidget { padding: 4px; }
-            QListWidget::item { border: 0; }
-            QListWidget::item:selected { background: #dcecff; border-radius: 5px; }
-            #taskCard { background: #ffffff; border: 1px solid #d8dde5; border-radius: 5px; }
-            #coverLabel { color: #7b8794; background: #eef1f4; border: 1px solid #d8dde5;
-                border-radius: 4px; }
+            QListView { padding: 2px; }
+            QListView::item { border: 0; }
             #detailLabel, #mutedLabel { color: #667282; }
             #stateLabel { border-radius: 3px; padding: 3px; font-weight: 700; color: white; background: #7b8794; }
             #stateLabel[state="실행 중"] { background: #1a73e8; }
@@ -387,6 +542,7 @@ class MainWindow(QMainWindow):
                 self.start_spin.value() or None,
                 self.last_spin.value() or None,
                 self.output_edit.text(),
+                self.show_browser_check.isChecked(),
             )
         except (ValueError, OSError, RuntimeError) as error:
             QMessageBox.warning(self, "다운로드를 시작할 수 없음", str(error))
@@ -398,6 +554,7 @@ class MainWindow(QMainWindow):
         start: int | None,
         last: int | None,
         output_dir: str,
+        show_browser: bool = False,
     ) -> DownloadJob:
         valid_url = validate_url(url)
         start_value, last_value = normalize_range(start, last)
@@ -405,39 +562,115 @@ class MainWindow(QMainWindow):
         output_path.mkdir(parents=True, exist_ok=True)
         find_node()
 
+        work_key = build_work_key(valid_url)
+        existing = self.jobs_by_work.get(work_key)
+        was_loaded = existing is not None
+        if existing is None:
+            existing = load_job_by_work_key(work_key)
+        if existing and existing.state in {"대기", "실행 중"}:
+            raise ValueError("같은 작품이 이미 대기 중이거나 다운로드 중입니다.")
+
         job = DownloadJob(
             job_id=uuid.uuid4().hex[:10],
             url=valid_url,
             output_dir=str(output_path),
+            work_key=work_key,
             start=start_value,
             last=last_value,
+            title=existing.title if existing else "메타데이터 확인 중",
+            output_path=existing.output_path if existing else "",
+            cover_url=existing.cover_url if existing else "",
+            cover_path=existing.cover_path if existing else "",
+            show_browser=show_browser,
         )
+        if existing:
+            self.jobs.pop(existing.job_id, None)
         self.jobs[job.job_id] = job
+        self.jobs_by_work[work_key] = job
         self.pending_jobs.append(job)
         self._add_job_card(job)
-        self.log(f"작업 추가: {job.url}", job_id=job.job_id)
+        if existing is None:
+            self.history_total += 1
+            self.history_loaded += 1
+        elif not was_loaded:
+            self.history_loaded += 1
+        self._schedule_job_persist(job)
+        action = "작품 작업 갱신" if existing else "작품 작업 추가"
+        self.log(f"{action}: {job.url} ({job.work_key})", job_id=job.job_id)
         self._update_summary()
         self._start_next_job()
         return job
 
     def _add_job_card(self, job: DownloadJob) -> None:
-        item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, job.job_id)
-        card = TaskCard(job)
-        item.setSizeHint(QSize(100, 116))
-        self.task_list.addItem(item)
-        self.task_list.setItemWidget(item, card)
-        self.cards[job.job_id] = card
-        self.items[job.job_id] = item
-        self.task_list.setCurrentItem(item)
+        self.task_model.upsert_job(job)
+        index = self.task_model.index(0, 0)
+        self.task_list.setCurrentIndex(index)
+        self.task_list.scrollTo(index)
+
+    def _restore_job_history(self) -> None:
+        recovered: list[DownloadJob] = []
+        self.history_total = count_jobs()
+        page = load_jobs_page(self.history_page_size, 0)
+        for job in page:
+            if job.state in {"대기", "실행 중"}:
+                job.state = "중지됨"
+                job.error = job.error or "이전 GUI가 종료되어 작업이 중단되었습니다."
+                recovered.append(job)
+            self.jobs[job.job_id] = job
+            self.jobs_by_work[job.work_key] = job
+        self.task_model.append_jobs(page)
+        self.history_loaded = len(page)
+        if recovered:
+            save_jobs(recovered)
+        if self.task_model.rowCount():
+            self.task_list.setCurrentIndex(self.task_model.index(0, 0))
+            self.task_list.scrollToTop()
+        self._update_summary()
+
+    def _maybe_load_more_history(self, value: int) -> None:
+        scrollbar = self.task_list.verticalScrollBar()
+        if scrollbar.maximum() <= 0 or value < scrollbar.maximum() - 24:
+            return
+        self._load_more_history()
+
+    def _load_more_history(self) -> None:
+        if self.history_loading or self.history_loaded >= self.history_total:
+            return
+        self.history_loading = True
+        try:
+            page = load_jobs_page(self.history_page_size, self.history_loaded)
+            self.history_loaded += len(page)
+            unseen = [job for job in page if job.work_key not in self.jobs_by_work]
+            for job in unseen:
+                self.jobs[job.job_id] = job
+                self.jobs_by_work[job.work_key] = job
+            self.task_model.append_jobs(unseen)
+        finally:
+            self.history_loading = False
+        self._update_summary()
+
+    def _schedule_job_persist(self, job: DownloadJob) -> None:
+        self.dirty_job_ids.add(job.job_id)
+        if not self.persist_timer.isActive():
+            self.persist_timer.start()
+
+    def _flush_job_history(self) -> None:
+        if not self.dirty_job_ids:
+            return
+        job_ids = tuple(self.dirty_job_ids)
+        self.dirty_job_ids.clear()
+        pending = [self.jobs[job_id] for job_id in job_ids if job_id in self.jobs]
+        try:
+            save_jobs(pending)
+        except (OSError, sqlite3.Error) as error:
+            self.log(f"작업 기록 저장 실패: {error}", "ERROR")
 
     def _update_job_card(self, job: DownloadJob) -> None:
-        card = self.cards.get(job.job_id)
-        if card:
-            card.update_job(job)
+        self.task_model.update_job(job)
         if self.active_job and self.active_job.job_id == job.job_id:
             self.overall_progress.setValue(job.progress)
             self.status_label.setText(f"{job.state}: {job.title}")
+        self._schedule_job_persist(job)
         self._update_summary()
 
     def _start_next_job(self) -> None:
@@ -597,9 +830,9 @@ class MainWindow(QMainWindow):
     def selected_job(self, job_id: str | None = None) -> DownloadJob | None:
         if job_id:
             return self.jobs.get(job_id)
-        item = self.task_list.currentItem()
-        if item:
-            return self.jobs.get(str(item.data(Qt.ItemDataRole.UserRole)))
+        index = self.task_list.currentIndex()
+        if index.isValid():
+            return self.task_model.job_at(index.row())
         if self.active_job:
             return self.active_job
         return next(reversed(self.jobs.values()), None) if self.jobs else None
@@ -609,10 +842,20 @@ class MainWindow(QMainWindow):
         if not source:
             self.log("재시도할 작업을 선택해주세요.")
             return None
-        return self.enqueue_download(source.url, source.start, source.last, source.output_dir)
+        return self.enqueue_download(
+            source.url,
+            None,
+            None,
+            source.output_dir,
+            source.show_browser,
+        )
 
     def retry_selected_job(self) -> None:
-        self.retry_job()
+        try:
+            self.retry_job()
+        except (ValueError, OSError, RuntimeError) as error:
+            QMessageBox.warning(self, "작업을 재시도할 수 없음", str(error))
+            self.log(str(error), "ERROR")
 
     def choose_output_folder(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", self.output_edit.text())
@@ -637,6 +880,70 @@ class MainWindow(QMainWindow):
         self.log(f"폴더 열기: {target}")
         return target
 
+    def open_job_index_folder(self, index: QModelIndex) -> None:
+        job = self.task_model.job_at(index.row())
+        if not job or not job.output_path:
+            self.statusBar().showMessage("작품 다운로드 폴더를 아직 확인하는 중입니다.", 2500)
+            return
+        self.open_output_folder(job.job_id)
+
+    def show_job_context_menu(self, position: QPoint) -> None:
+        index = self.task_list.indexAt(position)
+        if not index.isValid():
+            return
+        self.task_list.setCurrentIndex(index)
+        job = self.task_model.job_at(index.row())
+        if not job:
+            return
+        global_position = self.task_list.viewport().mapToGlobal(position)
+        self._popup_job_context_menu(job, global_position)
+
+    def show_job_context_menu_for_job(self, job_id: str | None = None) -> bool:
+        job = self.selected_job(job_id)
+        if not job:
+            return False
+        row = self.task_model.row_by_key.get(job.work_key)
+        if row is None:
+            return False
+        index = self.task_model.index(row, 0)
+        self.task_list.setCurrentIndex(index)
+        self.task_list.scrollTo(index)
+        rect = self.task_list.visualRect(index)
+        global_position = self.task_list.viewport().mapToGlobal(rect.center())
+        self._popup_job_context_menu(job, global_position)
+        return True
+
+    def _popup_job_context_menu(self, job: DownloadJob, global_position: QPoint) -> None:
+        menu = QMenu(self)
+        menu.addAction("다운로드 폴더 열기", lambda: self.open_output_folder(job.job_id))
+        menu.addSeparator()
+        menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
+        menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
+        menu.addSeparator()
+        retry_action = menu.addAction("작품 전체 재검사", self.retry_selected_job)
+        retry_action.setEnabled(job.state not in {"대기", "실행 중"})
+        stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
+        stop_action.setEnabled(bool(self.active_job and self.active_job.job_id == job.job_id))
+        menu.aboutToHide.connect(lambda: setattr(self, "active_context_menu", None))
+        self.active_context_menu = menu
+        menu.popup(global_position)
+
+    def copy_job_link(self, job_id: str | None = None) -> str:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("링크를 복사할 작품을 선택해주세요.")
+        QApplication.clipboard().setText(job.url)
+        self.statusBar().showMessage("원본 링크를 복사했습니다.", 2500)
+        return job.url
+
+    def copy_job_title(self, job_id: str | None = None) -> str:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("작품명을 복사할 작품을 선택해주세요.")
+        QApplication.clipboard().setText(job.title)
+        self.statusBar().showMessage("작품명을 복사했습니다.", 2500)
+        return job.title
+
     def clear_logs(self) -> None:
         clear_log_file()
         self.log_edit.clear()
@@ -654,7 +961,18 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if not self.grab().save(str(target), "PNG"):
+        if self.active_context_menu and self.active_context_menu.isVisible() and self.screen():
+            frame = self.frameGeometry()
+            screenshot = self.screen().grabWindow(
+                0,
+                frame.x(),
+                frame.y(),
+                frame.width(),
+                frame.height(),
+            )
+        else:
+            screenshot = self.grab()
+        if not screenshot.save(str(target), "PNG"):
             raise OSError(f"GUI 화면을 저장하지 못했습니다: {target}")
         self.log(f"GUI 화면 캡처: {target}")
         self.statusBar().showMessage(f"화면 저장: {target}", 3000)
@@ -664,15 +982,19 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "CLI 명령",
-            "toki-cli.cmd download --url URL [--start N --last N --output PATH]\n"
+            "toki-cli.cmd download --url URL [--start N --last N --output PATH --show-browser]\n"
             "toki-cli.cmd status [--json]\n"
             "toki-cli.cmd stop\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd set-output PATH\n"
             "toki-cli.cmd open-folder [--job ID]\n"
+            "toki-cli.cmd copy-link [--job ID]\n"
+            "toki-cli.cmd copy-title [--job ID]\n"
+            "toki-cli.cmd job-menu [--job ID]\n"
             "toki-cli.cmd logs --tail 200\n"
             "toki-cli.cmd copy-log [--tail 3000]\n"
             "toki-cli.cmd screenshot [--output PATH]\n"
+            "toki-cli.cmd window [--x N --y N --width N --height N --maximize|--normal]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
             "toki-cli.cmd quit",
@@ -681,17 +1003,59 @@ class MainWindow(QMainWindow):
     def status_snapshot(self) -> dict[str, Any]:
         return {
             "running": self.active_job is not None,
+            "processPid": (
+                int(self.process.processId())
+                if self.process and self.process.state() != QProcess.ProcessState.NotRunning
+                else None
+            ),
             "activeJob": self.active_job.to_dict() if self.active_job else None,
             "pendingCount": len(self.pending_jobs),
             "jobs": [job.to_dict() for job in self.jobs.values()],
+            "loadedJobCount": len(self.jobs),
+            "totalJobCount": self.history_total,
             "outputDir": self.output_edit.text(),
             "logPath": str(LOG_PATH),
+            "jobDbPath": str(JOB_DB_PATH),
             "screenshotPath": str(LOG_PATH.parent / "gui-screenshot.png"),
+            "window": self.window_snapshot(),
         }
+
+    def window_snapshot(self) -> dict[str, Any]:
+        maximized = self.isMaximized()
+        geometry = self.normalGeometry() if maximized else None
+        position = geometry.topLeft() if geometry is not None else self.pos()
+        return {
+            "x": position.x(),
+            "y": position.y(),
+            "width": geometry.width() if geometry is not None else self.width(),
+            "height": geometry.height() if geometry is not None else self.height(),
+            "maximized": maximized,
+        }
+
+    def set_window_geometry(self, request: dict[str, Any]) -> dict[str, Any]:
+        width = request.get("width")
+        height = request.get("height")
+        x = request.get("x")
+        y = request.get("y")
+        maximized = request.get("maximized")
+
+        if any(value is not None for value in (width, height, x, y)):
+            self.showNormal()
+            target_width = max(self.minimumWidth(), int(width or self.width()))
+            target_height = max(self.minimumHeight(), int(height or self.height()))
+            self.resize(target_width, target_height)
+            self.move(int(x if x is not None else self.x()), int(y if y is not None else self.y()))
+        if maximized is True:
+            self.showMaximized()
+        elif maximized is False:
+            self.showNormal()
+        QApplication.processEvents()
+        return self.window_snapshot()
 
     def _update_summary(self) -> None:
         states = [job.state for job in self.jobs.values()]
         self.queue_summary.setText(
+            f"기록 {self.history_total} · 로딩 {len(states)} · "
             f"대기 {states.count('대기')} · 실행 {states.count('실행 중')} · "
             f"완료 {states.count('완료')} · 문제 {states.count('오류') + states.count('중지됨')}"
         )
@@ -737,6 +1101,7 @@ class MainWindow(QMainWindow):
                 request.get("start"),
                 request.get("last"),
                 str(request.get("output") or self.output_edit.text()),
+                bool(request.get("showBrowser", False)),
             )
             return job.to_dict()
         if action == "stop":
@@ -748,6 +1113,12 @@ class MainWindow(QMainWindow):
             return {"outputDir": self.set_output_folder(str(request.get("path") or ""))}
         if action == "open_folder":
             return {"opened": self.open_output_folder(request.get("jobId"))}
+        if action == "copy_link":
+            return {"copied": self.copy_job_link(request.get("jobId"))}
+        if action == "copy_title":
+            return {"copied": self.copy_job_title(request.get("jobId"))}
+        if action == "show_job_menu":
+            return {"shown": self.show_job_context_menu_for_job(request.get("jobId"))}
         if action == "clear_log":
             self.clear_logs()
             return {"cleared": True}
@@ -755,6 +1126,8 @@ class MainWindow(QMainWindow):
             return self.status_snapshot()
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}
+        if action == "window":
+            return self.set_window_geometry(request)
         if action == "show":
             self.showNormal()
             self.raise_()
@@ -783,9 +1156,14 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.stop_active_job()
-        self.config["window"] = {"width": self.width(), "height": self.height()}
+        window_config = self.window_snapshot()
+        window_config["qtGeometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        self.config["window"] = window_config
         self.config["outputDir"] = self.output_edit.text()
+        self.config["showBrowser"] = self.show_browser_check.isChecked()
         save_config(self.config)
+        self.persist_timer.stop()
+        self._flush_job_history()
         self.control_server.close()
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
         event.accept()

@@ -450,14 +450,20 @@ config.json
 {
   "outputDir": "D:\\Manga",
   "window": {
+    "x": 120,
+    "y": 80,
     "width": 860,
-    "height": 720
+    "height": 720,
+    "maximized": false
   },
   "logVisible": true
 }
 ```
 
 설정, 로그, 가상환경, 빌드 출력은 Git에 포함하지 않는다.
+
+창을 복원할 때 저장된 위치가 현재 연결된 어떤 모니터와도 겹치지 않으면 주 모니터
+중앙으로 이동한다. 최대화 상태에서는 최대화 이전의 정상 위치와 크기를 저장한다.
 
 ```gitignore
 .venv/
@@ -703,14 +709,26 @@ GUI와 작업 엔진은 수십 개뿐 아니라 수백, 수천, 장기적으로 
 | 작업 재시도 | `toki-cli.cmd retry --job ID` |
 | 폴더 선택/기본 경로 변경 | `toki-cli.cmd set-output PATH` |
 | 선택 작업 폴더 열기 | `toki-cli.cmd open-folder --job ID` |
+| 작품 링크 복사 | `toki-cli.cmd copy-link --job ID` |
+| 작품명 복사 | `toki-cli.cmd copy-title --job ID` |
+| 작품 우클릭 메뉴 표시 | `toki-cli.cmd job-menu --job ID` |
 | 작업·진행 상태 확인 | `toki-cli.cmd status --json` |
 | GUI 화면 캡처 | `toki-cli.cmd screenshot --output PATH` |
+| 창 위치·크기 조회/설정 | `toki-cli.cmd window [--x N --y N --width N --height N]` |
 | 로그 표시 | `toki-cli.cmd logs --tail N` |
 | 로그 복사 | `toki-cli.cmd copy-log --tail N` |
 | 로그 지우기 | `toki-cli.cmd clear-log` |
 | GUI 종료 | `toki-cli.cmd quit --force` |
 
 새 버튼이나 설정을 추가하면 이 표와 CLI 도움말을 같은 변경에서 갱신한다.
+
+작품 단위 `retry`는 과거 실행의 `start`/`last` 범위를 그대로 반복하지 않는다. 항상 전체
+회차 목록을 새로 수집하고, 기존 파일 건너뛰기 로직을 이용해 신규 회차와 누락 파일만
+보충한다. 동일 범위만 다시 실행하는 기능이 필요하면 별도 명령으로 분리한다.
+
+자동화 Chrome은 기본적으로 headless 백그라운드 모드로 실행한다. GUI의 `브라우저 표시`
+체크박스와 CLI의 `download --show-browser`는 Cloudflare 인증 또는 사이트 오류를 사람이
+직접 확인해야 할 때만 사용하는 진단용 예외 경로다.
 
 ### 16.4 자동화 테스트 원칙
 
@@ -725,3 +743,26 @@ GUI와 작업 엔진은 수십 개뿐 아니라 수백, 수천, 장기적으로 
 - 네트워크가 필요 없는 단위 테스트와 실제 사이트를 사용하는 통합 테스트를 분리한다.
 - 최종적으로 `toki-cli.cmd self-test --json` 한 명령으로 로컬 기능 점검을 실행할 수 있게
   하고, 새 기능은 해당 self-test 항목을 추가하지 않으면 완료로 간주하지 않는다.
+
+---
+
+## 17. 작품 단위 데이터 모델 원칙
+
+GUI 작업 목록의 최상위 행은 다운로드 실행 1회가 아니라 **작품 1개**를 의미한다.
+
+- 작품 식별자는 표시 제목이나 현재 도메인이 아니라 `사이트 종류 + 작품 ID`로 만든다.
+  예: `manatoki:34360`.
+- `newtoki1.org`가 `newtoki2.org`로 바뀌어도 `/manhwa/34360`이면 같은 작품이다.
+- 같은 작품을 다시 다운로드하거나 다른 회차 범위로 이어받으면 새 행을 추가하지 않고 기존
+  작품 행을 최신 상태로 갱신해 목록 맨 위로 이동한다.
+- 같은 작품의 중복 동시 실행은 허용하지 않는다. 기존 작업이 대기 또는 실행 중이면 CLI와
+  GUI 모두 명확한 오류를 반환한다.
+- 작품 행에는 대표 이미지, 제목, 작가, 그룹, 저장 폴더, 전체/보유 회차, 최신 상태를
+  집계해서 표시한다.
+- 실행 ID, 요청 범위, 시작·종료 시각, 결과와 오류는 작품 아래의 실행 이력으로 분리한다.
+  실행 이력이 늘어도 작품 목록 행은 하나만 유지한다.
+- SQLite의 작품 레코드는 작품 식별자에 UNIQUE 제약을 두고 upsert한다.
+- 기존 버전에서 같은 작품이 여러 행으로 저장된 경우 시작 시 최신 레코드 하나로 자동
+  병합한다.
+- 폴더명이나 작품 제목이 변경돼도 작품 ID가 같으면 같은 레코드를 갱신하며, 사용자의
+  다운로드 파일을 자동 삭제하거나 중복 이동하지 않는다.

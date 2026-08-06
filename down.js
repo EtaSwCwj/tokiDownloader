@@ -13,7 +13,8 @@ let info = {
     contentTitle: '',
     contentFolderName: '',
     metadata: null,
-    jsonEvents: false
+    jsonEvents: false,
+    showBrowser: false
 }
 
 function sleep(ms) {
@@ -28,7 +29,7 @@ function consoleGrey(val) {
     console.log(`\x1b[100m${val}\x1b[0m`);
 }
 function help() {
-    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-json-events]`);
+    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-json-events]`);
     process.exit();
 }
 function emitEvent(event, data = {}) {
@@ -68,6 +69,9 @@ function analyseArguments() {
         }
         else if (process.argv[i] == '-json-events') {
             info.jsonEvents = true;
+        }
+        else if (process.argv[i] == '-show-browser') {
+            info.showBrowser = true;
         }
         else if (process.argv[i] == '-h' || process.argv[i] == '-help') {
             help();
@@ -204,7 +208,7 @@ async function runDownloadTasks(tasks, concurrency = 5) {
 
 async function main() {
     const { browser, page } = await connect({
-        headless: false,
+        headless: info.showBrowser ? false : 'new',
         args: [],
         customConfig: {},
         turnstile: true, //captcha를 자동으로 풀것인지

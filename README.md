@@ -79,12 +79,19 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 # 저장 폴더와 로그
 .\toki-cli.cmd set-output "D:\Manga"
 .\toki-cli.cmd open-folder --job 작업ID
+.\toki-cli.cmd copy-link --job 작업ID
+.\toki-cli.cmd copy-title --job 작업ID
+.\toki-cli.cmd job-menu --job 작업ID
+.\toki-cli.cmd window
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
 .\toki-cli.cmd clear-log
 .\toki-cli.cmd quit --force
 ```
+
+`retry`는 이전에 지정했던 일부 회차 범위를 반복하는 명령이 아닙니다. 작품의 전체 회차
+목록을 다시 수집하고, 이미 저장된 파일은 건너뛰면서 새 회차와 누락 파일만 받습니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 
@@ -93,6 +100,8 @@ GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할
 ```
 
 자동화 브라우저는 개인 Chrome 계정과 분리된 전용 프로필을 사용합니다.
+기본값은 창이 보이지 않는 백그라운드 실행입니다. Cloudflare 인증이나 사이트 오류를
+직접 확인할 때만 GUI의 `브라우저 표시`를 켜거나 CLI에 `--show-browser`를 추가하세요.
 
 ## 설치 방법
 ```bash

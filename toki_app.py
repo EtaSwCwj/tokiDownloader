@@ -120,7 +120,14 @@ def run_gui() -> int:
     from toki_gui import MainWindow
 
     window = MainWindow()
-    window.show()
+    if window.geometry_restored:
+        window.show()
+    elif window.restore_maximized:
+        window.showMaximized()
+    else:
+        window.show()
+        if window.restore_position is not None:
+            window.move(window.restore_position)
     return app.exec()
 
 
@@ -137,6 +144,7 @@ def run_direct_download(args: argparse.Namespace) -> int:
         output_dir=output,
         start=args.start,
         last=args.last,
+        show_browser=args.show_browser,
     )
     command = [find_node(), *build_downloader_args(job, json_events=False)]
     append_log(f"직접 CLI 실행: {command}", job_id="direct")
@@ -160,10 +168,18 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--start", type=int, help="시작 회차")
     download.add_argument("--last", type=int, help="마지막 회차")
     download.add_argument("--output", help="저장 기준 폴더")
+    download.add_argument(
+        "--show-browser",
+        action="store_true",
+        help="자동화 Chrome 창을 표시(기본값은 백그라운드 실행)",
+    )
     download.add_argument("--direct", action="store_true", help="GUI 없이 직접 실행")
 
     subparsers.add_parser("stop", help="현재 실행 작업 중지")
-    retry = subparsers.add_parser("retry", help="작업 재시도")
+    retry = subparsers.add_parser(
+        "retry",
+        help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
+    )
     retry.add_argument("--job", help="작업 ID")
 
     status = subparsers.add_parser("status", help="GUI와 작업 상태 조회")
@@ -175,8 +191,24 @@ def build_parser() -> argparse.ArgumentParser:
     open_folder = subparsers.add_parser("open-folder", help="저장 폴더 열기")
     open_folder.add_argument("--job", help="작업 ID")
 
+    copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
+    copy_link.add_argument("--job", help="작업 ID")
+    copy_title = subparsers.add_parser("copy-title", help="작품명 복사")
+    copy_title.add_argument("--job", help="작업 ID")
+    job_menu = subparsers.add_parser("job-menu", help="선택 작품의 우클릭 메뉴 표시")
+    job_menu.add_argument("--job", help="작업 ID")
+
     screenshot = subparsers.add_parser("screenshot", help="실행 중인 GUI 화면을 PNG로 저장")
     screenshot.add_argument("--output", help="PNG 저장 경로")
+
+    window = subparsers.add_parser("window", help="GUI 창 위치와 크기 조회 또는 설정")
+    window.add_argument("--x", type=int, help="창의 화면 X 좌표")
+    window.add_argument("--y", type=int, help="창의 화면 Y 좌표")
+    window.add_argument("--width", type=int, help="창 너비")
+    window.add_argument("--height", type=int, help="창 높이")
+    window_state = window.add_mutually_exclusive_group()
+    window_state.add_argument("--maximize", action="store_true", help="창 최대화")
+    window_state.add_argument("--normal", action="store_true", help="창을 보통 상태로 복원")
 
     logs = subparsers.add_parser("logs", help="파일 로그 출력")
     logs.add_argument("--tail", type=int, default=200, help="마지막 N줄")
@@ -204,6 +236,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 "start": args.start,
                 "last": args.last,
                 "output": args.output or config.get("outputDir") or str(ROOT_DIR),
+                "showBrowser": args.show_browser,
             }
         )
         print(f"작업 추가: {result['job_id']}")
@@ -255,11 +288,35 @@ def run_cli(args: argparse.Namespace) -> int:
             open_in_explorer(target)
             print(target)
         return 0
+    if command == "copy-link":
+        print_json(control_request({"action": "copy_link", "jobId": args.job}))
+        return 0
+    if command == "copy-title":
+        print_json(control_request({"action": "copy_title", "jobId": args.job}))
+        return 0
+    if command == "job-menu":
+        print_json(control_request({"action": "show_job_menu", "jobId": args.job}))
+        return 0
     if command == "screenshot":
         ensure_gui_running()
         requested = str(Path(args.output).expanduser().resolve()) if args.output else ""
         result = control_request({"action": "screenshot", "path": requested})
         print(result["path"])
+        return 0
+    if command == "window":
+        ensure_gui_running()
+        maximized = True if args.maximize else False if args.normal else None
+        result = control_request(
+            {
+                "action": "window",
+                "x": args.x,
+                "y": args.y,
+                "width": args.width,
+                "height": args.height,
+                "maximized": maximized,
+            }
+        )
+        print_json(result)
         return 0
     if command == "logs":
         for line in read_log_tail(args.tail):
