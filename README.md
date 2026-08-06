@@ -101,7 +101,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd pause --job 실행중작업ID
 .\toki-cli.cmd resume --job 일시정지작업ID
 .\toki-cli.cmd concurrency --json
-.\toki-cli.cmd set-concurrency --images 5
+.\toki-cli.cmd set-concurrency --works 2 --images 5
 .\toki-cli.cmd retry --job 작업ID
 
 # 저장 폴더와 로그
@@ -192,11 +192,15 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 뒤 전체 재검사를 사용합니다. 프로세스 트리 제어에는 `psutil`을 사용하며 `setup-gui.cmd`가
 자동으로 설치합니다.
 
+`set-concurrency --works N`은 동시에 실행할 작품 수를 1~4 범위로 설정합니다.
+기본값은 1이며 각 작품은 독립된 Node/Chrome 프로세스, 로그 버퍼, 실행 이력과 중지·
+일시정지 상태를 갖습니다. `stop`, `pause`, `resume`은 여러 작품이 실행 중일 때도
+`--job ID`로 지정한 작품만 제어합니다.
+
 `set-concurrency --images N`은 한 회차 안에서 동시에 내려받을 이미지 수를 1~16 범위로
-설정합니다. 기본·권장값은 5이며 너무 큰 값은 사이트와 네트워크에 부담을 주고 실패율을
-높일 수 있어 16을 넘길 수 없습니다. 설정은 `config.json`에 저장되고 새로 시작하는
-작업부터 적용됩니다. GUI의 `이미지 병렬` 입력과 `concurrency` CLI 조회는 같은 값을
-사용합니다.
+설정합니다. 기본·권장값은 5입니다. 두 값은 한 명령에 같이 지정하거나 하나만 변경할 수
+있으며 `config.json`에 저장됩니다. GUI의 `작품 병렬`, `이미지 병렬`과 `concurrency`
+CLI 조회는 같은 값을 사용합니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

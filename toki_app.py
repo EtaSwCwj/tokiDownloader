@@ -35,6 +35,7 @@ from toki_core import (
     load_run,
     load_runs_page,
     normalize_image_concurrency,
+    normalize_work_concurrency,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
@@ -179,6 +180,12 @@ def run_gui_self_test_probe() -> dict[str, Any]:
     try:
         ping = control_request({"action": "ping"})
         status = control_request({"action": "status"})
+        active_jobs = status.get("activeJobs")
+        if not isinstance(active_jobs, list):
+            raise ControlError("GUI 상태에 다중 실행 작품 목록이 없습니다.")
+        if int(status.get("activeCount") or 0) != len(active_jobs):
+            raise ControlError("GUI 실행 작품 개수와 목록이 일치하지 않습니다.")
+        normalize_work_concurrency(status.get("workConcurrency"))
         queue_status = control_request({"action": "queue_list"})
         screenshot = control_request({"action": "screenshot", "path": str(screenshot_path)})
         if not screenshot_path.is_file() or screenshot_path.stat().st_size <= 0:
@@ -237,6 +244,8 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             "wasRunning": was_running,
             "ping": ping,
             "loadedJobCount": status.get("loadedJobCount", 0),
+            "activeJobCount": len(active_jobs),
+            "workConcurrency": status.get("workConcurrency"),
             "pendingQueueCount": queue_status.get("total", 0),
             "screenshotPath": screenshot.get("path"),
             "workDetails": detail_probe,
@@ -292,7 +301,8 @@ def build_parser() -> argparse.ArgumentParser:
     concurrency = subparsers.add_parser("concurrency", help="현재 동시성 설정 조회")
     concurrency.add_argument("--json", action="store_true", help="JSON으로 출력")
     set_concurrency = subparsers.add_parser("set-concurrency", help="동시성 설정 변경")
-    set_concurrency.add_argument("--images", type=int, required=True, help="이미지 동시 다운로드 수 1~16")
+    set_concurrency.add_argument("--works", type=int, help="동시 실행 작품 수 1~4")
+    set_concurrency.add_argument("--images", type=int, help="이미지 동시 다운로드 수 1~16")
     retry = subparsers.add_parser(
         "retry",
         help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
@@ -516,29 +526,58 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "concurrency":
         if gui_is_running():
             status = control_request({"action": "status"})
-            result = {"imageConcurrency": status["imageConcurrency"]}
-        else:
             result = {
+                "workConcurrency": status["workConcurrency"],
+                "imageConcurrency": status["imageConcurrency"],
+            }
+        else:
+            config = load_config()
+            result = {
+                "workConcurrency": normalize_work_concurrency(
+                    config.get("workConcurrency")
+                ),
                 "imageConcurrency": normalize_image_concurrency(
-                    load_config().get("imageConcurrency")
-                )
+                    config.get("imageConcurrency")
+                ),
             }
         if args.json:
             print_json(result)
         else:
+            print(f"작품 동시 다운로드: {result['workConcurrency']}")
             print(f"이미지 동시 다운로드: {result['imageConcurrency']}")
         return 0
     if command == "set-concurrency":
-        concurrency_value = normalize_image_concurrency(args.images)
+        if args.works is None and args.images is None:
+            raise ValueError("--works 또는 --images 중 하나 이상을 지정해주세요.")
+        work_concurrency = (
+            normalize_work_concurrency(args.works) if args.works is not None else None
+        )
+        image_concurrency = (
+            normalize_image_concurrency(args.images) if args.images is not None else None
+        )
         if gui_is_running():
             result = control_request(
-                {"action": "set_image_concurrency", "value": concurrency_value}
+                {
+                    "action": "set_concurrency",
+                    "works": work_concurrency,
+                    "images": image_concurrency,
+                }
             )
         else:
             config = load_config()
-            config["imageConcurrency"] = concurrency_value
+            if work_concurrency is not None:
+                config["workConcurrency"] = work_concurrency
+            if image_concurrency is not None:
+                config["imageConcurrency"] = image_concurrency
             save_config(config)
-            result = {"imageConcurrency": concurrency_value}
+            result = {
+                "workConcurrency": normalize_work_concurrency(
+                    config.get("workConcurrency")
+                ),
+                "imageConcurrency": normalize_image_concurrency(
+                    config.get("imageConcurrency")
+                ),
+            }
         print_json(result)
         return 0
     if command == "retry":
@@ -549,13 +588,17 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.json:
             print_json(result)
         else:
-            active = result.get("activeJob")
-            print(f"GUI: 실행 중 | 대기: {result.get('pendingCount', 0)}")
-            if active:
-                print(
-                    f"현재 작업: {active['job_id']} | {active['state']} | "
-                    f"{active['progress']}% | {active['title']}"
-                )
+            active_jobs = result.get("activeJobs") or []
+            print(
+                f"GUI: 실행 중 | 실행: {len(active_jobs)} | "
+                f"대기: {result.get('pendingCount', 0)}"
+            )
+            if active_jobs:
+                for active in active_jobs:
+                    print(
+                        f"현재 작업: {active['job_id']} | {active['state']} | "
+                        f"{active['progress']}% | {active['title']}"
+                    )
             else:
                 print("현재 작업: 없음")
             print(f"저장 폴더: {result.get('outputDir')}")

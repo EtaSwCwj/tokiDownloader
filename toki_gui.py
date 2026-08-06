@@ -8,6 +8,7 @@ import subprocess
 import sys
 import uuid
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,7 @@ from toki_core import (
     TAG_COLORS,
     DownloadJob,
     DownloadRun,
+    available_work_slots,
     append_log,
     build_work_key,
     build_downloader_args,
@@ -75,6 +77,7 @@ from toki_core import (
     mark_run_cancelled,
     normalize_range,
     normalize_image_concurrency,
+    normalize_work_concurrency,
     open_in_explorer,
     read_log_tail,
     read_run_log,
@@ -549,6 +552,17 @@ class WorkDetailDialog(QDialog):
         self.owner.statusBar().showMessage("작품 메모를 저장했습니다.", 2500)
 
 
+@dataclass
+class ProcessContext:
+    job: DownloadJob
+    run: DownloadRun
+    process: QProcess
+    stdout_buffer: str = ""
+    stderr_buffer: str = ""
+    cancel_requested: bool = False
+    paused: bool = False
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -568,18 +582,12 @@ class MainWindow(QMainWindow):
         self.history_filter_timer.setInterval(250)
         self.history_filter_timer.timeout.connect(self.apply_history_filters)
         self.pending_jobs: deque[DownloadJob] = deque()
-        self.active_job: DownloadJob | None = None
-        self.active_run: DownloadRun | None = None
-        self.process: QProcess | None = None
+        self.active_contexts: dict[str, ProcessContext] = {}
         self.self_test_process: QProcess | None = None
         self.self_test_stdout = ""
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
-        self.cancel_requested = False
-        self.paused_job_id = ""
         self.force_close = False
-        self.stdout_buffer = ""
-        self.stderr_buffer = ""
         self.control_sockets: set[Any] = set()
         self.active_context_menu: QMenu | None = None
         self.active_detail_dialog: WorkDetailDialog | None = None
@@ -767,6 +775,15 @@ class MainWindow(QMainWindow):
         self.image_concurrency_spin.setToolTip(
             "한 회차 안에서 동시에 받을 이미지 수입니다. 권장값은 5입니다."
         )
+        self.work_concurrency_spin = QSpinBox()
+        self.work_concurrency_spin.setRange(1, 4)
+        self.work_concurrency_spin.setValue(
+            normalize_work_concurrency(self.config.get("workConcurrency"))
+        )
+        self.work_concurrency_spin.setToolTip(
+            "동시에 실행할 작품 수입니다. 기본값은 1, 안전 상한은 4입니다."
+        )
+        self.work_concurrency_spin.valueChanged.connect(self._work_concurrency_changed)
 
         input_layout.addWidget(QLabel("URL"), 0, 0)
         input_layout.addWidget(self.url_edit, 0, 1, 1, 5)
@@ -785,6 +802,9 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(QLabel("이미지 병렬"), 3, 0)
         input_layout.addWidget(self.image_concurrency_spin, 3, 1)
         input_layout.addWidget(QLabel("1~16 (권장 5)"), 3, 2, 1, 2)
+        input_layout.addWidget(QLabel("작품 병렬"), 3, 4)
+        input_layout.addWidget(self.work_concurrency_spin, 3, 5)
+        input_layout.addWidget(QLabel("1~4"), 3, 6)
         input_layout.setColumnStretch(1, 1)
 
         queue_header = QHBoxLayout()
@@ -938,7 +958,8 @@ class MainWindow(QMainWindow):
         clean = ANSI_RE.sub("", str(message)).strip()
         if not clean:
             return
-        resolved_job_id = job_id or (self.active_job.job_id if self.active_job else "-")
+        first_active = next(iter(self.active_contexts.values()), None)
+        resolved_job_id = job_id or (first_active.job.job_id if first_active else "-")
         line = append_log(clean, level, resolved_job_id)
         self.log_edit.appendPlainText(line)
         scrollbar = self.log_edit.verticalScrollBar()
@@ -1243,95 +1264,114 @@ class MainWindow(QMainWindow):
             self.history_total += 1
         else:
             self.task_model.update_job(job)
-        if self.active_job and self.active_job.job_id == job.job_id:
-            self.overall_progress.setValue(job.progress)
-            self.status_label.setText(f"{job.state}: {job.title}")
+        if job.job_id in self.active_contexts:
+            self._update_active_summary()
         self._schedule_job_persist(job)
         self._update_summary()
 
     def _start_next_job(self) -> None:
-        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
-            return
-        if not self.pending_jobs:
-            self.active_job = None
-            self.status_label.setText("준비")
-            self.overall_progress.setValue(0)
-            self._update_summary()
-            return
+        concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
+        while self.pending_jobs and available_work_slots(
+            len(self.active_contexts), concurrency
+        ):
+            job = self.pending_jobs.popleft()
+            job.queue_position = 0
+            run = load_run(job.job_id) or DownloadRun.from_job(job)
+            process = QProcess(self)
+            context = ProcessContext(job=job, run=run, process=process)
+            self.active_contexts[job.job_id] = context
+            job.state = "실행 중"
+            job.error = ""
+            self._update_job_card(job)
 
-        job = self.pending_jobs.popleft()
-        job.queue_position = 0
+            process.setWorkingDirectory(str(ROOT_DIR))
+            process.setProgram(find_node())
+            process.setArguments(build_downloader_args(job, json_events=True))
+            process.readyReadStandardOutput.connect(
+                lambda job_id=job.job_id: self._read_stdout(job_id)
+            )
+            process.readyReadStandardError.connect(
+                lambda job_id=job.job_id: self._read_stderr(job_id)
+            )
+            process.started.connect(
+                lambda job_id=job.job_id: self._process_started(job_id)
+            )
+            process.errorOccurred.connect(
+                lambda error, job_id=job.job_id: self._process_error(job_id, error)
+            )
+            process.finished.connect(
+                lambda exit_code, exit_status, job_id=job.job_id: self._process_finished(
+                    job_id, exit_code, exit_status
+                )
+            )
+            process.start()
         self._refresh_pending_positions()
-        self.active_job = job
-        self.active_run = load_run(job.job_id) or DownloadRun.from_job(job)
-        self.cancel_requested = False
-        job.state = "실행 중"
-        job.error = ""
-        self._update_job_card(job)
+        self._update_active_summary()
 
-        process = QProcess(self)
-        self.process = process
-        self.stdout_buffer = ""
-        self.stderr_buffer = ""
-        process.setWorkingDirectory(str(ROOT_DIR))
-        process.setProgram(find_node())
-        process.setArguments(build_downloader_args(job, json_events=True))
-        process.readyReadStandardOutput.connect(self._read_stdout)
-        process.readyReadStandardError.connect(self._read_stderr)
-        process.started.connect(self._process_started)
-        process.errorOccurred.connect(
-            lambda error: self.log(f"프로세스 오류: {error}", "ERROR", job.job_id)
-        )
-        process.finished.connect(self._process_finished)
-        process.start()
-
-    def _process_started(self) -> None:
-        if not self.process or not self.active_job or not self.active_run:
+    def _process_started(self, job_id: str) -> None:
+        context = self.active_contexts.get(job_id)
+        if not context:
             return
         now = datetime.now().astimezone().isoformat(timespec="seconds")
-        self.active_run.state = "실행 중"
-        self.active_run.process_pid = int(self.process.processId())
-        self.active_run.started_at = now
-        save_runs([self.active_run])
+        context.run.state = "실행 중"
+        context.run.process_pid = int(context.process.processId())
+        context.run.started_at = now
+        save_runs([context.run])
         self.log(
-            f"작업 시작 PID={self.active_run.process_pid}: {self.active_job.url}",
-            job_id=self.active_job.job_id,
+            f"작업 시작 PID={context.run.process_pid}: {context.job.url}",
+            job_id=context.job.job_id,
         )
 
-    def _consume_lines(self, text: str, is_stderr: bool) -> None:
+    def _process_error(self, job_id: str, error: QProcess.ProcessError) -> None:
+        context = self.active_contexts.get(job_id)
+        if not context:
+            return
+        message = f"프로세스 오류: {context.process.errorString()} ({error.name})"
+        context.job.error = message
+        self.log(message, "ERROR", job_id)
+        if error == QProcess.ProcessError.FailedToStart:
+            self._process_finished(job_id, -1, QProcess.ExitStatus.CrashExit)
+
+    def _consume_lines(self, job_id: str, text: str, is_stderr: bool) -> None:
+        context = self.active_contexts.get(job_id)
+        if not context:
+            return
         buffer_name = "stderr_buffer" if is_stderr else "stdout_buffer"
-        buffer_value = getattr(self, buffer_name) + text
+        buffer_value = getattr(context, buffer_name) + text
         while "\n" in buffer_value:
             line, buffer_value = buffer_value.split("\n", 1)
-            self._handle_process_line(line.rstrip("\r"), is_stderr)
-        setattr(self, buffer_name, buffer_value)
+            self._handle_process_line(job_id, line.rstrip("\r"), is_stderr)
+        setattr(context, buffer_name, buffer_value)
 
-    def _read_stdout(self) -> None:
-        if self.process:
-            data = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
-            self._consume_lines(data, False)
+    def _read_stdout(self, job_id: str) -> None:
+        context = self.active_contexts.get(job_id)
+        if context:
+            data = bytes(context.process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            self._consume_lines(job_id, data, False)
 
-    def _read_stderr(self) -> None:
-        if self.process:
-            data = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
-            self._consume_lines(data, True)
+    def _read_stderr(self, job_id: str) -> None:
+        context = self.active_contexts.get(job_id)
+        if context:
+            data = bytes(context.process.readAllStandardError()).decode("utf-8", errors="replace")
+            self._consume_lines(job_id, data, True)
 
-    def _handle_process_line(self, line: str, is_stderr: bool) -> None:
+    def _handle_process_line(self, job_id: str, line: str, is_stderr: bool) -> None:
         clean = ANSI_RE.sub("", line).strip()
         if not clean:
             return
         if clean.startswith(EVENT_PREFIX):
             try:
-                self._handle_downloader_event(json.loads(clean[len(EVENT_PREFIX):]))
+                self._handle_downloader_event(job_id, json.loads(clean[len(EVENT_PREFIX):]))
             except json.JSONDecodeError:
-                self.log(f"이벤트 해석 실패: {clean}", "ERROR")
+                self.log(f"이벤트 해석 실패: {clean}", "ERROR", job_id)
             return
-        self.log(clean, "ERROR" if is_stderr else "INFO")
+        self.log(clean, "ERROR" if is_stderr else "INFO", job_id)
 
-    def _handle_downloader_event(self, event: dict[str, Any]) -> None:
-        job = self.active_job
-        if not job:
+    def _handle_downloader_event(self, job_id: str, event: dict[str, Any]) -> None:
+        context = self.active_contexts.get(job_id)
+        if not context:
             return
+        job = context.job
         event_name = event.get("event")
         if event_name == "work_metadata":
             metadata = event.get("metadata") or {}
@@ -1377,81 +1417,71 @@ class MainWindow(QMainWindow):
                 job.progress = min(99, int((job.episode_index / job.episode_total) * 100))
         if event_name == "completed":
             job.progress = 100
-        run = self.active_run
-        if run:
-            run.state = job.state
-            run.progress = job.progress
-            run.error = job.error
-            if event_name == "queue_ready":
-                run.discovered_episodes = int(event.get("totalEpisodes") or 0)
-                run.selected_episodes = int(event.get("selectedEpisodes") or 0)
-            elif event_name in {"episode_started", "episode_completed"}:
-                run.processed_episodes = int(event.get("index") or run.processed_episodes)
-                run.last_episode_number = int(event.get("number") or job.episode_number)
-            if event_name in {
-                "work_metadata", "queue_ready", "episode_started",
-                "episode_completed", "completed", "error",
-            }:
-                save_runs([run])
+        run = context.run
+        run.state = job.state
+        run.progress = job.progress
+        run.error = job.error
+        if event_name == "queue_ready":
+            run.discovered_episodes = int(event.get("totalEpisodes") or 0)
+            run.selected_episodes = int(event.get("selectedEpisodes") or 0)
+        elif event_name in {"episode_started", "episode_completed"}:
+            run.processed_episodes = int(event.get("index") or run.processed_episodes)
+            run.last_episode_number = int(event.get("number") or job.episode_number)
+        if event_name in {
+            "work_metadata", "queue_ready", "episode_started",
+            "episode_completed", "completed", "error",
+        }:
+            save_runs([run])
         self._update_job_card(job)
 
-    def _process_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
-        if self.stdout_buffer.strip():
-            self._handle_process_line(self.stdout_buffer, False)
-        if self.stderr_buffer.strip():
-            self._handle_process_line(self.stderr_buffer, True)
-        self.stdout_buffer = ""
-        self.stderr_buffer = ""
-
-        job = self.active_job
-        if job:
-            if self.cancel_requested:
-                job.state = "중지됨"
-            elif exit_code == 0:
-                job.state = "완료"
-                job.progress = 100
-            else:
-                job.state = "오류"
-                if not job.error:
-                    job.error = f"프로세스 종료 코드 {exit_code}"
-            self.log(f"작업 종료: {job.state} (code={exit_code})", job_id=job.job_id)
-            self._update_job_card(job)
-            if self.active_run:
-                self.active_run.state = job.state
-                self.active_run.progress = job.progress
-                self.active_run.error = job.error
-                self.active_run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
-                save_runs([self.active_run])
-            if (
-                self.active_detail_dialog
-                and self.active_detail_dialog.job.work_key == job.work_key
-            ):
-                self.active_detail_dialog.job = job
-                self.active_detail_dialog.refresh()
-
-        self.process = None
-        self.active_job = None
-        self.active_run = None
-        self.paused_job_id = ""
-        self.cancel_requested = False
+    def _process_finished(
+        self,
+        job_id: str,
+        exit_code: int,
+        _exit_status: QProcess.ExitStatus,
+    ) -> None:
+        context = self.active_contexts.get(job_id)
+        if not context:
+            return
+        if context.stdout_buffer.strip():
+            self._handle_process_line(job_id, context.stdout_buffer, False)
+        if context.stderr_buffer.strip():
+            self._handle_process_line(job_id, context.stderr_buffer, True)
+        job = context.job
+        if context.cancel_requested:
+            job.state = "중지됨"
+        elif exit_code == 0:
+            job.state = "완료"
+            job.progress = 100
+        else:
+            job.state = "오류"
+            if not job.error:
+                job.error = f"프로세스 종료 코드 {exit_code}"
+        self.log(f"작업 종료: {job.state} (code={exit_code})", job_id=job.job_id)
+        context.run.state = job.state
+        context.run.progress = job.progress
+        context.run.error = job.error
+        context.run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        save_runs([context.run])
+        self.active_contexts.pop(job_id, None)
+        self._update_job_card(job)
+        if (
+            self.active_detail_dialog
+            and self.active_detail_dialog.job.work_key == job.work_key
+        ):
+            self.active_detail_dialog.job = job
+            self.active_detail_dialog.refresh()
+        self._update_active_summary()
         QTimer.singleShot(250, self._start_next_job)
 
     def stop_active_job(self, job_id: str | None = None) -> bool:
-        requested_job_id = job_id if isinstance(job_id, str) and job_id else None
-        if not self.process or self.process.state() == QProcess.ProcessState.NotRunning:
+        context = self._resolve_active_context(job_id)
+        if not context:
             self.log("중지할 실행 작업이 없습니다.")
             return False
-        if (
-            requested_job_id
-            and self.active_job
-            and self.active_job.job_id != requested_job_id
-        ):
-            raise ValueError(
-                f"지정한 작업은 현재 실행 중이 아닙니다: {requested_job_id}"
-            )
-        self.cancel_requested = True
-        pid = int(self.process.processId())
-        self.log(f"작업 중지 요청: PID {pid}")
+        context.cancel_requested = True
+        pid = int(context.process.processId())
+        self.log(f"작업 중지 요청: PID {pid}", job_id=context.job.job_id)
         if pid and os.name == "nt":
             subprocess.Popen(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -1460,48 +1490,74 @@ class MainWindow(QMainWindow):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
-            self.process.kill()
+            context.process.kill()
         return True
 
     def pause_active_job(self, job_id: str | None = None) -> dict[str, Any]:
-        requested_job_id = job_id if isinstance(job_id, str) and job_id else None
-        if not self.process or not self.active_job or not self.active_run:
-            raise ValueError("일시정지할 실행 작업이 없습니다.")
-        if requested_job_id and self.active_job.job_id != requested_job_id:
-            raise ValueError(f"지정한 작업은 현재 실행 중이 아닙니다: {requested_job_id}")
-        if self.paused_job_id:
-            raise ValueError(f"이미 일시정지된 작업입니다: {self.paused_job_id}")
-        pid = int(self.process.processId())
+        context = self._resolve_active_context(job_id, required=True)
+        if context.paused:
+            raise ValueError(f"이미 일시정지된 작업입니다: {context.job.job_id}")
+        pid = int(context.process.processId())
         affected = set_process_tree_paused(pid, True)
-        set_job_pause_state(self.active_job, self.active_run, paused=True)
-        self.paused_job_id = self.active_job.job_id
-        save_runs([self.active_run])
-        self._update_job_card(self.active_job)
+        set_job_pause_state(context.job, context.run, paused=True)
+        context.paused = True
+        save_runs([context.run])
+        self._update_job_card(context.job)
         self.log(
             f"작업 일시정지: PID {pid}, 프로세스 {len(affected)}개",
-            job_id=self.active_job.job_id,
+            job_id=context.job.job_id,
         )
-        return {"paused": True, "jobId": self.active_job.job_id, "processIds": affected}
+        return {"paused": True, "jobId": context.job.job_id, "processIds": affected}
 
     def resume_active_job(self, job_id: str | None = None) -> dict[str, Any]:
-        requested_job_id = job_id if isinstance(job_id, str) and job_id else None
-        if not self.process or not self.active_job or not self.active_run:
-            raise ValueError("계속할 일시정지 작업이 없습니다.")
-        if requested_job_id and self.active_job.job_id != requested_job_id:
-            raise ValueError(f"지정한 작업은 현재 일시정지 상태가 아닙니다: {requested_job_id}")
-        if self.paused_job_id != self.active_job.job_id:
+        context = self._resolve_active_context(job_id, required=True)
+        if not context.paused:
             raise ValueError("현재 작업은 일시정지 상태가 아닙니다.")
-        pid = int(self.process.processId())
+        pid = int(context.process.processId())
         affected = set_process_tree_paused(pid, False)
-        set_job_pause_state(self.active_job, self.active_run, paused=False)
-        self.paused_job_id = ""
-        save_runs([self.active_run])
-        self._update_job_card(self.active_job)
+        set_job_pause_state(context.job, context.run, paused=False)
+        context.paused = False
+        save_runs([context.run])
+        self._update_job_card(context.job)
         self.log(
             f"작업 계속: PID {pid}, 프로세스 {len(affected)}개",
-            job_id=self.active_job.job_id,
+            job_id=context.job.job_id,
         )
-        return {"resumed": True, "jobId": self.active_job.job_id, "processIds": affected}
+        return {"resumed": True, "jobId": context.job.job_id, "processIds": affected}
+
+    def _resolve_active_context(
+        self,
+        job_id: str | None = None,
+        *,
+        required: bool = False,
+    ) -> ProcessContext | None:
+        requested = job_id if isinstance(job_id, str) and job_id else ""
+        if requested:
+            context = self.active_contexts.get(requested)
+            if context:
+                return context
+            raise ValueError(f"지정한 작업은 현재 실행 중이 아닙니다: {requested}")
+        selected = self.selected_job()
+        if selected and selected.job_id in self.active_contexts:
+            return self.active_contexts[selected.job_id]
+        if len(self.active_contexts) == 1:
+            return next(iter(self.active_contexts.values()))
+        if required or self.active_contexts:
+            raise ValueError("여러 작업이 실행 중입니다. 작업 ID를 지정해주세요.")
+        return None
+
+    def _update_active_summary(self) -> None:
+        contexts = list(self.active_contexts.values())
+        if not contexts:
+            self.status_label.setText("준비")
+            self.overall_progress.setValue(0)
+            return
+        paused_count = sum(context.paused for context in contexts)
+        average = round(sum(context.job.progress for context in contexts) / len(contexts))
+        self.overall_progress.setValue(average)
+        self.status_label.setText(
+            f"실행 {len(contexts) - paused_count} · 일시정지 {paused_count} · 평균 {average}%"
+        )
 
     def pause_selected_active_job(self, job_id: str | None = None) -> None:
         try:
@@ -1581,8 +1637,9 @@ class MainWindow(QMainWindow):
         index = self.task_list.currentIndex()
         if index.isValid():
             return self.task_model.job_at(index.row())
-        if self.active_job:
-            return self.active_job
+        first_active = next(iter(self.active_contexts.values()), None)
+        if first_active:
+            return first_active.job
         return next(reversed(self.jobs.values()), None) if self.jobs else None
 
     def retry_job(self, job_id: str | None = None) -> DownloadJob | None:
@@ -1604,7 +1661,7 @@ class MainWindow(QMainWindow):
         source = self.selected_job(job_id)
         if not source:
             raise ValueError("메타데이터를 새로고칠 작품을 선택해주세요.")
-        if source.state in {"대기", "실행 중"}:
+        if source.state in {"대기", "실행 중", "일시정지"}:
             raise ValueError("대기 또는 실행 중인 작품은 메타데이터를 새로고칠 수 없습니다.")
         return self.enqueue_download(
             source.url,
@@ -1645,6 +1702,38 @@ class MainWindow(QMainWindow):
         save_config(self.config)
         self.log(f"이미지 동시 다운로드 수 변경: {concurrency}")
         return {"imageConcurrency": concurrency}
+
+    def _work_concurrency_changed(self, value: int) -> None:
+        concurrency = normalize_work_concurrency(value)
+        self.config["workConcurrency"] = concurrency
+        save_config(self.config)
+        self.log(f"작품 동시 다운로드 수 변경: {concurrency}")
+        QTimer.singleShot(0, self._start_next_job)
+
+    def set_work_concurrency(self, value: int) -> dict[str, Any]:
+        concurrency = normalize_work_concurrency(value)
+        if self.work_concurrency_spin.value() != concurrency:
+            self.work_concurrency_spin.setValue(concurrency)
+        else:
+            self._work_concurrency_changed(concurrency)
+        return {"workConcurrency": concurrency}
+
+    def set_concurrency(
+        self,
+        *,
+        works: int | None = None,
+        images: int | None = None,
+    ) -> dict[str, Any]:
+        if works is None and images is None:
+            raise ValueError("변경할 작품 또는 이미지 동시성 값을 지정해주세요.")
+        if works is not None:
+            self.set_work_concurrency(works)
+        if images is not None:
+            self.set_image_concurrency(images)
+        return {
+            "workConcurrency": self.work_concurrency_spin.value(),
+            "imageConcurrency": self.image_concurrency_spin.value(),
+        }
 
     def open_output_folder(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
@@ -1792,23 +1881,23 @@ class MainWindow(QMainWindow):
         retry_action = menu.addAction("작품 전체 재검사", self.retry_selected_job)
         retry_action.setEnabled(job.state not in {"대기", "실행 중", "일시정지"})
         stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
-        stop_action.setEnabled(bool(self.active_job and self.active_job.job_id == job.job_id))
+        active_context = self.active_contexts.get(job.job_id)
+        stop_action.setEnabled(active_context is not None)
         pause_action = menu.addAction(
             "현재 작업 일시정지",
             lambda: self.pause_selected_active_job(job.job_id),
         )
         pause_action.setEnabled(
             bool(
-                self.active_job
-                and self.active_job.job_id == job.job_id
-                and not self.paused_job_id
+                active_context
+                and not active_context.paused
             )
         )
         resume_action = menu.addAction(
             "일시정지 작업 계속",
             lambda: self.resume_selected_active_job(job.job_id),
         )
-        resume_action.setEnabled(self.paused_job_id == job.job_id)
+        resume_action.setEnabled(bool(active_context and active_context.paused))
         cancel_action = menu.addAction(
             "대기 작업 취소",
             lambda: self.cancel_selected_queued_job(job.job_id),
@@ -2104,7 +2193,14 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd remove-record --job ID --yes\n"
             "toki-cli.cmd cleanup-records --status completed|error|stopped --yes\n"
             "toki-cli.cmd refresh-list\n"
-            "toki-cli.cmd stop\n"
+            "toki-cli.cmd stop --job ID\n"
+            "toki-cli.cmd cancel --job ID\n"
+            "toki-cli.cmd pause --job ID\n"
+            "toki-cli.cmd resume --job ID\n"
+            "toki-cli.cmd queue list [--json]\n"
+            "toki-cli.cmd queue move --job ID --before OTHER_ID|--first|--last\n"
+            "toki-cli.cmd concurrency [--json]\n"
+            "toki-cli.cmd set-concurrency [--works 1~4] [--images 1~16]\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd set-output PATH\n"
             "toki-cli.cmd open-folder [--job ID]\n"
@@ -2122,22 +2218,39 @@ class MainWindow(QMainWindow):
         )
 
     def status_snapshot(self) -> dict[str, Any]:
+        active_contexts = list(self.active_contexts.values())
+        active_jobs = [context.job.to_dict() for context in active_contexts]
+        active_processes = [
+            {
+                "jobId": context.job.job_id,
+                "pid": int(context.process.processId()),
+                "paused": context.paused,
+            }
+            for context in active_contexts
+            if context.process.state() != QProcess.ProcessState.NotRunning
+        ]
         return {
-            "running": self.active_job is not None,
-            "processPid": (
-                int(self.process.processId())
-                if self.process and self.process.state() != QProcess.ProcessState.NotRunning
-                else None
-            ),
-            "activeJob": self.active_job.to_dict() if self.active_job else None,
+            "running": bool(active_contexts),
+            "processPid": active_processes[0]["pid"] if active_processes else None,
+            "activeJob": active_jobs[0] if active_jobs else None,
+            "activeJobs": active_jobs,
+            "activeProcesses": active_processes,
+            "activeCount": len(active_contexts),
             "pendingCount": len(self.pending_jobs),
-            "pausedJobId": self.paused_job_id or None,
+            "pausedJobId": next(
+                (context.job.job_id for context in active_contexts if context.paused),
+                None,
+            ),
+            "pausedJobIds": [
+                context.job.job_id for context in active_contexts if context.paused
+            ],
             "jobs": [job.to_dict() for job in self.jobs.values()],
             "loadedJobCount": len(self.jobs),
             "totalJobCount": self.history_all_total,
             "filteredJobCount": self.history_total,
             "outputDir": self.output_edit.text(),
             "imageConcurrency": self.image_concurrency_spin.value(),
+            "workConcurrency": self.work_concurrency_spin.value(),
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
             "screenshotPath": str(LOG_PATH.parent / "gui-screenshot.png"),
@@ -2269,6 +2382,13 @@ class MainWindow(QMainWindow):
             return {"outputDir": self.set_output_folder(str(request.get("path") or ""))}
         if action == "set_image_concurrency":
             return self.set_image_concurrency(int(request.get("value") or 0))
+        if action == "set_concurrency":
+            works = request.get("works")
+            images = request.get("images")
+            return self.set_concurrency(
+                works=int(works) if works is not None else None,
+                images=int(images) if images is not None else None,
+            )
         if action == "open_folder":
             return {"opened": self.open_output_folder(request.get("jobId"))}
         if action == "open_source":
@@ -2347,8 +2467,9 @@ class MainWindow(QMainWindow):
             return {"shown": True}
         if action == "quit":
             self.force_close = bool(request.get("force"))
-            if self.force_close and self.process:
-                self.stop_active_job()
+            if self.force_close:
+                for job_id in list(self.active_contexts):
+                    self.stop_active_job(job_id)
             QTimer.singleShot(100, self.close)
             return {"quitting": True}
         raise ValueError(f"지원하지 않는 CLI 동작입니다: {action}")
@@ -2356,8 +2477,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if (
             not self.force_close
-            and self.process
-            and self.process.state() != QProcess.ProcessState.NotRunning
+            and self.active_contexts
         ):
             answer = QMessageBox.question(
                 self,
@@ -2367,13 +2487,15 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self.stop_active_job()
+            for job_id in list(self.active_contexts):
+                self.stop_active_job(job_id)
         window_config = self.window_snapshot()
         window_config["qtGeometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self.config["window"] = window_config
         self.config["outputDir"] = self.output_edit.text()
         self.config["showBrowser"] = self.show_browser_check.isChecked()
         self.config["imageConcurrency"] = self.image_concurrency_spin.value()
+        self.config["workConcurrency"] = self.work_concurrency_spin.value()
         save_config(self.config)
         self.persist_timer.stop()
         self._flush_job_history()

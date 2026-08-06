@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
-from toki_app import build_parser
+from toki_app import build_parser, run_cli
 
 
 class CliParserTests(unittest.TestCase):
@@ -46,11 +49,36 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertTrue(first.first)
 
-    def test_image_concurrency_arguments(self) -> None:
+    def test_work_and_image_concurrency_arguments(self) -> None:
         current = build_parser().parse_args(["concurrency", "--json"])
         self.assertTrue(current.json)
-        update = build_parser().parse_args(["set-concurrency", "--images", "8"])
+        update = build_parser().parse_args(
+            ["set-concurrency", "--works", "3", "--images", "8"]
+        )
+        self.assertEqual(update.works, 3)
         self.assertEqual(update.images, 8)
+
+    def test_set_concurrency_sends_both_values_to_running_gui(self) -> None:
+        args = build_parser().parse_args(
+            ["set-concurrency", "--works", "2", "--images", "7"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={"workConcurrency": 2, "imageConcurrency": 7},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 0)
+        request.assert_called_once_with(
+            {"action": "set_concurrency", "works": 2, "images": 7}
+        )
+
+    def test_set_concurrency_requires_at_least_one_value(self) -> None:
+        args = build_parser().parse_args(["set-concurrency"])
+        with self.assertRaises(ValueError):
+            run_cli(args)
 
     def test_list_query_arguments(self) -> None:
         args = build_parser().parse_args(

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import toki_core
 from toki_core import (
+    available_work_slots,
     DownloadJob,
     DownloadRun,
     build_downloader_args,
@@ -26,6 +27,7 @@ from toki_core import (
     mark_run_cancelled,
     normalize_range,
     normalize_image_concurrency,
+    normalize_work_concurrency,
     read_run_log,
     resolve_cover_path,
     reorder_pending_jobs,
@@ -71,6 +73,18 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(normalize_image_concurrency(16), 16)
         with self.assertRaises(ValueError):
             normalize_image_concurrency(17)
+
+    def test_work_concurrency_has_safe_bounds(self) -> None:
+        self.assertEqual(normalize_work_concurrency(None), 1)
+        self.assertEqual(normalize_work_concurrency(4), 4)
+        with self.assertRaises(ValueError):
+            normalize_work_concurrency(5)
+
+    def test_available_work_slots_never_exceeds_capacity(self) -> None:
+        self.assertEqual(available_work_slots(0, 3), 3)
+        self.assertEqual(available_work_slots(2, 3), 1)
+        self.assertEqual(available_work_slots(3, 3), 0)
+        self.assertEqual(available_work_slots(9, 3), 0)
 
     def test_metadata_refresh_arguments_preserve_existing_work_folder(self) -> None:
         job = DownloadJob(

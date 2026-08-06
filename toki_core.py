@@ -48,6 +48,7 @@ def default_config() -> dict[str, Any]:
         },
         "logVisible": True,
         "showBrowser": False,
+        "workConcurrency": 1,
         "imageConcurrency": 5,
     }
 
@@ -161,6 +162,18 @@ def normalize_image_concurrency(value: int | None) -> int:
     if not 1 <= concurrency <= 16:
         raise ValueError("이미지 동시 다운로드 수는 1~16 사이여야 합니다.")
     return concurrency
+
+
+def normalize_work_concurrency(value: int | None) -> int:
+    concurrency = int(value or 1)
+    if not 1 <= concurrency <= 4:
+        raise ValueError("작품 동시 다운로드 수는 1~4 사이여야 합니다.")
+    return concurrency
+
+
+def available_work_slots(active_count: int, work_concurrency: int | None) -> int:
+    active = max(0, int(active_count))
+    return max(0, normalize_work_concurrency(work_concurrency) - active)
 
 
 @dataclass
