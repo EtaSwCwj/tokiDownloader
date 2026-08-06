@@ -363,6 +363,45 @@ class CliParserTests(unittest.TestCase):
             }
         )
 
+    def test_shortcuts_and_focus_cli_contracts(self) -> None:
+        shortcuts = build_parser().parse_args(["shortcuts", "--json"])
+        with redirect_stdout(StringIO()) as output:
+            shortcut_exit = run_cli(shortcuts)
+        shortcut_result = json.loads(output.getvalue())
+        self.assertEqual(shortcut_exit, 0)
+        self.assertGreater(shortcut_result["count"], 10)
+
+        shortcut_window = build_parser().parse_args(["shortcuts", "--show-gui"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as shortcut_request,
+            redirect_stdout(StringIO()),
+        ):
+            window_exit = run_cli(shortcut_window)
+        self.assertEqual(window_exit, 0)
+        shortcut_request.assert_called_once_with({"action": "show_shortcut_help"})
+
+        focus = build_parser().parse_args(
+            ["focus", "--target", "next", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={
+                    "focus": "list",
+                    "selectedRow": 1,
+                    "selectedJobId": "job-2",
+                },
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            focus_exit = run_cli(focus)
+        self.assertEqual(focus_exit, 0)
+        request.assert_called_once_with(
+            {"action": "keyboard_focus", "target": "next", "clear": False}
+        )
+
     def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
         dry_run = build_parser().parse_args(
             ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--json"]

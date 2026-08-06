@@ -80,6 +80,110 @@ ERROR_CATEGORY_LABELS = {
 NON_RETRYABLE_ERROR_CATEGORIES = frozenset(
     {"authentication_required", "site_structure", "filesystem"}
 )
+KEYBOARD_SHORTCUTS = (
+    {
+        "id": "download.start",
+        "label": "다운로드 시작",
+        "keys": ("Ctrl+Enter",),
+        "cli": "download --url URL",
+    },
+    {
+        "id": "job.stop",
+        "label": "현재 작업 중지",
+        "keys": ("Ctrl+K",),
+        "cli": "stop --job ID",
+    },
+    {
+        "id": "job.pause",
+        "label": "현재 작업 일시정지",
+        "keys": ("Ctrl+P",),
+        "cli": "pause --job ID",
+    },
+    {
+        "id": "job.resume",
+        "label": "일시정지 작업 계속",
+        "keys": ("Ctrl+Shift+P",),
+        "cli": "resume --job ID",
+    },
+    {
+        "id": "job.rescan_full",
+        "label": "선택 작품 전체 재검사",
+        "keys": ("Ctrl+R",),
+        "cli": "rescan --job ID --mode full",
+    },
+    {
+        "id": "folder.open",
+        "label": "저장 폴더 열기",
+        "keys": ("Ctrl+O",),
+        "cli": "open-folder --job ID",
+    },
+    {
+        "id": "details.open",
+        "label": "작품 정보 및 실행 이력",
+        "keys": ("Ctrl+I",),
+        "cli": "details --job ID",
+    },
+    {
+        "id": "list.activate",
+        "label": "선택 작품 상세 열기",
+        "keys": ("Return", "Enter"),
+        "cli": "details --job ID",
+    },
+    {
+        "id": "list.refresh",
+        "label": "작품 목록 새로고침",
+        "keys": ("F5",),
+        "cli": "refresh-list",
+    },
+    {
+        "id": "focus.url",
+        "label": "URL 입력으로 이동",
+        "keys": ("Ctrl+L",),
+        "cli": "focus --target url",
+    },
+    {
+        "id": "focus.search",
+        "label": "작품 검색으로 이동",
+        "keys": ("Ctrl+F",),
+        "cli": "focus --target search",
+    },
+    {
+        "id": "focus.cycle",
+        "label": "다음 화면 영역으로 이동",
+        "keys": ("F6",),
+        "cli": "focus --target next-section",
+    },
+    {
+        "id": "selection.previous",
+        "label": "이전 작품 선택",
+        "keys": ("Ctrl+Shift+Up",),
+        "cli": "focus --target previous",
+    },
+    {
+        "id": "selection.next",
+        "label": "다음 작품 선택",
+        "keys": ("Ctrl+Shift+Down",),
+        "cli": "focus --target next",
+    },
+    {
+        "id": "search.clear",
+        "label": "검색어 지우기",
+        "keys": ("Escape",),
+        "cli": "focus --target search --clear",
+    },
+    {
+        "id": "screenshot.capture",
+        "label": "GUI 화면 캡처",
+        "keys": ("Ctrl+Shift+S",),
+        "cli": "screenshot",
+    },
+    {
+        "id": "settings.open",
+        "label": "설정 열기",
+        "keys": ("Ctrl+,",),
+        "cli": "settings --show-gui",
+    },
+)
 
 
 def default_config() -> dict[str, Any]:
@@ -531,6 +635,21 @@ def build_job_list_view_state(
         "query": clean_query,
         "status": clean_state,
     }
+
+
+def keyboard_shortcut_catalog() -> list[dict[str, Any]]:
+    return [
+        {**item, "keys": list(item["keys"])}
+        for item in KEYBOARD_SHORTCUTS
+    ]
+
+
+def keyboard_shortcut_keys(action_id: str) -> list[str]:
+    normalized = str(action_id or "").strip()
+    for item in KEYBOARD_SHORTCUTS:
+        if item["id"] == normalized:
+            return list(item["keys"])
+    raise ValueError(f"지원하지 않는 단축키 동작입니다: {action_id}")
 
 
 def retry_backoff_seconds(retry_number: int, base_seconds: int | None) -> int:

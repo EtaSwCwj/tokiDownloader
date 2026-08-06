@@ -349,7 +349,7 @@ GUI 실행 인자와 취소의 멱등성을 자동 테스트했다. 실제 사�
 - [x] 밝은/어두운 테마와 시스템 테마 대응
 - [x] 완료 알림과 선택적 트레이 동작
 - [x] 빈 화면, 로딩, 오류와 작업 없음 상태 정리
-- [ ] 키보드 탐색과 단축키
+- [x] 키보드 탐색과 단축키
 - [ ] 고해상도 DPI 및 여러 모니터에서 창 복원 검증
 
 완료 조건:
@@ -398,6 +398,14 @@ stderr, PID, 중지와 완료 신호는 기존 GUI 계약을 유지한다. 프�
 `refresh-list`와 `status --json`의 `listViewState`로 같은 상태를 제어·검증할 수 있다. Python
 78건과 Node 7건을 통과했고 `logs/list-state-no-results.png`, `logs/list-state-error.png`에서
 어두운 테마의 문구·버튼 대비를 직접 확인했다.
+
+2026-08-07 키보드 탐색·단축키: 17개 기본 단축키를 공용 카탈로그로 정의해 QAction과
+`shortcuts --json`이 같은 키·동작·대응 CLI를 사용한다. `Ctrl+L`, `Ctrl+F`, `F6`으로 주요
+영역을 이동하고 목록 Enter는 상세 정보, `Ctrl+Shift+Up/Down`은 이전·다음 작품을 순환
+선택한다. `focus --target ...`과 `status --json`의 `keyboard`로 포커스·선택 행·작업 ID를
+검증하며 GUI 도움말 표도 CLI로 열고 닫는다. Python 81건을 통과했고
+`logs/keyboard-shortcuts.png`, `logs/keyboard-navigation.png`에서 안내창과 선택 강조를 직접
+확인했다.
 
 ### 단계 6. 대규모 성능과 안정성
 

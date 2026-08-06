@@ -79,6 +79,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd list-state --query "없는 작품" --json
 .\toki-cli.cmd list-state --apply-gui --preview no-results --json
 .\toki-cli.cmd list-state --apply-gui --preview error --message "진단 오류" --json
+.\toki-cli.cmd shortcuts --json
+.\toki-cli.cmd shortcuts --show-gui
+.\toki-cli.cmd focus --target url --json
+.\toki-cli.cmd focus --target search --clear --json
+.\toki-cli.cmd focus --target next --json
 .\toki-cli.cmd info --job 작업ID --json
 .\toki-cli.cmd runs --job 작업ID --limit 100 --offset 0 --json
 .\toki-cli.cmd run-info --run 실행ID --json
@@ -217,6 +222,14 @@ SQLite에서 현재 페이지를 다시 읽고 목록용
 화면 배치와 복구 버튼을 CLI에서 점검할 때만 사용하는 일시적 미리보기입니다.
 `--preview auto` 또는 `refresh-list`를 실행하면 실제 목록 상태로 돌아갑니다.
 현재 상태는 `status --json`의 `listViewState`에도 포함됩니다.
+
+`도움말 → 키보드 단축키...`는 17개 기본 키와 각 동작의 대응 CLI를 한 표에 표시합니다.
+`Ctrl+L`은 URL, `Ctrl+F`는 작품 검색, `F6`은 URL → 검색 → 목록 → 로그 순서로 포커스를
+옮깁니다. 목록에서는 방향키로 이동하고 Enter로 상세 정보를 열며, `Ctrl+Shift+Up/Down`은
+다른 입력에 포커스가 있어도 이전·다음 작품을 순환 선택합니다. 검색란의 Escape는 검색어를
+지웁니다. `shortcuts --json|--show-gui|--close`와
+`focus --target url|search|list|log|next|previous|next-section [--clear]`로 같은 기능을
+조회·실행할 수 있고 `status --json`의 `keyboard`에서 포커스와 선택 작업 ID를 확인합니다.
 
 `self-test --json`은 Python/Node 구문, 필수 파일, 단위 테스트와 GUI IPC 및 화면 캡처를
 한 번에 검사합니다. GUI가 꺼져 있으면 점검용으로 시작했다가 자동 종료하며, 이미 실행

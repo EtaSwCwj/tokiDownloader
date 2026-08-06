@@ -26,6 +26,7 @@ from toki_core import (
     clear_log_file,
     find_node,
     hydrate_job_metadata,
+    keyboard_shortcut_catalog,
     count_jobs,
     count_runs,
     convert_job_images,
@@ -241,6 +242,9 @@ def run_gui_self_test_probe() -> dict[str, Any]:
         if not isinstance(startup_recovery, dict):
             raise ControlError("GUI 상태에 재시작 복구 결과가 없습니다.")
         queue_status = control_request({"action": "queue_list"})
+        shortcut_status = control_request({"action": "keyboard_shortcuts"})
+        if int(shortcut_status.get("count") or 0) < 1:
+            raise ControlError("GUI 단축키 카탈로그가 비어 있습니다.")
         screenshot = control_request({"action": "screenshot", "path": str(screenshot_path)})
         if not screenshot_path.is_file() or screenshot_path.stat().st_size <= 0:
             raise ControlError("GUI 자체 점검 화면 캡처 파일이 생성되지 않았습니다.")
@@ -303,6 +307,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             "startupRecovery": startup_recovery,
             "listViewState": list_view_state,
             "pendingQueueCount": queue_status.get("total", 0),
+            "keyboardShortcutCount": shortcut_status.get("count", 0),
             "screenshotPath": screenshot.get("path"),
             "workDetails": detail_probe,
         }
@@ -422,6 +427,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_state.add_argument("--message", default="", help="오류 미리보기의 진단 문구")
     list_state.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    shortcuts = subparsers.add_parser("shortcuts", help="키보드 단축키와 대응 CLI 조회")
+    shortcuts.add_argument("--json", action="store_true", help="JSON으로 출력")
+    shortcut_window = shortcuts.add_mutually_exclusive_group()
+    shortcut_window.add_argument(
+        "--show-gui", action="store_true", help="GUI 단축키 안내창 열기"
+    )
+    shortcut_window.add_argument(
+        "--close", action="store_true", help="GUI 단축키 안내창 닫기"
+    )
+
+    focus = subparsers.add_parser("focus", help="GUI 키보드 포커스와 작품 선택 이동")
+    focus.add_argument(
+        "--target",
+        choices=("url", "search", "list", "log", "next", "previous", "next-section"),
+        required=True,
+        help="이동할 화면 영역 또는 작품 선택 방향",
+    )
+    focus.add_argument("--clear", action="store_true", help="URL 또는 검색 입력을 지운 뒤 포커스")
+    focus.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     info = subparsers.add_parser("info", help="작품 메타데이터와 실행 이력 요약 조회")
     info.add_argument("--job", required=True, help="작업 ID")
@@ -722,6 +747,36 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "show":
         ensure_gui_running()
         control_request({"action": "show"})
+        return 0
+    if command == "shortcuts":
+        if args.show_gui or args.close:
+            ensure_gui_running()
+            action = "close_shortcut_help" if args.close else "show_shortcut_help"
+            result = control_request({"action": action})
+            print_json(result)
+            return 0
+        catalog = keyboard_shortcut_catalog()
+        result = {"count": len(catalog), "shortcuts": catalog}
+        if args.json:
+            print_json(result)
+        else:
+            for item in catalog:
+                print(f"{', '.join(item['keys'])} | {item['label']} | {item['cli']}")
+        return 0
+    if command == "focus":
+        if args.clear and args.target not in {"url", "search"}:
+            raise ValueError("--clear는 url 또는 search 대상에만 사용할 수 있습니다.")
+        ensure_gui_running()
+        result = control_request(
+            {"action": "keyboard_focus", "target": args.target, "clear": args.clear}
+        )
+        if args.json:
+            print_json(result)
+        else:
+            print(
+                f"포커스 {result.get('focus')} | 선택 행 {result.get('selectedRow')} | "
+                f"작업 {result.get('selectedJobId') or '-'}"
+            )
         return 0
     if command == "stop":
         print_json(control_request({"action": "stop", "jobId": args.job}))

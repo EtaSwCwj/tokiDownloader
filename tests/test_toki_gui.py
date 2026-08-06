@@ -104,6 +104,70 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_keyboard_selection_moves_and_wraps_visible_jobs(self) -> None:
+        jobs = [
+            DownloadJob(
+                job_id=f"job-{index}",
+                url=f"https://newtoki1.org/manhwa/{9300 + index}",
+                output_dir=r"C:\Manga",
+                title=f"작품 {index}",
+            )
+            for index in range(2)
+        ]
+
+        class IndexStub:
+            def __init__(self, row: int) -> None:
+                self._row = row
+
+            def row(self) -> int:
+                return self._row
+
+            def isValid(self) -> bool:
+                return self._row >= 0
+
+        class ModelStub:
+            def rowCount(self) -> int:
+                return len(jobs)
+
+            def index(self, row: int, _column: int) -> IndexStub:
+                return IndexStub(row)
+
+            def job_at(self, row: int) -> DownloadJob | None:
+                return jobs[row] if 0 <= row < len(jobs) else None
+
+        class ListStub:
+            def __init__(self) -> None:
+                self.index = IndexStub(0)
+
+            def currentIndex(self) -> IndexStub:
+                return self.index
+
+            def setCurrentIndex(self, index: IndexStub) -> None:
+                self.index = index
+
+            def scrollTo(self, _index: IndexStub) -> None:
+                pass
+
+            def setFocus(self) -> None:
+                pass
+
+        harness = type("KeyboardHarness", (), {})()
+        harness.task_model = ModelStub()
+        harness.task_list = ListStub()
+        harness.statusBar = lambda: type(
+            "StatusHarness", (), {"showMessage": lambda _self, *_args: None}
+        )()
+        harness.keyboard_focus_snapshot = lambda: {
+            "selectedRow": harness.task_list.currentIndex().row()
+        }
+
+        first = MainWindow.move_job_selection(harness, 1)
+        wrapped = MainWindow.move_job_selection(harness, 1)
+
+        self.assertTrue(first["moved"])
+        self.assertEqual(first["selectedRow"], 1)
+        self.assertEqual(wrapped["selectedRow"], 0)
+
     def test_list_state_recovery_actions_are_connected(self) -> None:
         calls = []
         url = type(

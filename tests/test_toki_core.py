@@ -23,6 +23,8 @@ from toki_core import (
     delete_job_record,
     delete_job_records,
     hydrate_job_metadata,
+    keyboard_shortcut_catalog,
+    keyboard_shortcut_keys,
     load_job_by_work_key,
     load_jobs_page,
     list_job_episode_images,
@@ -63,6 +65,18 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_keyboard_shortcut_catalog_is_unique_and_cli_backed(self) -> None:
+        catalog = keyboard_shortcut_catalog()
+        action_ids = [item["id"] for item in catalog]
+        keys = [key for item in catalog for key in item["keys"]]
+
+        self.assertEqual(len(action_ids), len(set(action_ids)))
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertTrue(all(item["cli"] for item in catalog))
+        self.assertEqual(keyboard_shortcut_keys("focus.search"), ["Ctrl+F"])
+        with self.assertRaises(ValueError):
+            keyboard_shortcut_keys("missing.action")
+
     def test_job_list_view_state_covers_loading_empty_filtered_error_and_content(self) -> None:
         loading = build_job_list_view_state(loading=True, total_count=12)
         empty = build_job_list_view_state()

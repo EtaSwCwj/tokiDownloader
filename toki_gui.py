@@ -39,6 +39,7 @@ from PyQt6.QtGui import (
     QFont,
     QImage,
     QImageReader,
+    QKeySequence,
     QPainter,
     QPalette,
     QPen,
@@ -46,6 +47,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -105,6 +107,8 @@ from toki_core import (
     error_category_label,
     find_node,
     hydrate_job_metadata,
+    keyboard_shortcut_catalog,
+    keyboard_shortcut_keys,
     load_config,
     load_job_by_id,
     load_job_by_work_key,
@@ -549,6 +553,43 @@ class RunLogDialog(QDialog):
         )
         scrollbar = self.log_edit.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+
+class ShortcutHelpDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("키보드 단축키")
+        self.resize(760, 520)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "키보드로 주요 화면을 이동하고 선택 작품을 제어할 수 있습니다. "
+            "오른쪽 CLI 명령으로 같은 동작을 자동 검증할 수 있습니다."
+        )
+        intro.setWordWrap(True)
+        intro.setObjectName("mutedLabel")
+        layout.addWidget(intro)
+
+        catalog = keyboard_shortcut_catalog()
+        table = QTableWidget(len(catalog), 3)
+        table.setHorizontalHeaderLabels(("키", "동작", "대응 CLI"))
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        for row, item in enumerate(catalog):
+            table.setItem(row, 0, QTableWidgetItem(", ".join(item["keys"])))
+            table.setItem(row, 1, QTableWidgetItem(str(item["label"])))
+            table.setItem(row, 2, QTableWidgetItem(str(item["cli"])))
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
 
 
 class WorkDetailDialog(QDialog):
@@ -1407,6 +1448,7 @@ class MainWindow(QMainWindow):
             ImageConversionProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
+        self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -1461,23 +1503,33 @@ class MainWindow(QMainWindow):
 
     def _build_actions(self) -> None:
         self.start_action = QAction("다운로드 시작", self)
-        self.start_action.setShortcut("Ctrl+Enter")
+        self.start_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("download.start")]
+        )
         self.start_action.triggered.connect(self.start_from_form)
 
         self.stop_action = QAction("현재 작업 중지", self)
-        self.stop_action.setShortcut("Ctrl+K")
+        self.stop_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("job.stop")]
+        )
         self.stop_action.triggered.connect(self.stop_active_job)
 
         self.pause_action = QAction("현재 작업 일시정지", self)
-        self.pause_action.setShortcut("Ctrl+P")
+        self.pause_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("job.pause")]
+        )
         self.pause_action.triggered.connect(self.pause_selected_active_job)
 
         self.resume_action = QAction("일시정지 작업 계속", self)
-        self.resume_action.setShortcut("Ctrl+Shift+P")
+        self.resume_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("job.resume")]
+        )
         self.resume_action.triggered.connect(self.resume_selected_active_job)
 
         self.retry_action = QAction("선택 작품 전체 재검사", self)
-        self.retry_action.setShortcut("Ctrl+R")
+        self.retry_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("job.rescan_full")]
+        )
         self.retry_action.triggered.connect(self.retry_selected_job)
 
         self.new_scan_action = QAction("선택 작품 신규 회차만 검사", self)
@@ -1491,33 +1543,97 @@ class MainWindow(QMainWindow):
         )
 
         self.open_folder_action = QAction("저장 폴더 열기", self)
-        self.open_folder_action.setShortcut("Ctrl+O")
+        self.open_folder_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("folder.open")]
+        )
         self.open_folder_action.triggered.connect(self.open_output_folder)
 
         self.details_action = QAction("작품 정보 및 실행 이력", self)
-        self.details_action.setShortcut("Ctrl+I")
+        self.details_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("details.open")]
+        )
         self.details_action.triggered.connect(self.show_job_details)
+
+        self.activate_selected_action = QAction("선택 작품 상세 열기", self)
+        self.activate_selected_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("list.activate")]
+        )
+        self.activate_selected_action.setShortcutContext(
+            Qt.ShortcutContext.WidgetShortcut
+        )
+        self.activate_selected_action.triggered.connect(
+            lambda: self.show_job_details()
+        )
 
         self.clear_log_action = QAction("로그 지우기", self)
         self.clear_log_action.triggered.connect(self.clear_logs)
 
         self.screenshot_action = QAction("GUI 화면 캡처", self)
-        self.screenshot_action.setShortcut("Ctrl+Shift+S")
+        self.screenshot_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("screenshot.capture")]
+        )
         self.screenshot_action.triggered.connect(self.capture_window)
 
         self.self_test_action = QAction("자체 점검 실행", self)
         self.self_test_action.triggered.connect(self.start_self_test)
 
         self.refresh_list_action = QAction("작품 목록 새로고침", self)
-        self.refresh_list_action.setShortcut("F5")
+        self.refresh_list_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("list.refresh")]
+        )
         self.refresh_list_action.triggered.connect(self.refresh_job_list)
 
         self.cleanup_records_action = QAction("완료·오류 기록 정리...", self)
         self.cleanup_records_action.triggered.connect(self.confirm_cleanup_records)
 
         self.settings_action = QAction("설정...", self)
-        self.settings_action.setShortcut("Ctrl+,")
+        self.settings_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("settings.open")]
+        )
         self.settings_action.triggered.connect(self.show_settings_dialog)
+
+        self.shortcut_help_action = QAction("키보드 단축키...", self)
+        self.shortcut_help_action.triggered.connect(self.show_shortcut_help)
+
+        self.focus_url_action = QAction("URL 입력으로 이동", self)
+        self.focus_url_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("focus.url")]
+        )
+        self.focus_url_action.triggered.connect(
+            lambda: self.focus_keyboard_target("url")
+        )
+
+        self.focus_search_action = QAction("작품 검색으로 이동", self)
+        self.focus_search_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("focus.search")]
+        )
+        self.focus_search_action.triggered.connect(
+            lambda: self.focus_keyboard_target("search")
+        )
+
+        self.focus_cycle_action = QAction("다음 화면 영역으로 이동", self)
+        self.focus_cycle_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("focus.cycle")]
+        )
+        self.focus_cycle_action.triggered.connect(
+            lambda: self.focus_keyboard_target("next-section")
+        )
+
+        self.select_previous_action = QAction("이전 작품 선택", self)
+        self.select_previous_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("selection.previous")]
+        )
+        self.select_previous_action.triggered.connect(
+            lambda: self.focus_keyboard_target("previous")
+        )
+
+        self.select_next_action = QAction("다음 작품 선택", self)
+        self.select_next_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("selection.next")]
+        )
+        self.select_next_action.triggered.connect(
+            lambda: self.focus_keyboard_target("next")
+        )
 
         self.exit_action = QAction("종료", self)
         self.exit_action.triggered.connect(self.request_exit)
@@ -1546,7 +1662,16 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.self_test_action)
         tools_menu.addAction(self.clear_log_action)
 
+        view_menu = self.menuBar().addMenu("보기")
+        view_menu.addAction(self.focus_url_action)
+        view_menu.addAction(self.focus_search_action)
+        view_menu.addAction(self.focus_cycle_action)
+        view_menu.addSeparator()
+        view_menu.addAction(self.select_previous_action)
+        view_menu.addAction(self.select_next_action)
+
         help_menu = self.menuBar().addMenu("도움말")
+        help_menu.addAction(self.shortcut_help_action)
         cli_action = help_menu.addAction("CLI 명령 보기")
         cli_action.triggered.connect(self.show_cli_help)
 
@@ -1693,6 +1818,15 @@ class MainWindow(QMainWindow):
         self.search_edit.setPlaceholderText("제목, 작가, 그룹, 작품 ID 검색")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(lambda: self.history_filter_timer.start())
+        self.clear_search_action = QAction("검색어 지우기", self.search_edit)
+        self.clear_search_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("search.clear")]
+        )
+        self.clear_search_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        self.clear_search_action.triggered.connect(
+            lambda: self.focus_keyboard_target("search", clear=True)
+        )
+        self.search_edit.addAction(self.clear_search_action)
         self.state_filter_combo = QComboBox()
         for label, value in (
             ("모든 상태", ""),
@@ -1742,8 +1876,10 @@ class MainWindow(QMainWindow):
         self.task_list.setSpacing(2)
         self.task_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.task_list.setToolTip(
-            "한 번 클릭하면 작업을 선택하고, 더블클릭하면 다운로드 폴더를 엽니다."
+            "한 번 클릭하면 선택, Enter는 상세 정보, 더블클릭은 다운로드 폴더 열기입니다."
         )
+        self.task_list.setAccessibleName("다운로드 작업 목록")
+        self.task_list.addAction(self.activate_selected_action)
         self.task_list.doubleClicked.connect(self.open_job_index_folder)
         self.task_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.task_list.customContextMenuRequested.connect(self.show_job_context_menu)
@@ -1751,6 +1887,7 @@ class MainWindow(QMainWindow):
 
         self.list_state_panel = QFrame()
         self.list_state_panel.setObjectName("listStatePanel")
+        self.list_state_panel.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         state_layout = QVBoxLayout(self.list_state_panel)
         state_layout.setContentsMargins(32, 32, 32, 32)
         state_layout.addStretch(1)
@@ -2084,6 +2221,109 @@ class MainWindow(QMainWindow):
                 )
             )
         raise ValueError(f"지원하지 않는 목록 상태입니다: {state_name}")
+
+    def keyboard_focus_snapshot(self) -> dict[str, Any]:
+        focused = QApplication.focusWidget()
+        focus_target = "none"
+        for name, widget in (
+            ("url", self.url_edit),
+            ("search", self.search_edit),
+            ("list", self.task_list),
+            ("list_state", self.list_state_panel),
+            ("log", self.log_edit),
+        ):
+            if focused is widget or (focused is not None and widget.isAncestorOf(focused)):
+                focus_target = name
+                break
+        index = self.task_list.currentIndex()
+        selected = self.task_model.job_at(index.row()) if index.isValid() else None
+        return {
+            "focus": focus_target,
+            "selectedRow": index.row() if index.isValid() else -1,
+            "selectedJobId": selected.job_id if selected else None,
+            "visibleJobCount": self.task_model.rowCount(),
+            "listViewState": str(self.list_view_state.get("state") or ""),
+        }
+
+    def move_job_selection(self, offset: int) -> dict[str, Any]:
+        count = self.task_model.rowCount()
+        if count <= 0:
+            result = self.focus_keyboard_target("list")
+            return {"moved": False, **result}
+        current = self.task_list.currentIndex()
+        current_row = current.row() if current.isValid() else (-1 if offset >= 0 else 0)
+        target_row = (current_row + (1 if offset >= 0 else -1)) % count
+        target = self.task_model.index(target_row, 0)
+        self.task_list.setCurrentIndex(target)
+        self.task_list.scrollTo(target)
+        self.task_list.setFocus()
+        job = self.task_model.job_at(target_row)
+        if job:
+            self.statusBar().showMessage(f"선택: {job.title}", 2500)
+        return {"moved": True, **self.keyboard_focus_snapshot()}
+
+    def _cycle_keyboard_focus(self) -> dict[str, Any]:
+        list_target: QWidget = self.task_list
+        if self.list_stack.currentWidget() is self.list_state_panel:
+            list_target = (
+                self.list_state_action_button
+                if self.list_state_action_button.isVisible()
+                else self.list_state_panel
+            )
+        targets: list[tuple[str, QWidget]] = [
+            ("url", self.url_edit),
+            ("search", self.search_edit),
+            ("list", list_target),
+        ]
+        if self.log_box.isVisible():
+            targets.append(("log", self.log_edit))
+        focused = QApplication.focusWidget()
+        current_index = -1
+        for index, (_name, widget) in enumerate(targets):
+            if focused is widget or (focused is not None and widget.isAncestorOf(focused)):
+                current_index = index
+                break
+        name, target = targets[(current_index + 1) % len(targets)]
+        target.setFocus()
+        self.statusBar().showMessage(f"키보드 포커스: {name}", 1800)
+        return self.keyboard_focus_snapshot()
+
+    def focus_keyboard_target(self, target: str, clear: bool = False) -> dict[str, Any]:
+        normalized = str(target or "").strip().lower().replace("-", "_")
+        if normalized == "next":
+            return self.move_job_selection(1)
+        if normalized == "previous":
+            return self.move_job_selection(-1)
+        if normalized == "next_section":
+            return self._cycle_keyboard_focus()
+        if normalized == "url":
+            if clear:
+                self.url_edit.clear()
+            self.url_edit.setFocus()
+            self.url_edit.selectAll()
+        elif normalized == "search":
+            if clear and self.search_edit.text():
+                self.search_edit.clear()
+                self.apply_history_filters()
+            self.search_edit.setFocus()
+            self.search_edit.selectAll()
+        elif normalized == "list":
+            if self.list_stack.currentWidget() is self.list_state_panel:
+                if self.list_state_action_button.isVisible():
+                    self.list_state_action_button.setFocus()
+                else:
+                    self.list_state_panel.setFocus()
+            else:
+                if not self.task_list.currentIndex().isValid() and self.task_model.rowCount():
+                    self.task_list.setCurrentIndex(self.task_model.index(0, 0))
+                self.task_list.setFocus()
+        elif normalized == "log":
+            if not self.log_box.isVisible():
+                raise ValueError("로그 패널이 숨겨져 있어 포커스를 이동할 수 없습니다.")
+            self.log_edit.setFocus()
+        else:
+            raise ValueError(f"지원하지 않는 키보드 포커스 대상입니다: {target}")
+        return self.keyboard_focus_snapshot()
 
     def _restore_job_history(self) -> None:
         self._update_list_view_state(loading=True)
@@ -3976,7 +4216,12 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if self.active_settings_dialog and self.active_settings_dialog.isVisible():
+        if (
+            self.active_shortcut_help_dialog
+            and self.active_shortcut_help_dialog.isVisible()
+        ):
+            screenshot = self.active_shortcut_help_dialog.grab()
+        elif self.active_settings_dialog and self.active_settings_dialog.isVisible():
             screenshot = self.active_settings_dialog.grab()
         elif (
             self.active_image_conversion_progress_dialog
@@ -4106,6 +4351,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd status [--json]\n"
             "toki-cli.cmd list [--query TEXT --status STATE --sort updated|title|progress --apply-gui --json]\n"
             "toki-cli.cmd list-state [--query TEXT --status STATE --apply-gui --preview STATE --json]\n"
+            "toki-cli.cmd shortcuts [--json]\n"
+            "toki-cli.cmd focus --target url|search|list|log|next|previous|next-section [--clear --json]\n"
             "toki-cli.cmd pin --job ID --on|--off\n"
             "toki-cli.cmd tag --job ID --color COLOR\n"
             "toki-cli.cmd remove-record --job ID --yes\n"
@@ -4147,6 +4394,34 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd show\n"
             "toki-cli.cmd quit",
         )
+
+    def show_shortcut_help(self) -> bool:
+        if self.active_shortcut_help_dialog:
+            self.active_shortcut_help_dialog.show()
+            self.active_shortcut_help_dialog.raise_()
+            self.active_shortcut_help_dialog.activateWindow()
+            return True
+        dialog = ShortcutHelpDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.active_shortcut_help_dialog = dialog
+        selected = dialog
+        dialog.destroyed.connect(
+            lambda: (
+                setattr(self, "active_shortcut_help_dialog", None)
+                if self.active_shortcut_help_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_shortcut_help(self) -> bool:
+        if not self.active_shortcut_help_dialog:
+            return False
+        self.active_shortcut_help_dialog.close()
+        return True
 
     def status_snapshot(self) -> dict[str, Any]:
         active_contexts = list(self.active_contexts.values())
@@ -4207,6 +4482,11 @@ class MainWindow(QMainWindow):
                 "total": self.history_total,
             },
             "listViewState": dict(self.list_view_state),
+            "keyboard": self.keyboard_focus_snapshot(),
+            "shortcutHelpOpen": bool(
+                self.active_shortcut_help_dialog
+                and self.active_shortcut_help_dialog.isVisible()
+            ),
             "window": self.window_snapshot(),
         }
 
@@ -4460,6 +4740,20 @@ class MainWindow(QMainWindow):
             return self.preview_list_view_state(
                 str(request.get("state") or "auto"),
                 str(request.get("message") or ""),
+            )
+        if action == "keyboard_shortcuts":
+            catalog = keyboard_shortcut_catalog()
+            return {"count": len(catalog), "shortcuts": catalog}
+        if action == "show_shortcut_help":
+            return {"shown": self.show_shortcut_help()}
+        if action == "close_shortcut_help":
+            return {"closed": self.close_shortcut_help()}
+        if action == "keyboard_focus":
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            return self.focus_keyboard_target(
+                str(request.get("target") or ""), bool(request.get("clear"))
             )
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}
