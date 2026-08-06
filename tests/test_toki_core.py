@@ -105,6 +105,34 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(len(load_jobs_page(limit=10, offset=0)), 10)
         self.assertEqual(len(load_jobs_page(limit=10, offset=20)), 5)
 
+    def test_query_state_filter_and_sort(self) -> None:
+        jobs = [
+            DownloadJob(
+                job_id="alpha",
+                url="https://newtoki1.org/manhwa/2001",
+                output_dir=r"C:\Manga",
+                title="[작가A][그룹A] 알파 작품",
+                state="완료",
+                progress=100,
+            ),
+            DownloadJob(
+                job_id="beta",
+                url="https://newtoki1.org/manhwa/2002",
+                output_dir=r"C:\Manga",
+                title="[작가B][그룹B] 베타 작품",
+                state="오류",
+                progress=40,
+            ),
+        ]
+        save_jobs(jobs)
+        self.assertEqual(count_jobs(query="작가B"), 1)
+        self.assertEqual(load_jobs_page(query="그룹B")[0].job_id, "beta")
+        self.assertEqual(load_jobs_page(state="완료")[0].job_id, "alpha")
+        sorted_jobs = load_jobs_page(sort="progress")
+        self.assertEqual([job.job_id for job in sorted_jobs], ["alpha", "beta"])
+        with self.assertRaises(ValueError):
+            load_jobs_page(sort="invalid")
+
 
 if __name__ == "__main__":
     unittest.main()

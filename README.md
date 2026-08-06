@@ -73,6 +73,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 # 상태와 작업 제어
 .\toki-cli.cmd status
 .\toki-cli.cmd status --json
+.\toki-cli.cmd list --query "오타쿠" --status "완료" --sort title --json
+.\toki-cli.cmd list --query "오타쿠" --status "완료" --sort title --apply-gui --json
 .\toki-cli.cmd stop
 .\toki-cli.cmd retry --job 작업ID
 
@@ -91,6 +93,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd clear-log
 .\toki-cli.cmd quit --force
 ```
+
+`list`는 제목, 폴더명에 포함된 작가·그룹, 작품 ID와 URL을 검색합니다. `--status`로
+상태를 거르고 `--sort updated|title|progress`로 정렬할 수 있습니다. `--apply-gui`를
+추가하면 같은 조건을 실행 중인 GUI 검색창과 목록에도 적용합니다. 빈 조건으로
+`list --apply-gui`를 실행하면 GUI 필터가 초기화됩니다.
 
 `self-test --json`은 Python/Node 구문, 필수 파일, 단위 테스트와 GUI IPC 및 화면 캡처를
 한 번에 검사합니다. GUI가 꺼져 있으면 점검용으로 시작했다가 자동 종료하며, 이미 실행

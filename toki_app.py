@@ -23,7 +23,9 @@ from toki_core import (
     build_downloader_args,
     clear_log_file,
     find_node,
+    count_jobs,
     load_config,
+    load_jobs_page,
     open_in_explorer,
     read_log_tail,
     save_config,
@@ -212,6 +214,24 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="GUI와 작업 상태 조회")
     status.add_argument("--json", action="store_true", help="JSON으로 출력")
 
+    list_jobs = subparsers.add_parser("list", help="저장된 작품 목록 검색·필터·정렬")
+    list_jobs.add_argument("--query", default="", help="제목, 작가, 그룹, 작품 ID 검색")
+    list_jobs.add_argument("--status", default="", help="작업 상태 필터")
+    list_jobs.add_argument(
+        "--sort",
+        choices=("updated", "title", "progress"),
+        default="updated",
+        help="정렬 기준",
+    )
+    list_jobs.add_argument("--limit", type=int, default=200, help="가져올 작품 수(최대 1000)")
+    list_jobs.add_argument("--offset", type=int, default=0, help="건너뛸 작품 수")
+    list_jobs.add_argument(
+        "--apply-gui",
+        action="store_true",
+        help="같은 검색·필터·정렬을 실행 중인 GUI 목록에도 적용",
+    )
+    list_jobs.add_argument("--json", action="store_true", help="JSON으로 출력")
+
     set_output = subparsers.add_parser("set-output", help="기본 저장 폴더 설정")
     set_output.add_argument("path", help="저장 폴더 경로")
 
@@ -308,6 +328,46 @@ def run_cli(args: argparse.Namespace) -> int:
                 print("현재 작업: 없음")
             print(f"저장 폴더: {result.get('outputDir')}")
             print(f"로그: {result.get('logPath')}")
+        return 0
+    if command == "list":
+        request = {
+            "action": "list_jobs",
+            "query": args.query,
+            "status": args.status,
+            "sort": args.sort,
+            "limit": args.limit,
+            "offset": args.offset,
+        }
+        if args.apply_gui:
+            ensure_gui_running()
+            request["action"] = "set_list_filter"
+            result = control_request(request)
+        elif gui_is_running():
+            result = control_request(request)
+        else:
+            jobs = load_jobs_page(
+                limit=args.limit,
+                offset=args.offset,
+                query=args.query,
+                state=args.status,
+                sort=args.sort,
+            )
+            result = {
+                "ok": True,
+                "total": count_jobs(args.query, args.status),
+                "limit": max(1, min(1000, args.limit)),
+                "offset": max(0, args.offset),
+                "query": args.query,
+                "status": args.status,
+                "sort": args.sort,
+                "jobs": [job.to_dict() for job in jobs],
+            }
+        if args.json:
+            print_json(result)
+        else:
+            for job in result["jobs"]:
+                print(f"{job['job_id']} | {job['state']} | {job['title']}")
+            print(f"표시 {len(result['jobs'])} / 전체 {result['total']}")
         return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())

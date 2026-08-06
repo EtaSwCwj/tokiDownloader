@@ -181,6 +181,10 @@ def _connect_job_db() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS jobs (
             job_id TEXT PRIMARY KEY,
             work_key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL DEFAULT '',
+            progress INTEGER NOT NULL DEFAULT 0,
+            url TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
@@ -196,6 +200,14 @@ def _connect_job_db() -> sqlite3.Connection:
             connection.execute(
                 "ALTER TABLE jobs ADD COLUMN work_key TEXT NOT NULL DEFAULT ''"
             )
+        for column, definition in (
+            ("title", "TEXT NOT NULL DEFAULT ''"),
+            ("state", "TEXT NOT NULL DEFAULT ''"),
+            ("progress", "INTEGER NOT NULL DEFAULT 0"),
+            ("url", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in columns:
+                connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
         rows = connection.execute(
             "SELECT job_id, payload FROM jobs ORDER BY updated_at DESC, rowid DESC"
         ).fetchall()
@@ -212,8 +224,20 @@ def _connect_job_db() -> sqlite3.Connection:
             seen.add(work_key)
             data["work_key"] = work_key
             connection.execute(
-                "UPDATE jobs SET work_key = ?, payload = ? WHERE job_id = ?",
-                (work_key, json.dumps(data, ensure_ascii=False), job_id),
+                """
+                UPDATE jobs
+                SET work_key = ?, title = ?, state = ?, progress = ?, url = ?, payload = ?
+                WHERE job_id = ?
+                """,
+                (
+                    work_key,
+                    str(data.get("title") or ""),
+                    str(data.get("state") or ""),
+                    int(data.get("progress") or 0),
+                    str(data.get("url") or ""),
+                    json.dumps(data, ensure_ascii=False),
+                    job_id,
+                ),
             )
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_work_key ON jobs(work_key)"
@@ -222,6 +246,18 @@ def _connect_job_db() -> sqlite3.Connection:
         _INITIALIZED_JOB_DBS.add(database_key)
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_title ON jobs(title COLLATE NOCASE)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_state_updated ON jobs(state, updated_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_progress ON jobs(progress DESC)"
     )
     return connection
 
@@ -234,6 +270,10 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
         (
             job.job_id,
             job.work_key,
+            job.title,
+            job.state,
+            job.progress,
+            job.url,
             job.created_at,
             updated_at,
             json.dumps(job.to_dict(), ensure_ascii=False),
@@ -245,10 +285,17 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
         with connection:
             connection.executemany(
                 """
-            INSERT INTO jobs(job_id, work_key, created_at, updated_at, payload)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO jobs(
+                job_id, work_key, title, state, progress, url,
+                created_at, updated_at, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_key) DO UPDATE SET
                 job_id=excluded.job_id,
+                title=excluded.title,
+                state=excluded.state,
+                progress=excluded.progress,
+                url=excluded.url,
                 created_at=excluded.created_at,
                 updated_at=excluded.updated_at,
                 payload=excluded.payload
@@ -259,10 +306,33 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
         connection.close()
 
 
-def count_jobs() -> int:
+def _job_filter_clause(query: str = "", state: str = "") -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    parameters: list[Any] = []
+    clean_query = str(query or "").strip()
+    clean_state = str(state or "").strip()
+    if clean_query:
+        pattern = f"%{clean_query}%"
+        clauses.append(
+            "(title LIKE ? COLLATE NOCASE OR work_key LIKE ? COLLATE NOCASE "
+            "OR url LIKE ? COLLATE NOCASE)"
+        )
+        parameters.extend([pattern, pattern, pattern])
+    if clean_state:
+        clauses.append("state = ?")
+        parameters.append(clean_state)
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", parameters
+
+
+def count_jobs(query: str = "", state: str = "") -> int:
+    where_sql, parameters = _job_filter_clause(query, state)
     connection = _connect_job_db()
     try:
-        return int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        return int(
+            connection.execute(
+                f"SELECT COUNT(*) FROM jobs{where_sql}", parameters
+            ).fetchone()[0]
+        )
     finally:
         connection.close()
 
@@ -287,13 +357,27 @@ def load_job_by_work_key(work_key: str) -> DownloadJob | None:
         return None
 
 
-def load_jobs_page(limit: int = 200, offset: int = 0) -> list[DownloadJob]:
+def load_jobs_page(
+    limit: int = 200,
+    offset: int = 0,
+    query: str = "",
+    state: str = "",
+    sort: str = "updated",
+) -> list[DownloadJob]:
     field_names = set(DownloadJob.__dataclass_fields__)
+    order_by = {
+        "updated": "updated_at DESC, rowid DESC",
+        "title": "title COLLATE NOCASE ASC, updated_at DESC",
+        "progress": "progress DESC, updated_at DESC",
+    }.get(sort)
+    if order_by is None:
+        raise ValueError(f"지원하지 않는 작업 정렬입니다: {sort}")
+    where_sql, parameters = _job_filter_clause(query, state)
     connection = _connect_job_db()
     try:
         rows = connection.execute(
-            "SELECT payload FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (max(1, int(limit)), max(0, int(offset))),
+            f"SELECT payload FROM jobs{where_sql} ORDER BY {order_by} LIMIT ? OFFSET ?",
+            [*parameters, max(1, min(1000, int(limit))), max(0, int(offset))],
         ).fetchall()
     finally:
         connection.close()

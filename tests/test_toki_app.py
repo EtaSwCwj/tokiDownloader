@@ -24,6 +24,19 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertFalse(args.show_browser)
 
+    def test_list_query_arguments(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "list", "--query", "작가", "--status", "완료", "--sort", "title",
+                "--apply-gui", "--json",
+            ]
+        )
+        self.assertEqual(args.query, "작가")
+        self.assertEqual(args.status, "완료")
+        self.assertEqual(args.sort, "title")
+        self.assertTrue(args.apply_gui)
+        self.assertTrue(args.json)
+
 
 if __name__ == "__main__":
     unittest.main()

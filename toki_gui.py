@@ -17,6 +17,7 @@ from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -95,6 +96,12 @@ class JobListModel(QAbstractListModel):
     def job_at(self, row: int) -> DownloadJob | None:
         return self.rows[row] if 0 <= row < len(self.rows) else None
 
+    def replace_jobs(self, jobs: list[DownloadJob]) -> None:
+        self.beginResetModel()
+        self.rows = list(jobs)
+        self.row_by_key = {job.work_key: row for row, job in enumerate(self.rows)}
+        self.endResetModel()
+
     def upsert_job(self, job: DownloadJob) -> bool:
         existing_row = self.row_by_key.get(job.work_key)
         replaced = existing_row is not None
@@ -117,6 +124,19 @@ class JobListModel(QAbstractListModel):
         self.endInsertRows()
         for row in range(start, len(self.rows)):
             self.row_by_key[self.rows[row].work_key] = row
+
+    def remove_work_key(self, work_key: str) -> bool:
+        row = self.row_by_key.get(work_key)
+        if row is None:
+            return False
+        self.beginRemoveRows(QModelIndex(), row, row)
+        self.rows.pop(row)
+        self.endRemoveRows()
+        self._rebuild_positions()
+        return True
+
+    def contains_work_key(self, work_key: str) -> bool:
+        return work_key in self.row_by_key
 
     def update_job(self, job: DownloadJob) -> None:
         row = self.row_by_key.get(job.work_key)
@@ -255,7 +275,15 @@ class MainWindow(QMainWindow):
         self.history_page_size = 200
         self.history_loaded = 0
         self.history_total = 0
+        self.history_all_total = 0
         self.history_loading = False
+        self.history_query = ""
+        self.history_state = ""
+        self.history_sort = "updated"
+        self.history_filter_timer = QTimer(self)
+        self.history_filter_timer.setSingleShot(True)
+        self.history_filter_timer.setInterval(250)
+        self.history_filter_timer.timeout.connect(self.apply_history_filters)
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_job: DownloadJob | None = None
         self.process: QProcess | None = None
@@ -446,6 +474,37 @@ class MainWindow(QMainWindow):
         queue_header.addStretch(1)
         queue_header.addWidget(self.queue_summary)
 
+        filter_bar = QHBoxLayout()
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("제목, 작가, 그룹, 작품 ID 검색")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(lambda: self.history_filter_timer.start())
+        self.state_filter_combo = QComboBox()
+        for label, value in (
+            ("모든 상태", ""),
+            ("대기", "대기"),
+            ("실행 중", "실행 중"),
+            ("완료", "완료"),
+            ("오류", "오류"),
+            ("중지됨", "중지됨"),
+        ):
+            self.state_filter_combo.addItem(label, value)
+        self.state_filter_combo.currentIndexChanged.connect(self.apply_history_filters)
+        self.sort_combo = QComboBox()
+        for label, value in (
+            ("최근 갱신순", "updated"),
+            ("제목순", "title"),
+            ("진행률순", "progress"),
+        ):
+            self.sort_combo.addItem(label, value)
+        self.sort_combo.currentIndexChanged.connect(self.apply_history_filters)
+        reset_filter_button = QPushButton("초기화")
+        reset_filter_button.clicked.connect(self.reset_history_filters)
+        filter_bar.addWidget(self.search_edit, 1)
+        filter_bar.addWidget(self.state_filter_combo)
+        filter_bar.addWidget(self.sort_combo)
+        filter_bar.addWidget(reset_filter_button)
+
         self.task_model = JobListModel(self)
         self.task_list = QListView()
         self.task_list.setModel(self.task_model)
@@ -488,6 +547,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(input_box)
         root.addLayout(queue_header)
+        root.addLayout(filter_bar)
         root.addWidget(self.task_list, 1)
         root.addWidget(log_box)
         self.setCentralWidget(central)
@@ -577,7 +637,6 @@ class MainWindow(QMainWindow):
 
         work_key = build_work_key(valid_url)
         existing = self.jobs_by_work.get(work_key)
-        was_loaded = existing is not None
         if existing is None:
             existing = load_job_by_work_key(work_key)
         if existing and existing.state in {"대기", "실행 중"}:
@@ -603,10 +662,10 @@ class MainWindow(QMainWindow):
         self.pending_jobs.append(job)
         self._add_job_card(job)
         if existing is None:
-            self.history_total += 1
-            self.history_loaded += 1
-        elif not was_loaded:
-            self.history_loaded += 1
+            self.history_all_total += 1
+            if self._job_matches_history_filters(job):
+                self.history_total += 1
+        self.history_loaded = self.task_model.rowCount()
         self._schedule_job_persist(job)
         action = "작품 작업 갱신" if existing else "작품 작업 추가"
         self.log(f"{action}: {job.url} ({job.work_key})", job_id=job.job_id)
@@ -615,6 +674,9 @@ class MainWindow(QMainWindow):
         return job
 
     def _add_job_card(self, job: DownloadJob) -> None:
+        if not self._job_matches_history_filters(job):
+            self.task_model.remove_work_key(job.work_key)
+            return
         self.task_model.upsert_job(job)
         index = self.task_model.index(0, 0)
         self.task_list.setCurrentIndex(index)
@@ -622,8 +684,15 @@ class MainWindow(QMainWindow):
 
     def _restore_job_history(self) -> None:
         recovered: list[DownloadJob] = []
-        self.history_total = count_jobs()
-        page = load_jobs_page(self.history_page_size, 0)
+        self.history_all_total = count_jobs()
+        self.history_total = count_jobs(self.history_query, self.history_state)
+        page = load_jobs_page(
+            self.history_page_size,
+            0,
+            self.history_query,
+            self.history_state,
+            self.history_sort,
+        )
         for job in page:
             if job.state in {"대기", "실행 중"}:
                 job.state = "중지됨"
@@ -640,6 +709,99 @@ class MainWindow(QMainWindow):
             self.task_list.scrollToTop()
         self._update_summary()
 
+    def _job_matches_history_filters(self, job: DownloadJob) -> bool:
+        if self.history_state and job.state != self.history_state:
+            return False
+        query = self.history_query.casefold().strip()
+        if not query:
+            return True
+        haystack = " ".join((job.title, job.work_key, job.url)).casefold()
+        return query in haystack
+
+    def apply_history_filters(self, *_args: Any) -> None:
+        self.history_filter_timer.stop()
+        self._flush_job_history()
+        selected = self.selected_job()
+        selected_key = selected.work_key if selected else ""
+        self.history_query = self.search_edit.text().strip()
+        self.history_state = str(self.state_filter_combo.currentData() or "")
+        self.history_sort = str(self.sort_combo.currentData() or "updated")
+        page = load_jobs_page(
+            self.history_page_size,
+            0,
+            self.history_query,
+            self.history_state,
+            self.history_sort,
+        )
+        display_jobs: list[DownloadJob] = []
+        for stored_job in page:
+            job = self.jobs_by_work.get(stored_job.work_key) or stored_job
+            if stored_job.work_key not in self.jobs_by_work:
+                self.jobs[job.job_id] = job
+                self.jobs_by_work[job.work_key] = job
+            display_jobs.append(job)
+        self.task_model.replace_jobs(display_jobs)
+        self.history_all_total = count_jobs()
+        self.history_total = count_jobs(self.history_query, self.history_state)
+        self.history_loaded = len(display_jobs)
+        if selected_key and selected_key in self.task_model.row_by_key:
+            row = self.task_model.row_by_key[selected_key]
+            self.task_list.setCurrentIndex(self.task_model.index(row, 0))
+        elif display_jobs:
+            self.task_list.setCurrentIndex(self.task_model.index(0, 0))
+        self._update_summary()
+
+    def reset_history_filters(self) -> None:
+        self.history_filter_timer.stop()
+        self.search_edit.clear()
+        self.state_filter_combo.setCurrentIndex(0)
+        self.sort_combo.setCurrentIndex(0)
+        self.apply_history_filters()
+
+    def set_history_filters(self, query: str, state: str, sort: str) -> dict[str, Any]:
+        state_index = self.state_filter_combo.findData(state)
+        sort_index = self.sort_combo.findData(sort)
+        if state_index < 0:
+            raise ValueError(f"지원하지 않는 작업 상태 필터입니다: {state}")
+        if sort_index < 0:
+            raise ValueError(f"지원하지 않는 작업 정렬입니다: {sort}")
+        self.search_edit.blockSignals(True)
+        self.state_filter_combo.blockSignals(True)
+        self.sort_combo.blockSignals(True)
+        try:
+            self.search_edit.setText(query)
+            self.state_filter_combo.setCurrentIndex(state_index)
+            self.sort_combo.setCurrentIndex(sort_index)
+        finally:
+            self.search_edit.blockSignals(False)
+            self.state_filter_combo.blockSignals(False)
+            self.sort_combo.blockSignals(False)
+        self.apply_history_filters()
+        return self.list_jobs_snapshot(query, state, sort, self.history_page_size, 0)
+
+    def list_jobs_snapshot(
+        self,
+        query: str,
+        state: str,
+        sort: str,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        self._flush_job_history()
+        safe_limit = max(1, min(1000, int(limit)))
+        safe_offset = max(0, int(offset))
+        jobs = load_jobs_page(safe_limit, safe_offset, query, state, sort)
+        return {
+            "ok": True,
+            "total": count_jobs(query, state),
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "query": query,
+            "status": state,
+            "sort": sort,
+            "jobs": [job.to_dict() for job in jobs],
+        }
+
     def _maybe_load_more_history(self, value: int) -> None:
         scrollbar = self.task_list.verticalScrollBar()
         if scrollbar.maximum() <= 0 or value < scrollbar.maximum() - 24:
@@ -651,7 +813,13 @@ class MainWindow(QMainWindow):
             return
         self.history_loading = True
         try:
-            page = load_jobs_page(self.history_page_size, self.history_loaded)
+            page = load_jobs_page(
+                self.history_page_size,
+                self.history_loaded,
+                self.history_query,
+                self.history_state,
+                self.history_sort,
+            )
             self.history_loaded += len(page)
             unseen = [job for job in page if job.work_key not in self.jobs_by_work]
             for job in unseen:
@@ -679,7 +847,16 @@ class MainWindow(QMainWindow):
             self.log(f"작업 기록 저장 실패: {error}", "ERROR")
 
     def _update_job_card(self, job: DownloadJob) -> None:
-        self.task_model.update_job(job)
+        was_visible = self.task_model.contains_work_key(job.work_key)
+        is_visible = self._job_matches_history_filters(job)
+        if was_visible and not is_visible:
+            self.task_model.remove_work_key(job.work_key)
+            self.history_total = max(0, self.history_total - 1)
+        elif not was_visible and is_visible:
+            self.task_model.upsert_job(job)
+            self.history_total += 1
+        else:
+            self.task_model.update_job(job)
         if self.active_job and self.active_job.job_id == job.job_id:
             self.overall_progress.setValue(job.progress)
             self.status_label.setText(f"{job.state}: {job.title}")
@@ -1072,6 +1249,7 @@ class MainWindow(QMainWindow):
             "CLI 명령",
             "toki-cli.cmd download --url URL [--start N --last N --output PATH --show-browser]\n"
             "toki-cli.cmd status [--json]\n"
+            "toki-cli.cmd list [--query TEXT --status STATE --sort updated|title|progress --apply-gui --json]\n"
             "toki-cli.cmd stop\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -1101,7 +1279,8 @@ class MainWindow(QMainWindow):
             "pendingCount": len(self.pending_jobs),
             "jobs": [job.to_dict() for job in self.jobs.values()],
             "loadedJobCount": len(self.jobs),
-            "totalJobCount": self.history_total,
+            "totalJobCount": self.history_all_total,
+            "filteredJobCount": self.history_total,
             "outputDir": self.output_edit.text(),
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
@@ -1111,6 +1290,13 @@ class MainWindow(QMainWindow):
                 and self.self_test_process.state() != QProcess.ProcessState.NotRunning
             ),
             "lastSelfTest": self.last_self_test,
+            "listFilter": {
+                "query": self.history_query,
+                "status": self.history_state,
+                "sort": self.history_sort,
+                "loaded": self.task_model.rowCount(),
+                "total": self.history_total,
+            },
             "window": self.window_snapshot(),
         }
 
@@ -1147,9 +1333,9 @@ class MainWindow(QMainWindow):
         return self.window_snapshot()
 
     def _update_summary(self) -> None:
-        states = [job.state for job in self.jobs.values()]
+        states = [job.state for job in self.task_model.rows]
         self.queue_summary.setText(
-            f"기록 {self.history_total} · 로딩 {len(states)} · "
+            f"전체 {self.history_all_total} · 검색 {self.history_total} · 로딩 {len(states)} · "
             f"대기 {states.count('대기')} · 실행 {states.count('실행 중')} · "
             f"완료 {states.count('완료')} · 문제 {states.count('오류') + states.count('중지됨')}"
         )
@@ -1218,6 +1404,19 @@ class MainWindow(QMainWindow):
             return {"cleared": True}
         if action == "status":
             return self.status_snapshot()
+        if action == "list_jobs":
+            query = str(request.get("query") or "")
+            state = str(request.get("status") or "")
+            sort = str(request.get("sort") or "updated")
+            limit = max(1, min(1000, int(request.get("limit") or 200)))
+            offset = max(0, int(request.get("offset") or 0))
+            return self.list_jobs_snapshot(query, state, sort, limit, offset)
+        if action == "set_list_filter":
+            return self.set_history_filters(
+                str(request.get("query") or ""),
+                str(request.get("status") or ""),
+                str(request.get("sort") or "updated"),
+            )
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}
         if action == "window":
