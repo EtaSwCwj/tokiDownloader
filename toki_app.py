@@ -37,6 +37,7 @@ from toki_core import (
     update_job_markers,
     open_in_explorer,
     read_log_tail,
+    read_run_log,
     save_config,
     save_jobs,
     update_job_note,
@@ -191,6 +192,29 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             detail_shot = control_request(
                 {"action": "screenshot", "path": str(detail_path)}
             )
+            run_log_probe: dict[str, Any] = {"skipped": True, "reason": "실행 이력 없음"}
+            returned_runs = runs.get("runs") or []
+            if returned_runs:
+                run_id = str(returned_runs[0]["run_id"])
+                run_lines = read_run_log(run_id, 20)
+                run_log_shown = control_request(
+                    {"action": "show_run_log", "runId": run_id}
+                )
+                run_log_path = ROOT_DIR / "logs" / "self-test-run-log.png"
+                run_log_shot = control_request(
+                    {"action": "screenshot", "path": str(run_log_path)}
+                )
+                run_log_closed = control_request({"action": "close_run_log"})
+                if not run_log_path.is_file() or run_log_path.stat().st_size <= 0:
+                    raise ControlError("실행 상세 로그 자체 점검 캡처 파일이 생성되지 않았습니다.")
+                run_log_probe = {
+                    "skipped": False,
+                    "runId": run_id,
+                    "returnedLines": len(run_lines),
+                    "shown": run_log_shown.get("shown"),
+                    "screenshotPath": run_log_shot.get("path"),
+                    "closed": run_log_closed.get("closed"),
+                }
             closed = control_request({"action": "close_details"})
             if not detail_path.is_file() or detail_path.stat().st_size <= 0:
                 raise ControlError("작품 상세창 자체 점검 캡처 파일이 생성되지 않았습니다.")
@@ -202,6 +226,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
                 "shown": shown.get("shown"),
                 "screenshotPath": detail_shot.get("path"),
                 "closed": closed.get("closed"),
+                "runLog": run_log_probe,
             }
         return {
             "detail": "GUI IPC, 작품 상세 이력, 화면 캡처 통과",
@@ -282,6 +307,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_info = subparsers.add_parser("run-info", help="실행 1건의 상세 정보 조회")
     run_info.add_argument("--run", required=True, help="실행 ID")
     run_info.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    run_logs = subparsers.add_parser("run-logs", help="실행 ID로 상세 로그 조회")
+    run_logs.add_argument("--run", required=True, help="실행 ID")
+    run_logs.add_argument("--tail", type=int, default=500, help="마지막 N줄(최대 10000)")
+    run_logs.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    run_log = subparsers.add_parser("run-log", help="GUI 실행 상세 로그 창 표시")
+    run_log_target = run_log.add_mutually_exclusive_group(required=True)
+    run_log_target.add_argument("--run", help="실행 ID")
+    run_log_target.add_argument("--close", action="store_true", help="열린 실행 로그 창 닫기")
 
     set_note = subparsers.add_parser("set-note", help="작품 사용자 메모 저장")
     set_note.add_argument("--job", required=True, help="작업 ID")
@@ -545,6 +580,31 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"시작: {run.started_at or '-'} | 종료: {run.finished_at or '-'}")
             if run.error:
                 print(f"오류: {run.error}")
+        return 0
+    if command == "run-logs":
+        run = load_run(args.run)
+        if run is None:
+            raise ControlError(f"실행 기록을 찾을 수 없습니다: {args.run}")
+        clean_tail = max(1, min(10000, args.tail))
+        lines = read_run_log(run.run_id, clean_tail)
+        result = {
+            "runId": run.run_id,
+            "tail": clean_tail,
+            "returnedLines": len(lines),
+            "lines": lines,
+        }
+        if args.json:
+            print_json(result)
+        else:
+            for line in lines:
+                print(line)
+            if not lines:
+                print(f"실행 {run.run_id}의 보존된 로그가 없습니다.")
+        return 0
+    if command == "run-log":
+        ensure_gui_running()
+        action = "close_run_log" if args.close else "show_run_log"
+        print_json(control_request({"action": action, "runId": args.run}))
         return 0
     if command == "set-note":
         if gui_is_running():

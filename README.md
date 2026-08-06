@@ -78,6 +78,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd info --job 작업ID --json
 .\toki-cli.cmd runs --job 작업ID --limit 100 --offset 0 --json
 .\toki-cli.cmd run-info --run 실행ID --json
+.\toki-cli.cmd run-logs --run 실행ID --tail 500 --json
+.\toki-cli.cmd run-log --run 실행ID
+.\toki-cli.cmd run-log --close
 .\toki-cli.cmd details --job 작업ID
 .\toki-cli.cmd details --close
 .\toki-cli.cmd set-note --job 작업ID --text "확인할 내용"
@@ -119,10 +122,13 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 작품 목록은 작품당 한 줄만 유지하고, 다운로드·전체 재검사·범위 다운로드를 실행할
 때마다 별도의 실행 ID를 `runs` 이력에 누적합니다. `info`는 작품 메타데이터와 전체 실행
 수를, `runs`는 최대 1000건 범위에서 페이지 단위 이력을, `run-info`는 실행 1건의 요청
-범위·발견/선택/처리 회차·PID·시작/종료·오류를 보여줍니다. `details --job`은 같은 내용을
-대표 이미지와 사용자 메모를 포함한 GUI 상세창으로 엽니다. GUI의 상세창과 우클릭 메뉴
-버튼은 각각 `open-folder`, `open-source`, `set-note`, `runs`, `details` 명령으로도 제어하거나
-검증할 수 있습니다.
+범위·발견/선택/처리 회차·PID·시작/종료·오류를 보여줍니다. `run-logs`는 회전된 이전 로그와
+현재 로그에서 실행 ID가 붙은 줄만 찾아 마지막 N줄을 반환하고, `run-log --run`은 같은 내용을
+GUI 로그창으로 엽니다. `details --job`은 작품 정보를 대표 이미지와 사용자 메모를 포함한
+GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선택 실행 로그 보기`를 눌러도 해당
+실행 로그창이 열립니다. GUI의 상세창과 우클릭 메뉴
+버튼은 각각 `open-folder`, `open-source`, `set-note`, `runs`, `run-logs`, `run-log`,
+`details` 명령으로도 제어하거나 검증할 수 있습니다.
 
 `remove-record --yes`는 작품을 GUI 목록과 `jobs.db`에서만 제거합니다. 다운로드한 작품
 폴더, 이미지, 표지와 `metadata.json`은 삭제하지 않습니다. 대기 또는 실행 중인 작품은
@@ -136,8 +142,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 중이면 종료하지 않습니다. `self-test --via-gui --json`은 GUI의 `자체 점검` 버튼과 같은
 비동기 경로를 CLI에서 실행해 검증합니다. 결과는 `logs/self-test.json`, 화면은
 `logs/self-test-gui.png`에 저장됩니다. 저장된 작품이 있으면 작품 상세 IPC, 페이지 실행
-이력과 상세창 캡처도 검사하고 `logs/self-test-work-details.png`를 만듭니다. GUI를 전혀
-시작하지 않으려면 `--core-only`를 사용합니다.
+이력, 실행별 로그와 상세창 캡처도 검사하고 `logs/self-test-work-details.png` 및
+`logs/self-test-run-log.png`를 만듭니다. GUI를 전혀 시작하지 않으려면 `--core-only`를
+사용합니다.
 
 기본 자체 점검은 사이트에 접속하거나 만화를 받지 않습니다. 실제 사이트 통합 검증은
 사용자가 지정한 폴더에 1화만 받도록 다음처럼 명시적으로 실행합니다.

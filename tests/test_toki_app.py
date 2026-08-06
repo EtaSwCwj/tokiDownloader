@@ -67,6 +67,15 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(runs.offset, 50)
         run_info = build_parser().parse_args(["run-info", "--run", "run-1"])
         self.assertEqual(run_info.run, "run-1")
+        run_logs = build_parser().parse_args(
+            ["run-logs", "--run", "run-1", "--tail", "250", "--json"]
+        )
+        self.assertEqual(run_logs.tail, 250)
+        self.assertTrue(run_logs.json)
+        run_log = build_parser().parse_args(["run-log", "--run", "run-1"])
+        self.assertEqual(run_log.run, "run-1")
+        close_run_log = build_parser().parse_args(["run-log", "--close"])
+        self.assertTrue(close_run_log.close)
 
     def test_note_and_open_source_arguments(self) -> None:
         note = build_parser().parse_args(

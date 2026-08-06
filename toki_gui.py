@@ -74,6 +74,7 @@ from toki_core import (
     normalize_range,
     open_in_explorer,
     read_log_tail,
+    read_run_log,
     retry_job_parameters,
     save_config,
     save_jobs,
@@ -287,6 +288,45 @@ class JobItemDelegate(QStyledItemDelegate):
         return scaled
 
 
+class RunLogDialog(QDialog):
+    def __init__(self, owner: "MainWindow", run: DownloadRun) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.run = run
+        self.setWindowTitle(f"실행 상세 로그 - {run.run_id}")
+        self.setMinimumSize(760, 480)
+        self.resize(900, 620)
+        root = QVBoxLayout(self)
+        summary = QLabel(
+            f"실행 ID: {run.run_id}  |  상태: {run.state}  |  "
+            f"시작: {run.started_at or '-'}  |  종료: {run.finished_at or '-'}"
+        )
+        summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root.addWidget(summary)
+        self.log_edit = QPlainTextEdit()
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setMaximumBlockCount(10000)
+        root.addWidget(self.log_edit, 1)
+        actions = QHBoxLayout()
+        refresh_button = QPushButton("로그 새로고침")
+        refresh_button.clicked.connect(self.refresh)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.close)
+        actions.addWidget(refresh_button)
+        actions.addStretch(1)
+        actions.addWidget(close_button)
+        root.addLayout(actions)
+        self.refresh()
+
+    def refresh(self) -> None:
+        lines = read_run_log(self.run.run_id, 10000)
+        self.log_edit.setPlainText(
+            "\n".join(lines) if lines else "이 실행에 대해 보존된 로그가 없습니다."
+        )
+        scrollbar = self.log_edit.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+
 class WorkDetailDialog(QDialog):
     page_size = 100
 
@@ -379,8 +419,15 @@ class WorkDetailDialog(QDialog):
         self.run_detail_label = QLabel("실행을 선택하면 오류와 시작·종료 시각이 표시됩니다.")
         self.run_detail_label.setWordWrap(True)
         self.run_detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        root.addWidget(self.run_detail_label)
+        run_detail_row = QHBoxLayout()
+        run_detail_row.addWidget(self.run_detail_label, 1)
+        self.open_run_log_button = QPushButton("선택 실행 로그 보기")
+        self.open_run_log_button.setEnabled(False)
+        self.open_run_log_button.clicked.connect(self._open_selected_run_log)
+        run_detail_row.addWidget(self.open_run_log_button)
+        root.addLayout(run_detail_row)
         self.run_table.itemSelectionChanged.connect(self._show_selected_run)
+        self.run_table.itemDoubleClicked.connect(lambda _item: self._open_selected_run_log())
 
         paging = QHBoxLayout()
         self.previous_button = QPushButton("이전 100건")
@@ -469,6 +516,14 @@ class WorkDetailDialog(QDialog):
         if run.get("error"):
             detail += f" | 오류: {run['error']}"
         self.run_detail_label.setText(detail)
+        self.open_run_log_button.setEnabled(True)
+
+    def _open_selected_run_log(self) -> None:
+        items = self.run_table.selectedItems()
+        if not items:
+            return
+        run = items[0].data(Qt.ItemDataRole.UserRole) or {}
+        self.owner.show_run_log(str(run.get("run_id") or ""))
 
     def _save_note(self) -> None:
         self.owner.set_job_note(self.job.job_id, self.note_edit.toPlainText())
@@ -508,6 +563,7 @@ class MainWindow(QMainWindow):
         self.control_sockets: set[Any] = set()
         self.active_context_menu: QMenu | None = None
         self.active_detail_dialog: WorkDetailDialog | None = None
+        self.active_run_log_dialog: RunLogDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -1407,6 +1463,27 @@ class MainWindow(QMainWindow):
         self.active_detail_dialog.close()
         return True
 
+    def show_run_log(self, run_id: str) -> bool:
+        run = load_run(str(run_id or ""))
+        if not run:
+            raise ValueError(f"실행 기록을 찾을 수 없습니다: {run_id}")
+        if self.active_run_log_dialog:
+            self.active_run_log_dialog.close()
+        dialog = RunLogDialog(self, run)
+        self.active_run_log_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(lambda: setattr(self, "active_run_log_dialog", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_run_log(self) -> bool:
+        if not self.active_run_log_dialog:
+            return False
+        self.active_run_log_dialog.close()
+        return True
+
     def open_job_index_folder(self, index: QModelIndex) -> None:
         job = self.task_model.job_at(index.row())
         if not job or not job.output_path:
@@ -1646,7 +1723,9 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if self.active_detail_dialog and self.active_detail_dialog.isVisible():
+        if self.active_run_log_dialog and self.active_run_log_dialog.isVisible():
+            screenshot = self.active_run_log_dialog.grab()
+        elif self.active_detail_dialog and self.active_detail_dialog.isVisible():
             screenshot = self.active_detail_dialog.grab()
         else:
             screenshot = self.grab()
@@ -1905,6 +1984,10 @@ class MainWindow(QMainWindow):
             return {"shown": self.show_job_details(request.get("jobId"))}
         if action == "close_details":
             return {"closed": self.close_job_details()}
+        if action == "show_run_log":
+            return {"shown": self.show_run_log(str(request.get("runId") or ""))}
+        if action == "close_run_log":
+            return {"closed": self.close_run_log()}
         if action == "copy_link":
             return {"copied": self.copy_job_link(request.get("jobId"))}
         if action == "copy_title":

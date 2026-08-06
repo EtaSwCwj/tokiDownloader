@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -102,6 +103,26 @@ def read_log_tail(count: int = 200) -> list[str]:
         return []
     lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
     return lines[-max(1, count):]
+
+
+def read_run_log(run_id: str, count: int = 500) -> list[str]:
+    clean_run_id = str(run_id or "").strip()
+    if not clean_run_id:
+        raise ValueError("실행 ID를 지정해주세요.")
+    marker = f"[{clean_run_id}]"
+    matched: deque[str] = deque(maxlen=max(1, min(10000, int(count))))
+    for path in (LOG_PATH.with_suffix(".log.1"), LOG_PATH):
+        if not path.is_file():
+            continue
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    clean = line.rstrip("\r\n")
+                    if marker in clean:
+                        matched.append(clean)
+        except OSError:
+            continue
+    return list(matched)
 
 
 def find_node() -> str:

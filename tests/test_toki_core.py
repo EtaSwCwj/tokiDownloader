@@ -23,6 +23,7 @@ from toki_core import (
     load_run,
     load_runs_page,
     normalize_range,
+    read_run_log,
     save_jobs,
     save_runs,
     update_job_note,
@@ -68,6 +69,30 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(retry["url"], source.url)
         self.assertIsNone(retry["start"])
         self.assertIsNone(retry["last"])
+
+    def test_run_log_filters_current_and_rotated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            log_path = Path(folder) / "gui.log"
+            rotated_path = log_path.with_suffix(".log.1")
+            rotated_path.write_text(
+                "2026-01-01 [INFO] [run-a] 이전 로그\n"
+                "2026-01-01 [INFO] [run-b] 다른 로그\n",
+                encoding="utf-8",
+            )
+            log_path.write_text(
+                "2026-01-02 [INFO] [run-a] 현재 로그 1\n"
+                "2026-01-02 [ERROR] [run-a] 현재 로그 2\n",
+                encoding="utf-8",
+            )
+            with patch.object(toki_core, "LOG_PATH", log_path):
+                self.assertEqual(
+                    read_run_log("run-a", count=2),
+                    [
+                        "2026-01-02 [INFO] [run-a] 현재 로그 1",
+                        "2026-01-02 [ERROR] [run-a] 현재 로그 2",
+                    ],
+                )
+                self.assertEqual(len(read_run_log("run-a", count=10)), 3)
 
 
 class JobRepositoryTests(unittest.TestCase):

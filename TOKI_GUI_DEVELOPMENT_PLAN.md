@@ -173,7 +173,7 @@ refresh-thumbnail --job ID
 - [x] 작품 상세 패널 또는 대화상자
 - [x] 작가, 그룹, 제목, 원본 URL, 저장 경로와 메타데이터 표시
 - [x] 사용자 메모 추가·수정
-- [ ] 실행 이력 페이지 조회와 상세 로그 연결 (페이지 조회 완료, 실행별 로그 연결 남음)
+- [x] 실행 이력 페이지 조회와 상세 로그 연결
 - [x] 기본 브라우저에서 원본 작품 페이지 열기
 - [ ] 대표 이미지 원본 열기와 다시 받기
 
@@ -183,6 +183,8 @@ refresh-thumbnail --job ID
 info --job ID --json
 runs --job ID --limit 100 --json
 run-info --run ID --json
+run-logs --run ID --tail 500 --json
+run-log --run ID
 set-note --job ID --text TEXT
 open-source --job ID
 refresh-metadata --job ID
