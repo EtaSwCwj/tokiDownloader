@@ -4,8 +4,8 @@ import unittest
 from collections import deque
 from unittest.mock import patch
 
-from toki_core import DownloadJob
-from toki_gui import MainWindow
+from toki_core import DownloadJob, DownloadRun
+from toki_gui import MainWindow, ProcessContext
 
 
 class _ValueStub:
@@ -35,6 +35,7 @@ class _ProcessStub:
         self.finished = _SignalStub()
         self.arguments = []
         self.started_called = False
+        self.deleted = False
         self.__class__.instances.append(self)
 
     def setWorkingDirectory(self, _path: str) -> None:
@@ -48,6 +49,9 @@ class _ProcessStub:
 
     def start(self) -> None:
         self.started_called = True
+
+    def deleteLater(self) -> None:
+        self.deleted = True
 
 
 class WorkSchedulerTests(unittest.TestCase):
@@ -65,6 +69,9 @@ class WorkSchedulerTests(unittest.TestCase):
         harness.pending_jobs = deque(jobs)
         harness.active_contexts = {}
         harness._update_job_card = lambda _job: None
+        harness._launch_context = lambda context: MainWindow._launch_context(
+            harness, context
+        )
         harness._read_stdout = lambda _job_id: None
         harness._read_stderr = lambda _job_id: None
         harness._process_started = lambda _job_id: None
@@ -90,6 +97,58 @@ class WorkSchedulerTests(unittest.TestCase):
             harness.active_contexts["job-0"].process,
             harness.active_contexts["job-1"].process,
         )
+
+    def test_failed_process_enters_retry_wait_without_leaving_active_context(self) -> None:
+        job = DownloadJob(
+            job_id="retry-job",
+            url="https://newtoki1.org/manhwa/9001",
+            output_dir=r"C:\Manga",
+            state="실행 중",
+            retry_limit=2,
+            retry_backoff_seconds=1,
+        )
+        process = _ProcessStub()
+        context = ProcessContext(
+            job=job,
+            run=DownloadRun.from_job(job),
+            process=process,
+            attempt_count=1,
+        )
+        harness = type("RetryHarness", (), {})()
+        harness.active_contexts = {job.job_id: context}
+        harness.active_detail_dialog = None
+        harness._handle_process_line = lambda *_args: None
+        harness._update_job_card = lambda _job: None
+        harness._update_active_summary = lambda: None
+        harness._start_next_job = lambda: None
+        harness.log = lambda *_args, **_kwargs: None
+        restarted = []
+        harness._restart_context = lambda job_id, generation: restarted.append(
+            (job_id, generation)
+        )
+        timers = []
+
+        with (
+            patch("toki_gui.save_runs"),
+            patch(
+                "toki_gui.QTimer.singleShot",
+                side_effect=lambda delay, callback: timers.append((delay, callback)),
+            ),
+        ):
+            MainWindow._process_finished(
+                harness,
+                job.job_id,
+                1,
+                None,
+            )
+
+        self.assertEqual(job.state, "재시도 대기")
+        self.assertIn(job.job_id, harness.active_contexts)
+        self.assertIsNone(context.process)
+        self.assertTrue(process.deleted)
+        self.assertEqual(timers[0][0], 1000)
+        timers[0][1]()
+        self.assertEqual(restarted, [(job.job_id, 1)])
 
 
 if __name__ == "__main__":

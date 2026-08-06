@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
 )
 
 from toki_core import (
+    ACTIVE_JOB_STATES,
     CONTROL_SERVER_NAME,
     EVENT_PREFIX,
     JOB_DB_PATH,
@@ -76,6 +77,8 @@ from toki_core import (
     mark_job_cancelled,
     mark_run_cancelled,
     normalize_image_concurrency,
+    normalize_retry_backoff,
+    normalize_retry_count,
     normalize_scan_request,
     normalize_work_concurrency,
     open_in_explorer,
@@ -90,6 +93,8 @@ from toki_core import (
     save_runs,
     set_job_pause_state,
     set_process_tree_paused,
+    retry_backoff_seconds,
+    should_auto_retry,
     update_job_note,
     update_job_markers,
     validate_url,
@@ -218,11 +223,12 @@ class JobItemDelegate(QStyledItemDelegate):
 
         body_x = cover_rect.right() + 11
         state_rect = card.adjusted(body_x - card.left(), 9, 0, 0)
-        state_rect.setWidth(66)
+        state_rect.setWidth(82)
         state_rect.setHeight(23)
         state_colors = {
             "실행 중": "#1a73e8",
             "일시정지": "#8856c6",
+            "재시도 대기": "#cf7a18",
             "완료": "#3b7d44",
             "오류": "#d13b32",
             "중지됨": "#cf7a18",
@@ -426,7 +432,10 @@ class WorkDetailDialog(QDialog):
         history_header.addWidget(self.page_label)
         root.addLayout(history_header)
 
-        columns = ("실행 시각", "종류", "상태", "요청 범위", "발견", "선택", "처리", "진행률", "PID")
+        columns = (
+            "실행 시각", "종류", "상태", "요청 범위", "발견", "선택", "처리",
+            "진행률", "시도", "PID",
+        )
         self.run_table = QTableWidget(0, len(columns))
         self.run_table.setHorizontalHeaderLabels(columns)
         self.run_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -513,6 +522,7 @@ class WorkDetailDialog(QDialog):
                 str(run.get("selected_episodes") or 0),
                 str(run.get("processed_episodes") or 0),
                 f"{int(run.get('progress') or 0)}%",
+                f"{int(run.get('attempt_count') or 0)}/{int(run.get('retry_limit') or 0) + 1}",
                 str(run.get("process_pid") or "-"),
             )
             for column, value in enumerate(values):
@@ -541,7 +551,9 @@ class WorkDetailDialog(QDialog):
         run = items[0].data(Qt.ItemDataRole.UserRole) or {}
         detail = (
             f"실행 ID {run.get('run_id')} | 시작 {run.get('started_at') or '-'} | "
-            f"종료 {run.get('finished_at') or '-'}"
+            f"종료 {run.get('finished_at') or '-'} | "
+            f"시도 {int(run.get('attempt_count') or 0)}/"
+            f"{int(run.get('retry_limit') or 0) + 1}"
         )
         if run.get("error"):
             detail += f" | 오류: {run['error']}"
@@ -564,11 +576,13 @@ class WorkDetailDialog(QDialog):
 class ProcessContext:
     job: DownloadJob
     run: DownloadRun
-    process: QProcess
+    process: QProcess | None = None
     stdout_buffer: str = ""
     stderr_buffer: str = ""
     cancel_requested: bool = False
     paused: bool = False
+    attempt_count: int = 0
+    retry_generation: int = 0
 
 
 class MainWindow(QMainWindow):
@@ -820,6 +834,23 @@ class MainWindow(QMainWindow):
             "동시에 실행할 작품 수입니다. 기본값은 1, 안전 상한은 4입니다."
         )
         self.work_concurrency_spin.valueChanged.connect(self._work_concurrency_changed)
+        self.retry_count_spin = QSpinBox()
+        self.retry_count_spin.setRange(0, 5)
+        self.retry_count_spin.setValue(
+            normalize_retry_count(self.config.get("retryCount"))
+        )
+        self.retry_count_spin.setToolTip("0이면 자동 재시도하지 않습니다.")
+        self.retry_backoff_spin = QSpinBox()
+        self.retry_backoff_spin.setRange(1, 60)
+        self.retry_backoff_spin.setSuffix("초")
+        self.retry_backoff_spin.setValue(
+            normalize_retry_backoff(self.config.get("retryBackoffSeconds"))
+        )
+        self.retry_backoff_spin.setToolTip(
+            "재시도 대기는 이 값에서 시작해 2배씩 늘어납니다."
+        )
+        self.retry_count_spin.valueChanged.connect(self._retry_policy_changed)
+        self.retry_backoff_spin.valueChanged.connect(self._retry_policy_changed)
 
         input_layout.addWidget(QLabel("URL"), 0, 0)
         input_layout.addWidget(self.url_edit, 0, 1, 1, 5)
@@ -843,6 +874,12 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(QLabel("검사 방식"), 4, 0)
         input_layout.addWidget(self.scan_mode_combo, 4, 1, 1, 3)
         input_layout.addWidget(self.show_browser_check, 4, 4, 1, 3)
+        input_layout.addWidget(QLabel("자동 재시도"), 5, 0)
+        input_layout.addWidget(self.retry_count_spin, 5, 1)
+        input_layout.addWidget(QLabel("회 (0~5)"), 5, 2)
+        input_layout.addWidget(QLabel("기본 대기"), 5, 4)
+        input_layout.addWidget(self.retry_backoff_spin, 5, 5)
+        input_layout.addWidget(QLabel("지수 백오프"), 5, 6)
         input_layout.setColumnStretch(1, 1)
         self._scan_mode_changed()
 
@@ -868,6 +905,7 @@ class MainWindow(QMainWindow):
             ("대기", "대기"),
             ("실행 중", "실행 중"),
             ("일시정지", "일시정지"),
+            ("재시도 대기", "재시도 대기"),
             ("완료", "완료"),
             ("오류", "오류"),
             ("중지됨", "중지됨"),
@@ -982,6 +1020,7 @@ class MainWindow(QMainWindow):
             #detailLabel, #mutedLabel { color: #667282; }
             #stateLabel { border-radius: 3px; padding: 3px; font-weight: 700; color: white; background: #7b8794; }
             #stateLabel[state="실행 중"] { background: #1a73e8; }
+            #stateLabel[state="재시도 대기"] { background: #cf7a18; }
             #stateLabel[state="완료"] { background: #3b7d44; }
             #stateLabel[state="오류"] { background: #d13b32; }
             #stateLabel[state="중지됨"] { background: #cf7a18; }
@@ -1034,6 +1073,8 @@ class MainWindow(QMainWindow):
         metadata_only: bool = False,
         image_concurrency: int | None = None,
         scan_mode: str = "new",
+        retry_count: int | None = None,
+        retry_backoff: int | None = None,
     ) -> DownloadJob:
         valid_url = validate_url(url)
         scan_mode_value, start_value, last_value = normalize_scan_request(
@@ -1047,7 +1088,7 @@ class MainWindow(QMainWindow):
         existing = self.jobs_by_work.get(work_key)
         if existing is None:
             existing = load_job_by_work_key(work_key)
-        if existing and existing.state in {"대기", "실행 중", "일시정지"}:
+        if existing and existing.state in ACTIVE_JOB_STATES:
             raise ValueError("같은 작품이 이미 대기 중이거나 다운로드 중입니다.")
 
         job = DownloadJob(
@@ -1075,6 +1116,16 @@ class MainWindow(QMainWindow):
                 image_concurrency
                 if image_concurrency is not None
                 else self.image_concurrency_spin.value()
+            ),
+            retry_limit=normalize_retry_count(
+                retry_count
+                if retry_count is not None
+                else self.retry_count_spin.value()
+            ),
+            retry_backoff_seconds=normalize_retry_backoff(
+                retry_backoff
+                if retry_backoff is not None
+                else self.retry_backoff_spin.value()
             ),
         )
         run = DownloadRun.from_job(job)
@@ -1320,36 +1371,53 @@ class MainWindow(QMainWindow):
             job = self.pending_jobs.popleft()
             job.queue_position = 0
             run = load_run(job.job_id) or DownloadRun.from_job(job)
-            process = QProcess(self)
-            context = ProcessContext(job=job, run=run, process=process)
+            context = ProcessContext(job=job, run=run)
             self.active_contexts[job.job_id] = context
-            job.state = "실행 중"
-            job.error = ""
-            self._update_job_card(job)
-
-            process.setWorkingDirectory(str(ROOT_DIR))
-            process.setProgram(find_node())
-            process.setArguments(build_downloader_args(job, json_events=True))
-            process.readyReadStandardOutput.connect(
-                lambda job_id=job.job_id: self._read_stdout(job_id)
-            )
-            process.readyReadStandardError.connect(
-                lambda job_id=job.job_id: self._read_stderr(job_id)
-            )
-            process.started.connect(
-                lambda job_id=job.job_id: self._process_started(job_id)
-            )
-            process.errorOccurred.connect(
-                lambda error, job_id=job.job_id: self._process_error(job_id, error)
-            )
-            process.finished.connect(
-                lambda exit_code, exit_status, job_id=job.job_id: self._process_finished(
-                    job_id, exit_code, exit_status
-                )
-            )
-            process.start()
+            self._launch_context(context)
         self._refresh_pending_positions()
         self._update_active_summary()
+
+    def _launch_context(self, context: ProcessContext) -> None:
+        if context.cancel_requested:
+            return
+        context.attempt_count += 1
+        context.job.attempt_count = context.attempt_count
+        context.run.attempt_count = context.attempt_count
+        context.run.retry_limit = context.job.retry_limit
+        context.run.retry_backoff_seconds = context.job.retry_backoff_seconds
+        context.stdout_buffer = ""
+        context.stderr_buffer = ""
+        context.paused = False
+        context.job.state = "실행 중"
+        context.job.error = ""
+        context.run.state = "실행 중"
+        context.run.error = ""
+        context.run.finished_at = ""
+        process = QProcess(self)
+        context.process = process
+        self._update_job_card(context.job)
+
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(find_node())
+        process.setArguments(build_downloader_args(context.job, json_events=True))
+        process.readyReadStandardOutput.connect(
+            lambda job_id=context.job.job_id: self._read_stdout(job_id)
+        )
+        process.readyReadStandardError.connect(
+            lambda job_id=context.job.job_id: self._read_stderr(job_id)
+        )
+        process.started.connect(
+            lambda job_id=context.job.job_id: self._process_started(job_id)
+        )
+        process.errorOccurred.connect(
+            lambda error, job_id=context.job.job_id: self._process_error(job_id, error)
+        )
+        process.finished.connect(
+            lambda exit_code, exit_status, job_id=context.job.job_id: self._process_finished(
+                job_id, exit_code, exit_status
+            )
+        )
+        process.start()
 
     def _process_started(self, job_id: str) -> None:
         context = self.active_contexts.get(job_id)
@@ -1358,10 +1426,11 @@ class MainWindow(QMainWindow):
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         context.run.state = "실행 중"
         context.run.process_pid = int(context.process.processId())
-        context.run.started_at = now
+        context.run.started_at = context.run.started_at or now
         save_runs([context.run])
         self.log(
-            f"작업 시작 PID={context.run.process_pid}: {context.job.url}",
+            f"작업 시작 {context.attempt_count}/{context.job.retry_limit + 1} "
+            f"PID={context.run.process_pid}: {context.job.url}",
             job_id=context.job.job_id,
         )
 
@@ -1496,7 +1565,43 @@ class MainWindow(QMainWindow):
             self._handle_process_line(job_id, context.stdout_buffer, False)
         if context.stderr_buffer.strip():
             self._handle_process_line(job_id, context.stderr_buffer, True)
+        context.stdout_buffer = ""
+        context.stderr_buffer = ""
         job = context.job
+        if should_auto_retry(
+            exit_code=exit_code,
+            cancel_requested=context.cancel_requested,
+            attempt_count=context.attempt_count,
+            retry_limit=job.retry_limit,
+        ):
+            retry_number = context.attempt_count
+            delay = retry_backoff_seconds(retry_number, job.retry_backoff_seconds)
+            job.state = "재시도 대기"
+            if not job.error:
+                job.error = f"프로세스 종료 코드 {exit_code}"
+            context.run.state = job.state
+            context.run.error = job.error
+            context.run.progress = job.progress
+            context.retry_generation += 1
+            generation = context.retry_generation
+            if context.process:
+                context.process.deleteLater()
+            context.process = None
+            save_runs([context.run])
+            self._update_job_card(job)
+            self.log(
+                f"자동 재시도 {retry_number}/{job.retry_limit}: {delay}초 후 실행",
+                "ERROR",
+                job_id,
+            )
+            self._update_active_summary()
+            QTimer.singleShot(
+                delay * 1000,
+                lambda job_id=job_id, generation=generation: self._restart_context(
+                    job_id, generation
+                ),
+            )
+            return
         if context.cancel_requested:
             job.state = "중지됨"
         elif exit_code == 0:
@@ -1523,13 +1628,26 @@ class MainWindow(QMainWindow):
         self._update_active_summary()
         QTimer.singleShot(250, self._start_next_job)
 
+    def _restart_context(self, job_id: str, generation: int) -> None:
+        context = self.active_contexts.get(job_id)
+        if (
+            not context
+            or context.cancel_requested
+            or context.retry_generation != generation
+            or context.job.state != "재시도 대기"
+        ):
+            return
+        self._launch_context(context)
+
     def stop_active_job(self, job_id: str | None = None) -> bool:
         context = self._resolve_active_context(job_id)
         if not context:
             self.log("중지할 실행 작업이 없습니다.")
             return False
         context.cancel_requested = True
-        pid = int(context.process.processId())
+        context.retry_generation += 1
+        process = context.process
+        pid = int(process.processId()) if process else 0
         self.log(f"작업 중지 요청: PID {pid}", job_id=context.job.job_id)
         if pid and os.name == "nt":
             subprocess.Popen(
@@ -1539,13 +1657,18 @@ class MainWindow(QMainWindow):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
-            context.process.kill()
+            if process and process.state() != QProcess.ProcessState.NotRunning:
+                process.kill()
+            else:
+                self._process_finished(job_id or context.job.job_id, -1, QProcess.ExitStatus.CrashExit)
         return True
 
     def pause_active_job(self, job_id: str | None = None) -> dict[str, Any]:
         context = self._resolve_active_context(job_id, required=True)
         if context.paused:
             raise ValueError(f"이미 일시정지된 작업입니다: {context.job.job_id}")
+        if not context.process or context.job.state != "실행 중":
+            raise ValueError("재시도 대기 중인 작업은 일시정지할 수 없습니다.")
         pid = int(context.process.processId())
         affected = set_process_tree_paused(pid, True)
         set_job_pause_state(context.job, context.run, paused=True)
@@ -1562,6 +1685,8 @@ class MainWindow(QMainWindow):
         context = self._resolve_active_context(job_id, required=True)
         if not context.paused:
             raise ValueError("현재 작업은 일시정지 상태가 아닙니다.")
+        if not context.process:
+            raise ValueError("계속할 프로세스가 없습니다.")
         pid = int(context.process.processId())
         affected = set_process_tree_paused(pid, False)
         set_job_pause_state(context.job, context.run, paused=False)
@@ -1602,10 +1727,15 @@ class MainWindow(QMainWindow):
             self.overall_progress.setValue(0)
             return
         paused_count = sum(context.paused for context in contexts)
+        retry_wait_count = sum(
+            context.job.state == "재시도 대기" for context in contexts
+        )
+        running_count = len(contexts) - paused_count - retry_wait_count
         average = round(sum(context.job.progress for context in contexts) / len(contexts))
         self.overall_progress.setValue(average)
         self.status_label.setText(
-            f"실행 {len(contexts) - paused_count} · 일시정지 {paused_count} · 평균 {average}%"
+            f"실행 {running_count} · 재시도 대기 {retry_wait_count} · "
+            f"일시정지 {paused_count} · 평균 {average}%"
         )
 
     def pause_selected_active_job(self, job_id: str | None = None) -> None:
@@ -1728,7 +1858,7 @@ class MainWindow(QMainWindow):
         source = self.selected_job(job_id)
         if not source:
             raise ValueError("메타데이터를 새로고칠 작품을 선택해주세요.")
-        if source.state in {"대기", "실행 중", "일시정지"}:
+        if source.state in ACTIVE_JOB_STATES:
             raise ValueError("대기 또는 실행 중인 작품은 메타데이터를 새로고칠 수 없습니다.")
         return self.enqueue_download(
             source.url,
@@ -1800,6 +1930,40 @@ class MainWindow(QMainWindow):
         return {
             "workConcurrency": self.work_concurrency_spin.value(),
             "imageConcurrency": self.image_concurrency_spin.value(),
+        }
+
+    def _retry_policy_changed(self, _value: int | None = None) -> None:
+        retry_count = normalize_retry_count(self.retry_count_spin.value())
+        backoff = normalize_retry_backoff(self.retry_backoff_spin.value())
+        self.config["retryCount"] = retry_count
+        self.config["retryBackoffSeconds"] = backoff
+        save_config(self.config)
+        self.log(f"자동 재시도 정책 변경: {retry_count}회, 기본 {backoff}초")
+
+    def set_retry_policy(
+        self,
+        *,
+        retry_count: int | None = None,
+        backoff_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        if retry_count is None and backoff_seconds is None:
+            raise ValueError("변경할 재시도 횟수 또는 대기 시간을 지정해주세요.")
+        self.retry_count_spin.blockSignals(True)
+        self.retry_backoff_spin.blockSignals(True)
+        try:
+            if retry_count is not None:
+                self.retry_count_spin.setValue(normalize_retry_count(retry_count))
+            if backoff_seconds is not None:
+                self.retry_backoff_spin.setValue(
+                    normalize_retry_backoff(backoff_seconds)
+                )
+        finally:
+            self.retry_count_spin.blockSignals(False)
+            self.retry_backoff_spin.blockSignals(False)
+        self._retry_policy_changed()
+        return {
+            "retryCount": self.retry_count_spin.value(),
+            "retryBackoffSeconds": self.retry_backoff_spin.value(),
         }
 
     def open_output_folder(self, job_id: str | None = None) -> str:
@@ -1943,7 +2107,7 @@ class MainWindow(QMainWindow):
             "목록 기록 제거...",
             lambda: self.confirm_remove_job_record(job.job_id),
         )
-        remove_action.setEnabled(job.state not in {"대기", "실행 중", "일시정지"})
+        remove_action.setEnabled(job.state not in ACTIVE_JOB_STATES)
         menu.addSeparator()
         rescan_menu = menu.addMenu("작품 재검사")
         new_action = rescan_menu.addAction(
@@ -1958,7 +2122,7 @@ class MainWindow(QMainWindow):
             "현재 입력 범위",
             lambda: self.rescan_selected_job("range", job.job_id),
         )
-        can_rescan = job.state not in {"대기", "실행 중", "일시정지"}
+        can_rescan = job.state not in ACTIVE_JOB_STATES
         new_action.setEnabled(can_rescan)
         full_action.setEnabled(can_rescan)
         range_action.setEnabled(
@@ -2285,6 +2449,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd queue move --job ID --before OTHER_ID|--first|--last\n"
             "toki-cli.cmd concurrency [--json]\n"
             "toki-cli.cmd set-concurrency [--works 1~4] [--images 1~16]\n"
+            "toki-cli.cmd retry-policy [--json]\n"
+            "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -2312,7 +2478,8 @@ class MainWindow(QMainWindow):
                 "paused": context.paused,
             }
             for context in active_contexts
-            if context.process.state() != QProcess.ProcessState.NotRunning
+            if context.process
+            and context.process.state() != QProcess.ProcessState.NotRunning
         ]
         return {
             "running": bool(active_contexts),
@@ -2336,6 +2503,8 @@ class MainWindow(QMainWindow):
             "outputDir": self.output_edit.text(),
             "imageConcurrency": self.image_concurrency_spin.value(),
             "workConcurrency": self.work_concurrency_spin.value(),
+            "retryCount": self.retry_count_spin.value(),
+            "retryBackoffSeconds": self.retry_backoff_spin.value(),
             "startupRecovery": self.startup_recovery,
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
@@ -2392,6 +2561,7 @@ class MainWindow(QMainWindow):
         self.queue_summary.setText(
             f"전체 {self.history_all_total} · 검색 {self.history_total} · 로딩 {len(states)} · "
             f"대기 {states.count('대기')} · 실행 {states.count('실행 중')} · "
+            f"재시도 {states.count('재시도 대기')} · "
             f"일시정지 {states.count('일시정지')} · 완료 {states.count('완료')} · "
             f"문제 {states.count('오류') + states.count('중지됨')}"
         )
@@ -2483,6 +2653,13 @@ class MainWindow(QMainWindow):
             return self.set_concurrency(
                 works=int(works) if works is not None else None,
                 images=int(images) if images is not None else None,
+            )
+        if action == "set_retry_policy":
+            retry_count = request.get("retryCount")
+            backoff = request.get("backoffSeconds")
+            return self.set_retry_policy(
+                retry_count=int(retry_count) if retry_count is not None else None,
+                backoff_seconds=int(backoff) if backoff is not None else None,
             )
         if action == "open_folder":
             return {"opened": self.open_output_folder(request.get("jobId"))}
@@ -2591,6 +2768,8 @@ class MainWindow(QMainWindow):
         self.config["showBrowser"] = self.show_browser_check.isChecked()
         self.config["imageConcurrency"] = self.image_concurrency_spin.value()
         self.config["workConcurrency"] = self.work_concurrency_spin.value()
+        self.config["retryCount"] = self.retry_count_spin.value()
+        self.config["retryBackoffSeconds"] = self.retry_backoff_spin.value()
         save_config(self.config)
         self.persist_timer.stop()
         self._flush_job_history()

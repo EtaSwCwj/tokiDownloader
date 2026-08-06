@@ -35,6 +35,8 @@ from toki_core import (
     load_run,
     load_runs_page,
     normalize_image_concurrency,
+    normalize_retry_backoff,
+    normalize_retry_count,
     normalize_scan_request,
     normalize_work_concurrency,
     update_job_markers,
@@ -42,8 +44,10 @@ from toki_core import (
     read_log_tail,
     read_run_log,
     resolve_cover_path,
+    retry_backoff_seconds,
     save_config,
     save_jobs,
+    should_auto_retry,
     update_job_note,
 )
 from toki_selftest import run_self_test
@@ -167,11 +171,32 @@ def run_direct_download(args: argparse.Namespace) -> int:
         show_browser=args.show_browser,
         scan_mode=scan_mode,
         image_concurrency=normalize_image_concurrency(config.get("imageConcurrency")),
+        retry_limit=normalize_retry_count(config.get("retryCount")),
+        retry_backoff_seconds=normalize_retry_backoff(
+            config.get("retryBackoffSeconds")
+        ),
     )
     command = [find_node(), *build_downloader_args(job, json_events=False)]
-    append_log(f"직접 CLI 실행: {command}", job_id="direct")
-    completed = subprocess.run(command, cwd=str(ROOT_DIR), check=False)
-    append_log(f"직접 CLI 종료 코드: {completed.returncode}", job_id="direct")
+    for attempt in range(1, job.retry_limit + 2):
+        job.attempt_count = attempt
+        append_log(
+            f"직접 CLI 실행 {attempt}/{job.retry_limit + 1}: {command}",
+            job_id="direct",
+        )
+        completed = subprocess.run(command, cwd=str(ROOT_DIR), check=False)
+        append_log(
+            f"직접 CLI 종료 코드: {completed.returncode}", job_id="direct"
+        )
+        if not should_auto_retry(
+            exit_code=completed.returncode,
+            cancel_requested=False,
+            attempt_count=attempt,
+            retry_limit=job.retry_limit,
+        ):
+            return completed.returncode
+        delay = retry_backoff_seconds(attempt, job.retry_backoff_seconds)
+        append_log(f"직접 CLI 자동 재시도: {delay}초 후", job_id="direct")
+        time.sleep(delay)
     return completed.returncode
 
 
@@ -189,6 +214,8 @@ def run_gui_self_test_probe() -> dict[str, Any]:
         if int(status.get("activeCount") or 0) != len(active_jobs):
             raise ControlError("GUI 실행 작품 개수와 목록이 일치하지 않습니다.")
         normalize_work_concurrency(status.get("workConcurrency"))
+        normalize_retry_count(status.get("retryCount"))
+        normalize_retry_backoff(status.get("retryBackoffSeconds"))
         startup_recovery = status.get("startupRecovery")
         if not isinstance(startup_recovery, dict):
             raise ControlError("GUI 상태에 재시작 복구 결과가 없습니다.")
@@ -316,6 +343,13 @@ def build_parser() -> argparse.ArgumentParser:
     set_concurrency = subparsers.add_parser("set-concurrency", help="동시성 설정 변경")
     set_concurrency.add_argument("--works", type=int, help="동시 실행 작품 수 1~4")
     set_concurrency.add_argument("--images", type=int, help="이미지 동시 다운로드 수 1~16")
+    retry_policy = subparsers.add_parser("retry-policy", help="자동 재시도 정책 조회")
+    retry_policy.add_argument("--json", action="store_true", help="JSON으로 출력")
+    set_retry_policy = subparsers.add_parser(
+        "set-retry-policy", help="자동 재시도 횟수와 기본 대기 시간 변경"
+    )
+    set_retry_policy.add_argument("--count", type=int, help="재시도 횟수 0~5")
+    set_retry_policy.add_argument("--backoff", type=int, help="기본 대기 초 1~60")
     retry = subparsers.add_parser(
         "retry",
         help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
@@ -602,6 +636,59 @@ def run_cli(args: argparse.Namespace) -> int:
             }
         print_json(result)
         return 0
+    if command == "retry-policy":
+        if gui_is_running():
+            status = control_request({"action": "status"})
+            result = {
+                "retryCount": status["retryCount"],
+                "retryBackoffSeconds": status["retryBackoffSeconds"],
+            }
+        else:
+            config = load_config()
+            result = {
+                "retryCount": normalize_retry_count(config.get("retryCount")),
+                "retryBackoffSeconds": normalize_retry_backoff(
+                    config.get("retryBackoffSeconds")
+                ),
+            }
+        if args.json:
+            print_json(result)
+        else:
+            print(f"자동 재시도: {result['retryCount']}회")
+            print(f"기본 대기: {result['retryBackoffSeconds']}초 (이후 2배씩 증가)")
+        return 0
+    if command == "set-retry-policy":
+        if args.count is None and args.backoff is None:
+            raise ValueError("--count 또는 --backoff 중 하나 이상을 지정해주세요.")
+        retry_count = (
+            normalize_retry_count(args.count) if args.count is not None else None
+        )
+        backoff = (
+            normalize_retry_backoff(args.backoff) if args.backoff is not None else None
+        )
+        if gui_is_running():
+            result = control_request(
+                {
+                    "action": "set_retry_policy",
+                    "retryCount": retry_count,
+                    "backoffSeconds": backoff,
+                }
+            )
+        else:
+            config = load_config()
+            if retry_count is not None:
+                config["retryCount"] = retry_count
+            if backoff is not None:
+                config["retryBackoffSeconds"] = backoff
+            save_config(config)
+            result = {
+                "retryCount": normalize_retry_count(config.get("retryCount")),
+                "retryBackoffSeconds": normalize_retry_backoff(
+                    config.get("retryBackoffSeconds")
+                ),
+            }
+        print_json(result)
+        return 0
     if command == "retry":
         print_json(control_request({"action": "retry", "jobId": args.job}))
         return 0
@@ -736,6 +823,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 requested = f"{run.get('requested_start') or '처음'}~{run.get('requested_last') or '끝'}"
                 print(
                     f"{run['run_id']} | {run['state']} | {run['progress']}% | "
+                    f"시도 {run.get('attempt_count', 0)}/{run.get('retry_limit', 0) + 1} | "
                     f"범위 {requested} | {run['created_at']}"
                 )
             print(f"표시 {len(result['runs'])} / 전체 {result['total']}")
@@ -750,6 +838,10 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             print(f"실행 ID: {run.run_id} | 상태: {run.state} | 진행률: {run.progress}%")
             print(f"작품 키: {run.work_key} | PID: {run.process_pid or '-'}")
+            print(
+                f"시도: {run.attempt_count}/{run.retry_limit + 1} | "
+                f"기본 백오프: {run.retry_backoff_seconds}초"
+            )
             print(
                 f"발견/선택/처리: {run.discovered_episodes}/"
                 f"{run.selected_episodes}/{run.processed_episodes}"

@@ -5,7 +5,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
 
-from toki_app import build_parser, run_cli
+from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
@@ -115,6 +115,60 @@ class CliParserTests(unittest.TestCase):
         args = build_parser().parse_args(["set-concurrency"])
         with self.assertRaises(ValueError):
             run_cli(args)
+
+    def test_retry_policy_arguments_and_gui_request(self) -> None:
+        current = build_parser().parse_args(["retry-policy", "--json"])
+        self.assertTrue(current.json)
+        args = build_parser().parse_args(
+            ["set-retry-policy", "--count", "3", "--backoff", "4"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={"retryCount": 3, "retryBackoffSeconds": 4},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_retry_policy",
+                "retryCount": 3,
+                "backoffSeconds": 4,
+            }
+        )
+
+    def test_direct_download_uses_same_retry_backoff_policy(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "download", "--direct", "--url",
+                "https://newtoki1.org/manhwa/34360",
+            ]
+        )
+        completed = [
+            type("Completed", (), {"returncode": code})()
+            for code in (1, 1, 0)
+        ]
+        with (
+            patch(
+                "toki_app.load_config",
+                return_value={
+                    "outputDir": r"C:\Manga",
+                    "imageConcurrency": 5,
+                    "retryCount": 2,
+                    "retryBackoffSeconds": 2,
+                },
+            ),
+            patch("toki_app.find_node", return_value="node"),
+            patch("toki_app.build_downloader_args", return_value=["down.js"]),
+            patch("toki_app.subprocess.run", side_effect=completed) as runner,
+            patch("toki_app.time.sleep") as sleeper,
+            patch("toki_app.append_log"),
+        ):
+            self.assertEqual(run_direct_download(args), 0)
+        self.assertEqual(runner.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleeper.call_args_list], [2, 4])
 
     def test_list_query_arguments(self) -> None:
         args = build_parser().parse_args(

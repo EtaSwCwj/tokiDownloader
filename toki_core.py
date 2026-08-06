@@ -34,6 +34,7 @@ TAG_COLORS = {
     "purple": "#8856c6",
     "gray": "#7b8794",
 }
+ACTIVE_JOB_STATES = frozenset({"대기", "실행 중", "일시정지", "재시도 대기"})
 
 
 def default_config() -> dict[str, Any]:
@@ -50,6 +51,8 @@ def default_config() -> dict[str, Any]:
         "showBrowser": False,
         "workConcurrency": 1,
         "imageConcurrency": 5,
+        "retryCount": 2,
+        "retryBackoffSeconds": 2,
     }
 
 
@@ -198,6 +201,40 @@ def normalize_scan_request(
     return scan_mode, start_value, last_value
 
 
+def normalize_retry_count(value: int | None) -> int:
+    count = 2 if value is None else int(value)
+    if not 0 <= count <= 5:
+        raise ValueError("자동 재시도 횟수는 0~5 사이여야 합니다.")
+    return count
+
+
+def normalize_retry_backoff(value: int | None) -> int:
+    seconds = 2 if value is None else int(value)
+    if not 1 <= seconds <= 60:
+        raise ValueError("재시도 기본 대기 시간은 1~60초 사이여야 합니다.")
+    return seconds
+
+
+def retry_backoff_seconds(retry_number: int, base_seconds: int | None) -> int:
+    retry = max(1, int(retry_number))
+    base = normalize_retry_backoff(base_seconds)
+    return min(300, base * (2 ** (retry - 1)))
+
+
+def should_auto_retry(
+    *,
+    exit_code: int,
+    cancel_requested: bool,
+    attempt_count: int,
+    retry_limit: int,
+) -> bool:
+    return (
+        int(exit_code) != 0
+        and not cancel_requested
+        and int(attempt_count) <= normalize_retry_count(retry_limit)
+    )
+
+
 @dataclass
 class DownloadJob:
     job_id: str
@@ -223,6 +260,9 @@ class DownloadJob:
     scan_mode: str = "new"
     queue_position: int = 0
     image_concurrency: int = 5
+    attempt_count: int = 0
+    retry_limit: int = 2
+    retry_backoff_seconds: int = 2
     episode_index: int = 0
     episode_total: int = 0
     episode_number: int = 0
@@ -238,6 +278,8 @@ class DownloadJob:
         if not self.work_key:
             self.work_key = build_work_key(self.url)
         self.scan_mode = normalize_scan_mode(self.scan_mode)
+        self.retry_limit = normalize_retry_count(self.retry_limit)
+        self.retry_backoff_seconds = normalize_retry_backoff(self.retry_backoff_seconds)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -257,6 +299,9 @@ class DownloadRun:
     processed_episodes: int = 0
     last_episode_number: int = 0
     progress: int = 0
+    attempt_count: int = 0
+    retry_limit: int = 2
+    retry_backoff_seconds: int = 2
     error: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -285,6 +330,9 @@ class DownloadRun:
             processed_episodes=job.episode_index,
             last_episode_number=job.episode_number,
             progress=job.progress,
+            attempt_count=job.attempt_count,
+            retry_limit=job.retry_limit,
+            retry_backoff_seconds=job.retry_backoff_seconds,
             error=job.error,
             finished_at=finished_at,
             created_at=job.created_at,
@@ -703,7 +751,7 @@ def load_jobs_page(
 def recover_interrupted_jobs(
     reason: str = "이전 GUI가 종료되어 작업이 중단되었습니다.",
 ) -> dict[str, Any]:
-    interrupted_states = ("대기", "실행 중", "일시정지")
+    interrupted_states = tuple(sorted(ACTIVE_JOB_STATES))
     placeholders = ", ".join("?" for _ in interrupted_states)
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     recovered_jobs: list[DownloadJob] = []
@@ -991,7 +1039,7 @@ def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:
         raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
-    if job.state in {"대기", "실행 중", "일시정지"}:
+    if job.state in ACTIVE_JOB_STATES:
         raise ValueError("대기 또는 실행 중인 작품 기록은 제거할 수 없습니다.")
     connection = _connect_job_db()
     try:
@@ -1007,7 +1055,7 @@ def delete_job_records(states: list[str]) -> list[DownloadJob]:
     clean_states = sorted({str(state).strip() for state in states if str(state).strip()})
     if not clean_states:
         raise ValueError("정리할 작업 상태를 하나 이상 지정해주세요.")
-    if any(state in {"대기", "실행 중", "일시정지"} for state in clean_states):
+    if any(state in ACTIVE_JOB_STATES for state in clean_states):
         raise ValueError("대기 또는 실행 중인 작품 기록은 일괄 제거할 수 없습니다.")
     placeholders = ",".join("?" for _ in clean_states)
     field_names = set(DownloadJob.__dataclass_fields__)

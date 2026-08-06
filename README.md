@@ -102,6 +102,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd resume --job 일시정지작업ID
 .\toki-cli.cmd concurrency --json
 .\toki-cli.cmd set-concurrency --works 2 --images 5
+.\toki-cli.cmd retry-policy --json
+.\toki-cli.cmd set-retry-policy --count 2 --backoff 2
 .\toki-cli.cmd rescan --job 작업ID --mode new
 .\toki-cli.cmd rescan --job 작업ID --mode full
 .\toki-cli.cmd rescan --job 작업ID --mode range --start 10 --last 25
@@ -220,6 +222,13 @@ GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `�
 작품과 실행 이력을 `중지됨`으로 복구합니다. 목록의 첫 페이지에 보이지 않는 기록도
 누락하지 않으며 `status --json`의 `startupRecovery`에서 복구 개수와 ID를 확인할 수
 있습니다.
+
+`set-retry-policy --count N --backoff S`는 프로세스 실패 후 자동 재시도 횟수와
+기본 대기 초를 설정합니다. 기본값은 2회·2초이고, 대기는 2초→4초→8초처럼 2배씩
+늘어나며 최대 300초로 제한됩니다. 횟수는 0~5, 기본 대기는 1~60초 범위입니다.
+사용자가 `stop --job ID`로 중지한 작업과 정상 완료는 재시도하지 않으며, `재시도 대기`
+상태에서도 같은 작품 ID로 중지할 수 있습니다. 실행 이력에는 실제 시도 횟수와
+정책 상한이 함께 남습니다. 설정 변경은 새로 추가하는 작업부터 적용됩니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

@@ -29,15 +29,19 @@ from toki_core import (
     normalize_image_concurrency,
     normalize_scan_mode,
     normalize_scan_request,
+    normalize_retry_backoff,
+    normalize_retry_count,
     normalize_work_concurrency,
     read_run_log,
     recover_interrupted_jobs,
+    retry_backoff_seconds,
     resolve_cover_path,
     reorder_pending_jobs,
     save_jobs,
     save_runs,
     set_job_pause_state,
     set_process_tree_paused,
+    should_auto_retry,
     update_job_note,
     update_job_markers,
 )
@@ -113,6 +117,53 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(normalize_scan_request("new", 10, 20), ("new", None, None))
         with self.assertRaises(ValueError):
             normalize_scan_request("range", None, None)
+
+    def test_retry_policy_has_safe_bounds_and_exponential_delays(self) -> None:
+        self.assertEqual(normalize_retry_count(None), 2)
+        self.assertEqual(normalize_retry_count(0), 0)
+        self.assertEqual(normalize_retry_backoff(None), 2)
+        self.assertEqual(
+            [retry_backoff_seconds(number, 3) for number in range(1, 5)],
+            [3, 6, 12, 24],
+        )
+        with self.assertRaises(ValueError):
+            normalize_retry_count(6)
+        with self.assertRaises(ValueError):
+            normalize_retry_backoff(0)
+
+    def test_auto_retry_excludes_success_cancel_and_exhausted_attempts(self) -> None:
+        self.assertTrue(
+            should_auto_retry(
+                exit_code=1,
+                cancel_requested=False,
+                attempt_count=1,
+                retry_limit=2,
+            )
+        )
+        self.assertFalse(
+            should_auto_retry(
+                exit_code=0,
+                cancel_requested=False,
+                attempt_count=1,
+                retry_limit=2,
+            )
+        )
+        self.assertFalse(
+            should_auto_retry(
+                exit_code=1,
+                cancel_requested=True,
+                attempt_count=1,
+                retry_limit=2,
+            )
+        )
+        self.assertFalse(
+            should_auto_retry(
+                exit_code=1,
+                cancel_requested=False,
+                attempt_count=3,
+                retry_limit=2,
+            )
+        )
 
     def test_metadata_refresh_arguments_preserve_existing_work_folder(self) -> None:
         job = DownloadJob(
