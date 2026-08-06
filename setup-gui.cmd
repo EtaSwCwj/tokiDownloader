@@ -15,7 +15,7 @@ if not exist ".venv\Scripts\python.exe" (
   if errorlevel 1 goto :error
 )
 
-echo [2/3] PyQt6 의존성을 확인합니다.
+echo [2/3] PyQt6와 프로세스 제어 의존성을 확인합니다.
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements-gui.txt
 if errorlevel 1 goto :error
 

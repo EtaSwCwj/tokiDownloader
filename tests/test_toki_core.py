@@ -30,6 +30,8 @@ from toki_core import (
     reorder_pending_jobs,
     save_jobs,
     save_runs,
+    set_job_pause_state,
+    set_process_tree_paused,
     update_job_note,
     update_job_markers,
 )
@@ -107,6 +109,44 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual([job.job_id for job in moved], ["a", "c", "b"])
         with self.assertRaises(ValueError):
             reorder_pending_jobs(jobs, "a")
+
+    def test_pause_state_and_process_tree_are_applied_by_pid(self) -> None:
+        job = DownloadJob(
+            job_id="running",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            state="실행 중",
+        )
+        run = DownloadRun.from_job(job)
+        run.state = "실행 중"
+        set_job_pause_state(job, run, paused=True)
+        self.assertEqual(job.state, "일시정지")
+        set_job_pause_state(job, run, paused=False)
+        self.assertEqual(job.state, "실행 중")
+
+        class FakeProcess:
+            def __init__(self, pid: int, children: list["FakeProcess"] | None = None) -> None:
+                self.pid = pid
+                self._children = children or []
+                self.actions: list[str] = []
+
+            def children(self, recursive: bool = False) -> list["FakeProcess"]:
+                self.assert_recursive = recursive
+                return self._children
+
+            def suspend(self) -> None:
+                self.actions.append("suspend")
+
+            def resume(self) -> None:
+                self.actions.append("resume")
+
+        child = FakeProcess(22)
+        root = FakeProcess(11, [child])
+        with patch.object(toki_core.psutil, "Process", return_value=root):
+            self.assertEqual(set_process_tree_paused(11, True), [22, 11])
+            self.assertEqual(set_process_tree_paused(11, False), [22, 11])
+        self.assertEqual(child.actions, ["suspend", "resume"])
+        self.assertEqual(root.actions, ["suspend", "resume"])
 
     def test_retry_contract_resets_previous_range(self) -> None:
         source = DownloadJob(

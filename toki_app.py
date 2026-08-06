@@ -273,6 +273,10 @@ def build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--job", help="현재 실행 중인지 확인할 작업 ID")
     cancel = subparsers.add_parser("cancel", help="작업 ID로 대기 작업 실행 전 취소")
     cancel.add_argument("--job", required=True, help="대기 작업 ID")
+    pause = subparsers.add_parser("pause", help="현재 작업의 Node/Chrome 프로세스 트리 일시정지")
+    pause.add_argument("--job", required=True, help="현재 실행 작업 ID")
+    resume = subparsers.add_parser("resume", help="일시정지한 작업 프로세스 트리 계속")
+    resume.add_argument("--job", required=True, help="일시정지 작업 ID")
     queue = subparsers.add_parser("queue", help="대기열 조회와 순서 변경")
     queue_commands = queue.add_subparsers(dest="queue_command", required=True)
     queue_list = queue_commands.add_parser("list", help="현재 대기열 순서 조회")
@@ -474,6 +478,12 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
     if command == "cancel":
         print_json(control_request({"action": "cancel", "jobId": args.job}))
+        return 0
+    if command == "pause":
+        print_json(control_request({"action": "pause", "jobId": args.job}))
+        return 0
+    if command == "resume":
+        print_json(control_request({"action": "resume", "jobId": args.job}))
         return 0
     if command == "queue":
         ensure_gui_running()

@@ -83,6 +83,8 @@ from toki_core import (
     save_config,
     save_jobs,
     save_runs,
+    set_job_pause_state,
+    set_process_tree_paused,
     update_job_note,
     update_job_markers,
     validate_url,
@@ -215,6 +217,7 @@ class JobItemDelegate(QStyledItemDelegate):
         state_rect.setHeight(23)
         state_colors = {
             "실행 중": "#1a73e8",
+            "일시정지": "#8856c6",
             "완료": "#3b7d44",
             "오류": "#d13b32",
             "중지됨": "#cf7a18",
@@ -572,6 +575,7 @@ class MainWindow(QMainWindow):
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
         self.cancel_requested = False
+        self.paused_job_id = ""
         self.force_close = False
         self.stdout_buffer = ""
         self.stderr_buffer = ""
@@ -639,6 +643,14 @@ class MainWindow(QMainWindow):
         self.stop_action.setShortcut("Ctrl+K")
         self.stop_action.triggered.connect(self.stop_active_job)
 
+        self.pause_action = QAction("현재 작업 일시정지", self)
+        self.pause_action.setShortcut("Ctrl+P")
+        self.pause_action.triggered.connect(self.pause_selected_active_job)
+
+        self.resume_action = QAction("일시정지 작업 계속", self)
+        self.resume_action.setShortcut("Ctrl+Shift+P")
+        self.resume_action.triggered.connect(self.resume_selected_active_job)
+
         self.retry_action = QAction("선택 작품 전체 재검사", self)
         self.retry_action.setShortcut("Ctrl+R")
         self.retry_action.triggered.connect(self.retry_selected_job)
@@ -675,6 +687,8 @@ class MainWindow(QMainWindow):
         work_menu = self.menuBar().addMenu("작업")
         work_menu.addAction(self.start_action)
         work_menu.addAction(self.stop_action)
+        work_menu.addAction(self.pause_action)
+        work_menu.addAction(self.resume_action)
         work_menu.addAction(self.retry_action)
         work_menu.addSeparator()
         work_menu.addAction(self.exit_action)
@@ -781,9 +795,11 @@ class MainWindow(QMainWindow):
             ("모든 상태", ""),
             ("대기", "대기"),
             ("실행 중", "실행 중"),
+            ("일시정지", "일시정지"),
             ("완료", "완료"),
             ("오류", "오류"),
             ("중지됨", "중지됨"),
+            ("취소됨", "취소됨"),
         ):
             self.state_filter_combo.addItem(label, value)
         self.state_filter_combo.currentIndexChanged.connect(self.apply_history_filters)
@@ -947,7 +963,7 @@ class MainWindow(QMainWindow):
         existing = self.jobs_by_work.get(work_key)
         if existing is None:
             existing = load_job_by_work_key(work_key)
-        if existing and existing.state in {"대기", "실행 중"}:
+        if existing and existing.state in {"대기", "실행 중", "일시정지"}:
             raise ValueError("같은 작품이 이미 대기 중이거나 다운로드 중입니다.")
 
         job = DownloadJob(
@@ -1020,7 +1036,7 @@ class MainWindow(QMainWindow):
         for job in page:
             if hydrate_job_metadata(job):
                 metadata_updates.append(job)
-            if job.state in {"대기", "실행 중"}:
+            if job.state in {"대기", "실행 중", "일시정지"}:
                 job.state = "중지됨"
                 job.error = job.error or "이전 GUI가 종료되어 작업이 중단되었습니다."
                 recovered.append(job)
@@ -1397,6 +1413,7 @@ class MainWindow(QMainWindow):
         self.process = None
         self.active_job = None
         self.active_run = None
+        self.paused_job_id = ""
         self.cancel_requested = False
         QTimer.singleShot(250, self._start_next_job)
 
@@ -1426,6 +1443,60 @@ class MainWindow(QMainWindow):
         else:
             self.process.kill()
         return True
+
+    def pause_active_job(self, job_id: str | None = None) -> dict[str, Any]:
+        requested_job_id = job_id if isinstance(job_id, str) and job_id else None
+        if not self.process or not self.active_job or not self.active_run:
+            raise ValueError("일시정지할 실행 작업이 없습니다.")
+        if requested_job_id and self.active_job.job_id != requested_job_id:
+            raise ValueError(f"지정한 작업은 현재 실행 중이 아닙니다: {requested_job_id}")
+        if self.paused_job_id:
+            raise ValueError(f"이미 일시정지된 작업입니다: {self.paused_job_id}")
+        pid = int(self.process.processId())
+        affected = set_process_tree_paused(pid, True)
+        set_job_pause_state(self.active_job, self.active_run, paused=True)
+        self.paused_job_id = self.active_job.job_id
+        save_runs([self.active_run])
+        self._update_job_card(self.active_job)
+        self.log(
+            f"작업 일시정지: PID {pid}, 프로세스 {len(affected)}개",
+            job_id=self.active_job.job_id,
+        )
+        return {"paused": True, "jobId": self.active_job.job_id, "processIds": affected}
+
+    def resume_active_job(self, job_id: str | None = None) -> dict[str, Any]:
+        requested_job_id = job_id if isinstance(job_id, str) and job_id else None
+        if not self.process or not self.active_job or not self.active_run:
+            raise ValueError("계속할 일시정지 작업이 없습니다.")
+        if requested_job_id and self.active_job.job_id != requested_job_id:
+            raise ValueError(f"지정한 작업은 현재 일시정지 상태가 아닙니다: {requested_job_id}")
+        if self.paused_job_id != self.active_job.job_id:
+            raise ValueError("현재 작업은 일시정지 상태가 아닙니다.")
+        pid = int(self.process.processId())
+        affected = set_process_tree_paused(pid, False)
+        set_job_pause_state(self.active_job, self.active_run, paused=False)
+        self.paused_job_id = ""
+        save_runs([self.active_run])
+        self._update_job_card(self.active_job)
+        self.log(
+            f"작업 계속: PID {pid}, 프로세스 {len(affected)}개",
+            job_id=self.active_job.job_id,
+        )
+        return {"resumed": True, "jobId": self.active_job.job_id, "processIds": affected}
+
+    def pause_selected_active_job(self, job_id: str | None = None) -> None:
+        try:
+            self.pause_active_job(job_id if isinstance(job_id, str) else None)
+        except (ValueError, RuntimeError, OSError) as error:
+            QMessageBox.warning(self, "작업을 일시정지할 수 없음", str(error))
+            self.log(str(error), "ERROR")
+
+    def resume_selected_active_job(self, job_id: str | None = None) -> None:
+        try:
+            self.resume_active_job(job_id if isinstance(job_id, str) else None)
+        except (ValueError, RuntimeError, OSError) as error:
+            QMessageBox.warning(self, "작업을 계속할 수 없음", str(error))
+            self.log(str(error), "ERROR")
 
     def cancel_queued_job(self, job_id: str) -> dict[str, Any]:
         clean_job_id = str(job_id or "").strip()
@@ -1689,12 +1760,28 @@ class MainWindow(QMainWindow):
             "목록 기록 제거...",
             lambda: self.confirm_remove_job_record(job.job_id),
         )
-        remove_action.setEnabled(job.state not in {"대기", "실행 중"})
+        remove_action.setEnabled(job.state not in {"대기", "실행 중", "일시정지"})
         menu.addSeparator()
         retry_action = menu.addAction("작품 전체 재검사", self.retry_selected_job)
-        retry_action.setEnabled(job.state not in {"대기", "실행 중"})
+        retry_action.setEnabled(job.state not in {"대기", "실행 중", "일시정지"})
         stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
         stop_action.setEnabled(bool(self.active_job and self.active_job.job_id == job.job_id))
+        pause_action = menu.addAction(
+            "현재 작업 일시정지",
+            lambda: self.pause_selected_active_job(job.job_id),
+        )
+        pause_action.setEnabled(
+            bool(
+                self.active_job
+                and self.active_job.job_id == job.job_id
+                and not self.paused_job_id
+            )
+        )
+        resume_action = menu.addAction(
+            "일시정지 작업 계속",
+            lambda: self.resume_selected_active_job(job.job_id),
+        )
+        resume_action.setEnabled(self.paused_job_id == job.job_id)
         cancel_action = menu.addAction(
             "대기 작업 취소",
             lambda: self.cancel_selected_queued_job(job.job_id),
@@ -2017,6 +2104,7 @@ class MainWindow(QMainWindow):
             ),
             "activeJob": self.active_job.to_dict() if self.active_job else None,
             "pendingCount": len(self.pending_jobs),
+            "pausedJobId": self.paused_job_id or None,
             "jobs": [job.to_dict() for job in self.jobs.values()],
             "loadedJobCount": len(self.jobs),
             "totalJobCount": self.history_all_total,
@@ -2077,7 +2165,8 @@ class MainWindow(QMainWindow):
         self.queue_summary.setText(
             f"전체 {self.history_all_total} · 검색 {self.history_total} · 로딩 {len(states)} · "
             f"대기 {states.count('대기')} · 실행 {states.count('실행 중')} · "
-            f"완료 {states.count('완료')} · 문제 {states.count('오류') + states.count('중지됨')}"
+            f"일시정지 {states.count('일시정지')} · 완료 {states.count('완료')} · "
+            f"문제 {states.count('오류') + states.count('중지됨')}"
         )
 
     def _start_control_server(self) -> None:
@@ -2127,6 +2216,10 @@ class MainWindow(QMainWindow):
             return job.to_dict()
         if action == "stop":
             return {"stopped": self.stop_active_job(request.get("jobId"))}
+        if action == "pause":
+            return self.pause_active_job(request.get("jobId"))
+        if action == "resume":
+            return self.resume_active_job(request.get("jobId"))
         if action == "cancel":
             return self.cancel_queued_job(str(request.get("jobId") or ""))
         if action == "queue_list":

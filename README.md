@@ -98,6 +98,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd queue move --job 대기작업ID --before 기준작업ID
 .\toki-cli.cmd queue move --job 대기작업ID --first
 .\toki-cli.cmd queue move --job 대기작업ID --last
+.\toki-cli.cmd pause --job 실행중작업ID
+.\toki-cli.cmd resume --job 일시정지작업ID
 .\toki-cli.cmd retry --job 작업ID
 
 # 저장 폴더와 로그
@@ -180,6 +182,13 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 에서도 맨 앞·맨 뒤 이동을 실행할 수 있고, 대기 상태인 작품 행에는 현재 대기열 번호가
 표시됩니다. 순서 변경은 대기 작업에만 허용되며 실행 중이거나 완료된 작업에는 적용되지
 않습니다.
+
+`pause --job`은 지정한 현재 작업의 Node 프로세스와 자식 Chrome 프로세스 트리를 Windows
+수준에서 함께 일시정지하고, `resume --job`은 같은 PID 트리를 계속 실행합니다. 새
+프로세스로 재시작하거나 진행률을 되돌리는 기능이 아니며, 긴 시간 멈추면 사이트 연결이
+만료되어 재개 후 해당 작업이 오류로 끝날 수 있습니다. 이 경우 실행 이력과 로그를 확인한
+뒤 전체 재검사를 사용합니다. 프로세스 트리 제어에는 `psutil`을 사용하며 `setup-gui.cmd`가
+자동으로 설치합니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

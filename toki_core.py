@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import psutil
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 DOWNLOADER_PATH = ROOT_DIR / "down.js"
@@ -776,6 +778,45 @@ def reorder_pending_jobs(
     return ordered
 
 
+def set_process_tree_paused(process_pid: int, paused: bool) -> list[int]:
+    pid = int(process_pid or 0)
+    if pid <= 0:
+        raise ValueError("일시정지할 프로세스 PID가 없습니다.")
+    try:
+        root = psutil.Process(pid)
+        processes = list(root.children(recursive=True))
+        processes.append(root)
+        affected: list[int] = []
+        for process in processes:
+            try:
+                process.suspend() if paused else process.resume()
+                affected.append(process.pid)
+            except psutil.NoSuchProcess:
+                continue
+        if not affected:
+            raise RuntimeError(f"프로세스 트리를 찾을 수 없습니다: PID {pid}")
+        return affected
+    except psutil.NoSuchProcess as error:
+        raise RuntimeError(f"프로세스를 찾을 수 없습니다: PID {pid}") from error
+    except psutil.AccessDenied as error:
+        raise RuntimeError(f"프로세스 제어 권한이 없습니다: PID {pid}") from error
+
+
+def set_job_pause_state(
+    job: DownloadJob,
+    run: DownloadRun,
+    *,
+    paused: bool,
+) -> tuple[DownloadJob, DownloadRun]:
+    expected = "실행 중" if paused else "일시정지"
+    target = "일시정지" if paused else "실행 중"
+    if job.state != expected or run.state != expected:
+        raise ValueError(f"{expected} 상태의 작업만 {target} 상태로 바꿀 수 있습니다.")
+    job.state = target
+    run.state = target
+    return job, run
+
+
 def update_job_markers(
     job_id: str,
     *,
@@ -809,7 +850,7 @@ def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:
         raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
-    if job.state in {"대기", "실행 중"}:
+    if job.state in {"대기", "실행 중", "일시정지"}:
         raise ValueError("대기 또는 실행 중인 작품 기록은 제거할 수 없습니다.")
     connection = _connect_job_db()
     try:
@@ -825,7 +866,7 @@ def delete_job_records(states: list[str]) -> list[DownloadJob]:
     clean_states = sorted({str(state).strip() for state in states if str(state).strip()})
     if not clean_states:
         raise ValueError("정리할 작업 상태를 하나 이상 지정해주세요.")
-    if any(state in {"대기", "실행 중"} for state in clean_states):
+    if any(state in {"대기", "실행 중", "일시정지"} for state in clean_states):
         raise ValueError("대기 또는 실행 중인 작품 기록은 일괄 제거할 수 없습니다.")
     placeholders = ",".join("?" for _ in clean_states)
     field_names = set(DownloadJob.__dataclass_fields__)
