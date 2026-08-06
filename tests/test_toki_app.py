@@ -11,6 +11,26 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_performance_resources_cli_uses_gui_state_when_running(self) -> None:
+        args = build_parser().parse_args(["performance", "resources", "--json"])
+        result = {
+            "ok": True,
+            "limits": {
+                "ioThreads": 4,
+                "cpuProcesses": 2,
+                "maxPendingDownloads": 1000,
+            },
+        }
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=result) as request,
+            redirect_stdout(StringIO()) as output,
+        ):
+            exit_code = run_cli(args)
+        self.assertEqual(exit_code, 0)
+        request.assert_called_once_with({"action": "resource_status"})
+        self.assertEqual(json.loads(output.getvalue())["limits"]["cpuProcesses"], 2)
+
     def test_retention_cli_reports_status_and_executes_via_gui(self) -> None:
         status_args = build_parser().parse_args(["retention", "status", "--json"])
         with (

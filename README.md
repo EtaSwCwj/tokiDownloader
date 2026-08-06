@@ -159,6 +159,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd retention status --json
 .\toki-cli.cmd retention cleanup-runs --max-per-work 500 --max-age-days 365 --json
 .\toki-cli.cmd retention cleanup-runs --max-per-work 500 --max-age-days 365 --execute --json
+.\toki-cli.cmd performance resources --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -206,6 +207,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 작품별 500건·365일 정책을 사용하되 작품별 최신 1건과 대기·실행·일시정지·재시도 중인 기록은
 항상 보존합니다. `cleanup-runs`는 기본 미리보기이고 `--execute`를 붙여야 DB의 오래된 실행
 이력만 제거합니다. 작품 목록 레코드와 다운로드 폴더·이미지 파일은 삭제하지 않습니다.
+
+`performance resources`는 현재 PC와 실행 중인 GUI의 자원 상한·사용량을 반환합니다. 파일
+검사, 회차 이미지 목록과 미리보기 디코딩은 최대 2~8개의 공용 I/O 스레드 풀에서 실행되고
+대기 포함 I/O 작업은 스레드 수의 4배로 제한됩니다. 이미지 변환은 CPU 수와 가용 메모리에
+따라 1~4개의 숨김 프로세스로 제한되어 GUI와 다운로드 스케줄러를 막지 않습니다. 다운로드
+대기열은 최대 1,000개이며 상한 도달 시 새 작업을 명확히 거부합니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

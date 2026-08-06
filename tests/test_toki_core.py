@@ -59,6 +59,8 @@ from toki_core import (
     retry_backoff_seconds,
     resolve_cover_path,
     reorder_pending_jobs,
+    resource_admission,
+    resource_budget,
     run_job_database_benchmark,
     save_jobs,
     save_runs,
@@ -75,6 +77,26 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_resource_budget_limits_io_cpu_and_download_queue(self) -> None:
+        normal = resource_budget(cpu_count=16, available_memory_bytes=16 * 1024**3)
+        low_memory = resource_budget(cpu_count=16, available_memory_bytes=2 * 1024**3)
+
+        self.assertEqual(normal["ioThreads"], 8)
+        self.assertEqual(normal["cpuProcesses"], 4)
+        self.assertEqual(low_memory["ioThreads"], 4)
+        self.assertEqual(low_memory["cpuProcesses"], 1)
+        self.assertTrue(
+            resource_admission("cpu", active_count=3, budget=normal)["allowed"]
+        )
+        self.assertFalse(
+            resource_admission("cpu", active_count=4, budget=normal)["allowed"]
+        )
+        self.assertFalse(
+            resource_admission(
+                "download_queue", queued_count=1_000, budget=normal
+            )["allowed"]
+        )
+
     def test_thumbnail_cache_key_changes_with_source_and_cleanup_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

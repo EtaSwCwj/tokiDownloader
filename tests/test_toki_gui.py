@@ -385,6 +385,7 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness = type("ConversionHarness", (), {})()
         harness.image_conversion_processes = {}
+        harness.resource_limits = {"cpuProcesses": 2}
         harness.active_image_conversion_dialog = None
         harness.active_image_conversion_progress_dialog = None
         harness.selected_job = lambda _job_id=None: job

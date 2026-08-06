@@ -558,6 +558,63 @@ def available_work_slots(active_count: int, work_concurrency: int | None) -> int
     return max(0, normalize_work_concurrency(work_concurrency) - active)
 
 
+def resource_budget(
+    cpu_count: int | None = None,
+    available_memory_bytes: int | None = None,
+) -> dict[str, Any]:
+    cpu = max(1, int(cpu_count or os.cpu_count() or 1))
+    memory = int(
+        available_memory_bytes
+        if available_memory_bytes is not None
+        else psutil.virtual_memory().available
+    )
+    io_threads = max(2, min(8, cpu))
+    cpu_processes = max(1, min(4, cpu // 4 or 1))
+    if memory < 4 * 1024 * 1024 * 1024:
+        io_threads = min(io_threads, 4)
+        cpu_processes = 1
+    return {
+        "cpuCount": cpu,
+        "availableMemoryBytes": max(0, memory),
+        "ioThreads": io_threads,
+        "maxIoTasks": io_threads * 4,
+        "cpuProcesses": cpu_processes,
+        "maxPendingDownloads": 1_000,
+        "maxLoadedJobs": 2_000,
+        "maxProcessOutputBytes": 2 * 1024 * 1024,
+    }
+
+
+def resource_admission(
+    kind: str,
+    *,
+    active_count: int = 0,
+    queued_count: int = 0,
+    budget: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    limits = budget or resource_budget()
+    normalized = str(kind or "").strip().lower()
+    if normalized == "io":
+        limit = int(limits["maxIoTasks"])
+        used = max(0, int(active_count)) + max(0, int(queued_count))
+    elif normalized == "cpu":
+        limit = int(limits["cpuProcesses"])
+        used = max(0, int(active_count))
+    elif normalized == "download_queue":
+        limit = int(limits["maxPendingDownloads"])
+        used = max(0, int(queued_count))
+    else:
+        raise ValueError(f"지원하지 않는 자원 종류입니다: {kind}")
+    available = max(0, limit - used)
+    return {
+        "kind": normalized,
+        "allowed": used < limit,
+        "limit": limit,
+        "used": used,
+        "available": available,
+    }
+
+
 def normalize_scan_mode(value: str | None) -> str:
     mode = str(value or "new").strip().lower()
     if mode not in {"new", "full", "range"}:

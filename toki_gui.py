@@ -12,7 +12,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PyQt6.QtCore import (
     QAbstractListModel,
@@ -116,6 +116,7 @@ from toki_core import (
     load_job_by_id,
     load_job_by_work_key,
     load_jobs_page,
+    list_job_episode_images,
     log_retention_status,
     load_run,
     load_runs_page,
@@ -136,6 +137,8 @@ from toki_core import (
     rebuild_job_metadata as execute_metadata_rebuild,
     recover_interrupted_jobs,
     rescan_job_parameters,
+    resource_admission,
+    resource_budget,
     resolve_cover_path,
     reorder_pending_jobs,
     save_config,
@@ -151,6 +154,7 @@ from toki_core import (
     update_job_markers,
     update_app_settings,
     validate_url,
+    verify_job_files,
 )
 
 
@@ -1008,6 +1012,25 @@ class ImageLoadTask(QRunnable):
         self.signals.loaded.emit(self.path, image, error)
 
 
+class ServiceTaskSignals(QObject):
+    finished = pyqtSignal(str, object, str)
+
+
+class ServiceTask(QRunnable):
+    def __init__(self, task_id: str, operation: Callable[[], dict[str, Any]]) -> None:
+        super().__init__()
+        self.task_id = task_id
+        self.operation = operation
+        self.signals = ServiceTaskSignals()
+
+    def run(self) -> None:
+        try:
+            result = self.operation()
+            self.signals.finished.emit(self.task_id, result, "")
+        except Exception as error:  # Worker boundary: report service failures to the GUI.
+            self.signals.finished.emit(self.task_id, {}, str(error))
+
+
 class ImagePreviewDialog(QDialog):
     def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
         super().__init__(owner)
@@ -1540,11 +1563,13 @@ class MainWindow(QMainWindow):
         self.active_contexts: dict[str, ProcessContext] = {}
         self.self_test_process: QProcess | None = None
         self.performance_benchmark_process: QProcess | HiddenProcess | None = None
-        self.file_verify_processes: dict[str, QProcess] = {}
-        self.image_preview_processes: dict[str, QProcess] = {}
+        self.resource_limits = resource_budget()
+        self.file_verify_processes: dict[str, ServiceTask] = {}
+        self.image_preview_processes: dict[str, ServiceTask] = {}
         self.image_conversion_processes: dict[str, ImageConversionProcessContext] = {}
-        self.image_thread_pool = QThreadPool(self)
-        self.image_thread_pool.setMaxThreadCount(2)
+        self.io_thread_pool = QThreadPool(self)
+        self.io_thread_pool.setMaxThreadCount(int(self.resource_limits["ioThreads"]))
+        self.image_thread_pool = self.io_thread_pool
         self.self_test_stdout = ""
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
@@ -2221,6 +2246,15 @@ class MainWindow(QMainWindow):
         retry_backoff: int | None = None,
     ) -> DownloadJob:
         valid_url = validate_url(url)
+        queue_admission = resource_admission(
+            "download_queue",
+            queued_count=len(self.pending_jobs),
+            budget=self.resource_limits,
+        )
+        if not queue_admission["allowed"]:
+            raise ValueError(
+                f"다운로드 대기열 상한 {queue_admission['limit']:,}개에 도달했습니다."
+            )
         scan_mode_value, start_value, last_value = normalize_scan_request(
             scan_mode, start, last
         )
@@ -2770,6 +2804,28 @@ class MainWindow(QMainWindow):
         return {
             "logs": log_retention_status(),
             "runs": self.run_retention_report,
+        }
+
+    def resource_snapshot(self) -> dict[str, Any]:
+        io_tracked = len(self.file_verify_processes) + len(self.image_preview_processes)
+        io_active = self.io_thread_pool.activeThreadCount()
+        return {
+            "limits": dict(self.resource_limits),
+            "io": {
+                "activeThreads": io_active,
+                "trackedTasks": io_tracked,
+                "queuedTasks": max(0, io_tracked - io_active),
+                "threadLimit": self.io_thread_pool.maxThreadCount(),
+            },
+            "cpu": {
+                "activeProcesses": len(self.image_conversion_processes),
+                "processLimit": int(self.resource_limits["cpuProcesses"]),
+            },
+            "downloads": {
+                "active": len(self.active_contexts),
+                "pending": len(self.pending_jobs),
+                "pendingLimit": int(self.resource_limits["maxPendingDownloads"]),
+            },
         }
 
     def _start_next_job(self) -> None:
@@ -3700,44 +3756,42 @@ class MainWindow(QMainWindow):
             raise ValueError("파일을 검사할 작품을 선택해주세요.")
         if job.job_id in self.file_verify_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
-        python = Path(sys.executable).with_name("python.exe")
-        process = create_background_process(self)
-        process.setWorkingDirectory(str(ROOT_DIR))
-        process.setProgram(str(python if python.is_file() else Path(sys.executable)))
-        process.setArguments(
-            [
-                str(ROOT_DIR / "toki_app.py"),
-                "verify-files",
-                "--job",
-                job.job_id,
-                "--json",
-                "--ascii-json",
-            ]
+        tracked = len(self.file_verify_processes) + len(self.image_preview_processes)
+        active = self.io_thread_pool.activeThreadCount()
+        admission = resource_admission(
+            "io",
+            active_count=active,
+            queued_count=max(0, tracked - active),
+            budget=self.resource_limits,
         )
-        process.finished.connect(
-            lambda exit_code, _status, selected=job.job_id: self._file_verification_finished(
-                selected, exit_code
-            )
-        )
-        self.file_verify_processes[job.job_id] = process
-        process.start()
-        self.log("작품 파일 검사 시작(별도 프로세스)", job_id=job.job_id)
+        if not admission["allowed"]:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "resourceLimit": True,
+                "resources": admission,
+            }
+        task = ServiceTask(job.job_id, lambda: verify_job_files(job.job_id))
+        task.signals.finished.connect(self._file_verification_finished)
+        self.file_verify_processes[job.job_id] = task
+        self.io_thread_pool.start(task)
+        self.log("작품 파일 검사 시작(I/O 스레드 풀)", job_id=job.job_id)
         self.statusBar().showMessage(f"{job.title} 파일 검사 중…")
-        return {"started": True, "jobId": job.job_id, "processId": 0}
+        return {
+            "started": True,
+            "jobId": job.job_id,
+            "resources": admission,
+        }
 
-    def _file_verification_finished(self, job_id: str, exit_code: int) -> None:
-        process = self.file_verify_processes.pop(job_id, None)
-        if process is None:
+    def _file_verification_finished(
+        self, job_id: str, result: dict[str, Any], error: str
+    ) -> None:
+        task = self.file_verify_processes.pop(job_id, None)
+        if task is None:
             return
-        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
-        process.deleteLater()
-        try:
-            result = json.loads(stdout.strip())
-        except json.JSONDecodeError:
-            message = stderr.strip() or stdout.strip() or f"종료 코드 {exit_code}"
-            self.log(f"작품 파일 검사 실패: {message}", "ERROR", job_id)
-            QMessageBox.critical(self, "작품 파일 검사 실패", message)
+        if error:
+            self.log(f"작품 파일 검사 실패: {error}", "ERROR", job_id)
+            QMessageBox.critical(self, "작품 파일 검사 실패", error)
             return
         if self.active_file_verify_dialog:
             self.active_file_verify_dialog.close()
@@ -3768,46 +3822,45 @@ class MainWindow(QMainWindow):
             raise ValueError("이미지를 미리 볼 작품을 선택해주세요.")
         if job.job_id in self.image_preview_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
-        python = Path(sys.executable).with_name("python.exe")
-        arguments = [
-            str(ROOT_DIR / "toki_app.py"),
-            "preview",
-            "--job",
-            job.job_id,
-            "--limit",
-            "200",
-            "--json",
-            "--ascii-json",
-        ]
-        if episode:
-            arguments.extend(["--episode", str(int(episode))])
-        process = create_background_process(self)
-        process.setWorkingDirectory(str(ROOT_DIR))
-        process.setProgram(str(python if python.is_file() else Path(sys.executable)))
-        process.setArguments(arguments)
-        process.finished.connect(
-            lambda exit_code, _status, selected=job.job_id: self._image_preview_finished(
-                selected, exit_code
-            )
+        tracked = len(self.file_verify_processes) + len(self.image_preview_processes)
+        active = self.io_thread_pool.activeThreadCount()
+        admission = resource_admission(
+            "io",
+            active_count=active,
+            queued_count=max(0, tracked - active),
+            budget=self.resource_limits,
         )
-        self.image_preview_processes[job.job_id] = process
-        process.start()
-        self.log("회차 이미지 목록 조회 시작(별도 프로세스)", job_id=job.job_id)
-        return {"started": True, "jobId": job.job_id, "episode": episode}
+        if not admission["allowed"]:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "resourceLimit": True,
+                "resources": admission,
+            }
+        task = ServiceTask(
+            job.job_id,
+            lambda: list_job_episode_images(job.job_id, episode, limit=200),
+        )
+        task.signals.finished.connect(self._image_preview_finished)
+        self.image_preview_processes[job.job_id] = task
+        self.io_thread_pool.start(task)
+        self.log("회차 이미지 목록 조회 시작(I/O 스레드 풀)", job_id=job.job_id)
+        return {
+            "started": True,
+            "jobId": job.job_id,
+            "episode": episode,
+            "resources": admission,
+        }
 
-    def _image_preview_finished(self, job_id: str, exit_code: int) -> None:
-        process = self.image_preview_processes.pop(job_id, None)
-        if process is None:
+    def _image_preview_finished(
+        self, job_id: str, result: dict[str, Any], error: str
+    ) -> None:
+        task = self.image_preview_processes.pop(job_id, None)
+        if task is None:
             return
-        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
-        process.deleteLater()
-        try:
-            result = json.loads(stdout.strip())
-        except json.JSONDecodeError:
-            message = stderr.strip() or stdout.strip() or f"종료 코드 {exit_code}"
-            self.log(f"이미지 미리보기 준비 실패: {message}", "ERROR", job_id)
-            QMessageBox.critical(self, "이미지 미리보기 실패", message)
+        if error:
+            self.log(f"이미지 미리보기 준비 실패: {error}", "ERROR", job_id)
+            QMessageBox.critical(self, "이미지 미리보기 실패", error)
             return
         if self.active_image_preview_dialog:
             self.active_image_preview_dialog.close()
@@ -3843,6 +3896,18 @@ class MainWindow(QMainWindow):
             raise ValueError("이미지를 변환할 작품을 선택해주세요.")
         if job.job_id in self.image_conversion_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
+        admission = resource_admission(
+            "cpu",
+            active_count=len(self.image_conversion_processes),
+            budget=self.resource_limits,
+        )
+        if not admission["allowed"]:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "resourceLimit": True,
+                "resources": admission,
+            }
         python = Path(sys.executable).with_name("python.exe")
         arguments = [
             str(ROOT_DIR / "toki_app.py"),
@@ -3907,6 +3972,7 @@ class MainWindow(QMainWindow):
             "format": image_format,
             "quality": int(quality),
             "execute": execute,
+            "resources": admission,
         }
 
     def _read_image_conversion_stdout(self, job_id: str) -> None:
@@ -4867,6 +4933,7 @@ class MainWindow(QMainWindow):
             "eventUpdates": self.event_update_snapshot(),
             "thumbnailCache": self.thumbnail_cache_snapshot(),
             "retention": self.retention_snapshot(),
+            "resources": self.resource_snapshot(),
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
@@ -5249,6 +5316,8 @@ class MainWindow(QMainWindow):
                 str(request.get("output") or ""),
             )
             return {"started": started, **self.performance_benchmark_snapshot()}
+        if action == "resource_status":
+            return {"ok": True, **self.resource_snapshot()}
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()

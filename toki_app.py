@@ -59,6 +59,7 @@ from toki_core import (
     read_run_log,
     rebuild_job_metadata,
     resolve_cover_path,
+    resource_budget,
     retry_backoff_seconds,
     run_job_database_benchmark,
     save_config,
@@ -472,6 +473,10 @@ def build_parser() -> argparse.ArgumentParser:
     performance_event_policy.add_argument(
         "--json", action="store_true", help="JSON으로 출력"
     )
+    performance_resources = performance_commands.add_parser(
+        "resources", help="I/O 스레드·CPU 프로세스·대기열 자원 상한 조회"
+    )
+    performance_resources.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     thumbnail_cache = subparsers.add_parser(
         "thumbnail-cache", help="앱 전용 썸네일 디스크 캐시 조회·정리"
@@ -1061,6 +1066,11 @@ def run_cli(args: argparse.Namespace) -> int:
                 )
         elif args.performance_command == "event-policy":
             result = {"ok": True, **downloader_event_update_policy(args.event)}
+        elif args.performance_command == "resources":
+            if gui_is_running():
+                result = control_request({"action": "resource_status"})
+            else:
+                result = {"ok": True, "limits": resource_budget()}
         else:
             if args.close:
                 ensure_gui_running()
@@ -1091,6 +1101,13 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"{result['event']} | UI {result['uiMode']} "
                 f"{int(result['uiIntervalMs'])}ms | 실행 이력 저장 "
                 f"{'예' if result['persistRun'] else '아니오'}"
+            )
+        elif args.performance_command == "resources":
+            limits = result["limits"]
+            print(
+                f"I/O 스레드 {limits['ioThreads']} | CPU 프로세스 "
+                f"{limits['cpuProcesses']} | 다운로드 대기 "
+                f"{limits['maxPendingDownloads']:,}"
             )
         else:
             queries = list(result.get("queries") or [])
