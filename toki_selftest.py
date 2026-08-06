@@ -52,6 +52,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "toki_gui.py",
         ROOT_DIR / "down.js",
         ROOT_DIR / "downloader_policy.js",
+        ROOT_DIR / "downloader_errors.js",
         ROOT_DIR / "tokiDownloader.js",
         ROOT_DIR / "package.json",
         ROOT_DIR / "start-gui.cmd",
@@ -87,7 +88,12 @@ def _check_node_syntax() -> dict[str, Any]:
         check=True,
         timeout=15,
     ).stdout.strip()
-    files = [DOWNLOADER_PATH, ROOT_DIR / "downloader_policy.js", ROOT_DIR / "tokiDownloader.js"]
+    files = [
+        DOWNLOADER_PATH,
+        ROOT_DIR / "downloader_policy.js",
+        ROOT_DIR / "downloader_errors.js",
+        ROOT_DIR / "tokiDownloader.js",
+    ]
     for path in files:
         completed = subprocess.run(
             [node, "--check", str(path)],
@@ -107,7 +113,12 @@ def _check_node_syntax() -> dict[str, Any]:
 
 def _check_node_tests() -> dict[str, Any]:
     completed = subprocess.run(
-        [find_node(), "--test", str(ROOT_DIR / "tests" / "downloader_policy.test.js")],
+        [
+            find_node(),
+            "--test",
+            str(ROOT_DIR / "tests" / "downloader_policy.test.js"),
+            str(ROOT_DIR / "tests" / "downloader_errors.test.js"),
+        ],
         cwd=str(ROOT_DIR),
         capture_output=True,
         text=True,
@@ -121,7 +132,7 @@ def _check_node_tests() -> dict[str, Any]:
     )
     if completed.returncode:
         raise RuntimeError(output or f"종료 코드 {completed.returncode}")
-    return {"detail": "회차 선택 JavaScript 테스트 4건 통과", "tests": 4}
+    return {"detail": "다운로더 JavaScript 테스트 7건 통과", "tests": 7}
 
 
 def _check_unit_tests() -> dict[str, Any]:

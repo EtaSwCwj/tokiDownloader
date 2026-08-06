@@ -66,6 +66,7 @@ from toki_core import (
     count_runs,
     delete_job_record,
     delete_job_records,
+    error_category_label,
     find_node,
     hydrate_job_metadata,
     load_config,
@@ -232,6 +233,7 @@ class JobItemDelegate(QStyledItemDelegate):
             "완료": "#3b7d44",
             "오류": "#d13b32",
             "중지됨": "#cf7a18",
+            "인증 필요": "#b33a7a",
         }
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(state_colors.get(job.state, "#7b8794")))
@@ -263,6 +265,10 @@ class JobItemDelegate(QStyledItemDelegate):
             details.append(f"현재 {job.episode_number}화")
         if job.image_total:
             details.append(f"이미지 {job.image_current}/{job.image_total}")
+        if job.error_category:
+            details.append(f"분류 {error_category_label(job.error_category)}")
+        if job.attempt_count:
+            details.append(f"시도 {job.attempt_count}/{job.retry_limit + 1}")
         if not details:
             details.append(job.url)
         detail_text = " · ".join(details)
@@ -556,7 +562,8 @@ class WorkDetailDialog(QDialog):
             f"{int(run.get('retry_limit') or 0) + 1}"
         )
         if run.get("error"):
-            detail += f" | 오류: {run['error']}"
+            category = error_category_label(run.get("error_category"))
+            detail += f" | 오류 분류 {category}: {run['error']}"
         self.run_detail_label.setText(detail)
         self.open_run_log_button.setEnabled(True)
 
@@ -906,6 +913,7 @@ class MainWindow(QMainWindow):
             ("실행 중", "실행 중"),
             ("일시정지", "일시정지"),
             ("재시도 대기", "재시도 대기"),
+            ("인증 필요", "인증 필요"),
             ("완료", "완료"),
             ("오류", "오류"),
             ("중지됨", "중지됨"),
@@ -1021,6 +1029,7 @@ class MainWindow(QMainWindow):
             #stateLabel { border-radius: 3px; padding: 3px; font-weight: 700; color: white; background: #7b8794; }
             #stateLabel[state="실행 중"] { background: #1a73e8; }
             #stateLabel[state="재시도 대기"] { background: #cf7a18; }
+            #stateLabel[state="인증 필요"] { background: #b33a7a; }
             #stateLabel[state="완료"] { background: #3b7d44; }
             #stateLabel[state="오류"] { background: #d13b32; }
             #stateLabel[state="중지됨"] { background: #cf7a18; }
@@ -1390,8 +1399,12 @@ class MainWindow(QMainWindow):
         context.paused = False
         context.job.state = "실행 중"
         context.job.error = ""
+        context.job.error_category = ""
+        context.job.retryable_error = None
         context.run.state = "실행 중"
         context.run.error = ""
+        context.run.error_category = ""
+        context.run.retryable_error = None
         context.run.finished_at = ""
         process = QProcess(self)
         context.process = process
@@ -1440,6 +1453,8 @@ class MainWindow(QMainWindow):
             return
         message = f"프로세스 오류: {context.process.errorString()} ({error.name})"
         context.job.error = message
+        context.job.error_category = "process"
+        context.job.retryable_error = True
         self.log(message, "ERROR", job_id)
         if error == QProcess.ProcessError.FailedToStart:
             self._process_finished(job_id, -1, QProcess.ExitStatus.CrashExit)
@@ -1526,6 +1541,8 @@ class MainWindow(QMainWindow):
             job.progress = 100
         elif event_name == "error":
             job.error = str(event.get("message") or "알 수 없는 오류")
+            job.error_category = str(event.get("category") or "unknown")
+            job.retryable_error = bool(event.get("retryable", True))
 
         if job.episode_total:
             fraction = job.image_current / job.image_total if job.image_total else 0.0
@@ -1539,6 +1556,8 @@ class MainWindow(QMainWindow):
         run.state = job.state
         run.progress = job.progress
         run.error = job.error
+        run.error_category = job.error_category
+        run.retryable_error = job.retryable_error
         if event_name == "queue_ready":
             run.discovered_episodes = int(event.get("totalEpisodes") or 0)
             run.selected_episodes = int(event.get("selectedEpisodes") or 0)
@@ -1573,6 +1592,8 @@ class MainWindow(QMainWindow):
             cancel_requested=context.cancel_requested,
             attempt_count=context.attempt_count,
             retry_limit=job.retry_limit,
+            error_category=job.error_category,
+            retryable_hint=job.retryable_error,
         ):
             retry_number = context.attempt_count
             delay = retry_backoff_seconds(retry_number, job.retry_backoff_seconds)
@@ -1608,13 +1629,19 @@ class MainWindow(QMainWindow):
             job.state = "완료"
             job.progress = 100
         else:
-            job.state = "오류"
+            job.state = (
+                "인증 필요"
+                if job.error_category == "authentication_required"
+                else "오류"
+            )
             if not job.error:
                 job.error = f"프로세스 종료 코드 {exit_code}"
         self.log(f"작업 종료: {job.state} (code={exit_code})", job_id=job.job_id)
         context.run.state = job.state
         context.run.progress = job.progress
         context.run.error = job.error
+        context.run.error_category = job.error_category
+        context.run.retryable_error = job.retryable_error
         context.run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
         save_runs([context.run])
         self.active_contexts.pop(job_id, None)
@@ -2284,15 +2311,19 @@ class MainWindow(QMainWindow):
         }
 
     def confirm_cleanup_records(self) -> None:
-        states = ["완료", "오류", "중지됨"]
+        states = ["완료", "오류", "인증 필요", "중지됨"]
         count = sum(count_jobs(state=state) for state in states)
         if count <= 0:
-            QMessageBox.information(self, "기록 정리", "정리할 완료·오류·중단 기록이 없습니다.")
+            QMessageBox.information(
+                self,
+                "기록 정리",
+                "정리할 완료·오류·인증 필요·중단 기록이 없습니다.",
+            )
             return
         answer = QMessageBox.question(
             self,
-            "완료·오류 기록 정리",
-            f"완료·오류·중단 기록 {count}개를 목록에서 제거할까요?\n\n"
+            "종료 기록 정리",
+            f"완료·오류·인증 필요·중단 기록 {count}개를 목록에서 제거할까요?\n\n"
             "다운로드한 폴더와 이미지 파일은 삭제하지 않습니다.",
         )
         if answer == QMessageBox.StandardButton.Yes:
@@ -2439,7 +2470,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd pin --job ID --on|--off\n"
             "toki-cli.cmd tag --job ID --color COLOR\n"
             "toki-cli.cmd remove-record --job ID --yes\n"
-            "toki-cli.cmd cleanup-records --status completed|error|stopped --yes\n"
+            "toki-cli.cmd cleanup-records --status completed|error|authentication|stopped --yes\n"
             "toki-cli.cmd refresh-list\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
@@ -2563,7 +2594,7 @@ class MainWindow(QMainWindow):
             f"대기 {states.count('대기')} · 실행 {states.count('실행 중')} · "
             f"재시도 {states.count('재시도 대기')} · "
             f"일시정지 {states.count('일시정지')} · 완료 {states.count('완료')} · "
-            f"문제 {states.count('오류') + states.count('중지됨')}"
+            f"문제 {states.count('오류') + states.count('중지됨') + states.count('인증 필요')}"
         )
 
     def _start_control_server(self) -> None:

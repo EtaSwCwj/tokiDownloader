@@ -150,6 +150,48 @@ class WorkSchedulerTests(unittest.TestCase):
         timers[0][1]()
         self.assertEqual(restarted, [(job.job_id, 1)])
 
+    def test_authentication_failure_is_terminal_without_automatic_retry(self) -> None:
+        job = DownloadJob(
+            job_id="auth-job",
+            url="https://newtoki1.org/manhwa/9002",
+            output_dir=r"C:\Manga",
+            state="실행 중",
+            retry_limit=5,
+            error="Cloudflare 인증 확인 시간 초과",
+            error_category="authentication_required",
+            retryable_error=False,
+        )
+        context = ProcessContext(
+            job=job,
+            run=DownloadRun.from_job(job),
+            process=_ProcessStub(),
+            attempt_count=1,
+        )
+        harness = type("AuthenticationHarness", (), {})()
+        harness.active_contexts = {job.job_id: context}
+        harness.active_detail_dialog = None
+        harness._handle_process_line = lambda *_args: None
+        harness._update_job_card = lambda _job: None
+        harness._update_active_summary = lambda: None
+        harness._start_next_job = lambda: None
+        harness.log = lambda *_args, **_kwargs: None
+        timers = []
+
+        with (
+            patch("toki_gui.save_runs"),
+            patch(
+                "toki_gui.QTimer.singleShot",
+                side_effect=lambda delay, callback: timers.append((delay, callback)),
+            ),
+        ):
+            MainWindow._process_finished(harness, job.job_id, 1, None)
+
+        self.assertEqual(job.state, "인증 필요")
+        self.assertNotIn(job.job_id, harness.active_contexts)
+        self.assertEqual(context.run.state, "인증 필요")
+        self.assertTrue(context.run.finished_at)
+        self.assertEqual([delay for delay, _callback in timers], [250])
+
 
 if __name__ == "__main__":
     unittest.main()

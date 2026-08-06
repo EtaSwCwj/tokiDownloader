@@ -29,6 +29,7 @@ from toki_core import (
     count_runs,
     delete_job_record,
     delete_job_records,
+    error_category_label,
     load_config,
     load_job_by_id,
     load_jobs_page,
@@ -463,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--status",
         action="append",
         required=True,
-        choices=("completed", "error", "stopped"),
+        choices=("completed", "error", "authentication", "stopped"),
         help="정리할 상태(여러 번 지정 가능)",
     )
     cleanup_records.add_argument("--yes", action="store_true", help="일괄 기록 정리 확인")
@@ -848,6 +849,11 @@ def run_cli(args: argparse.Namespace) -> int:
             )
             print(f"시작: {run.started_at or '-'} | 종료: {run.finished_at or '-'}")
             if run.error:
+                print(
+                    f"오류 분류: {error_category_label(run.error_category)} | "
+                    f"자동 재시도 가능: "
+                    f"{'예' if run.retryable_error is not False else '아니요'}"
+                )
                 print(f"오류: {run.error}")
         return 0
     if command == "run-logs":
@@ -957,7 +963,12 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "cleanup-records":
         if not args.yes:
             raise ControlError("일괄 기록 정리에는 --yes가 필요합니다. 파일은 삭제되지 않습니다.")
-        state_map = {"completed": "완료", "error": "오류", "stopped": "중지됨"}
+        state_map = {
+            "completed": "완료",
+            "error": "오류",
+            "authentication": "인증 필요",
+            "stopped": "중지됨",
+        }
         states = [state_map[state] for state in args.status]
         if gui_is_running():
             result = control_request({"action": "cleanup_records", "states": states})

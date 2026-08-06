@@ -31,6 +31,7 @@ from toki_core import (
     normalize_scan_request,
     normalize_retry_backoff,
     normalize_retry_count,
+    normalize_error_category,
     normalize_work_concurrency,
     read_run_log,
     recover_interrupted_jobs,
@@ -148,6 +149,25 @@ class CoreContractTests(unittest.TestCase):
                 retry_limit=2,
             )
         )
+        self.assertFalse(
+            should_auto_retry(
+                exit_code=1,
+                cancel_requested=False,
+                attempt_count=1,
+                retry_limit=2,
+                error_category="authentication_required",
+            )
+        )
+        self.assertFalse(
+            should_auto_retry(
+                exit_code=1,
+                cancel_requested=False,
+                attempt_count=1,
+                retry_limit=2,
+                retryable_hint=False,
+            )
+        )
+        self.assertEqual(normalize_error_category("unexpected"), "unknown")
         self.assertFalse(
             should_auto_retry(
                 exit_code=1,

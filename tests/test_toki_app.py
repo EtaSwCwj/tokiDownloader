@@ -195,9 +195,18 @@ class CliParserTests(unittest.TestCase):
 
     def test_cleanup_and_refresh_arguments(self) -> None:
         cleanup = build_parser().parse_args(
-            ["cleanup-records", "--status", "completed", "--status", "error", "--yes"]
+            [
+                "cleanup-records",
+                "--status",
+                "completed",
+                "--status",
+                "error",
+                "--status",
+                "authentication",
+                "--yes",
+            ]
         )
-        self.assertEqual(cleanup.status, ["completed", "error"])
+        self.assertEqual(cleanup.status, ["completed", "error", "authentication"])
         self.assertTrue(cleanup.yes)
         refresh = build_parser().parse_args(["refresh-list"])
         self.assertEqual(refresh.command, "refresh-list")

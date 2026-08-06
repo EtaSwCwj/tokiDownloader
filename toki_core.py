@@ -35,6 +35,29 @@ TAG_COLORS = {
     "gray": "#7b8794",
 }
 ACTIVE_JOB_STATES = frozenset({"대기", "실행 중", "일시정지", "재시도 대기"})
+ERROR_CATEGORIES = frozenset(
+    {
+        "authentication_required",
+        "rate_limited",
+        "network",
+        "site_structure",
+        "filesystem",
+        "process",
+        "unknown",
+    }
+)
+ERROR_CATEGORY_LABELS = {
+    "authentication_required": "인증 필요",
+    "rate_limited": "요청 제한",
+    "network": "네트워크",
+    "site_structure": "사이트 구조 변경",
+    "filesystem": "파일 시스템",
+    "process": "프로세스",
+    "unknown": "기타",
+}
+NON_RETRYABLE_ERROR_CATEGORIES = frozenset(
+    {"authentication_required", "site_structure", "filesystem"}
+)
 
 
 def default_config() -> dict[str, Any]:
@@ -215,6 +238,15 @@ def normalize_retry_backoff(value: int | None) -> int:
     return seconds
 
 
+def normalize_error_category(value: str | None) -> str:
+    category = str(value or "unknown").strip().lower()
+    return category if category in ERROR_CATEGORIES else "unknown"
+
+
+def error_category_label(value: str | None) -> str:
+    return ERROR_CATEGORY_LABELS[normalize_error_category(value)]
+
+
 def retry_backoff_seconds(retry_number: int, base_seconds: int | None) -> int:
     retry = max(1, int(retry_number))
     base = normalize_retry_backoff(base_seconds)
@@ -227,11 +259,16 @@ def should_auto_retry(
     cancel_requested: bool,
     attempt_count: int,
     retry_limit: int,
+    error_category: str | None = None,
+    retryable_hint: bool | None = None,
 ) -> bool:
+    category = normalize_error_category(error_category)
     return (
         int(exit_code) != 0
         and not cancel_requested
         and int(attempt_count) <= normalize_retry_count(retry_limit)
+        and retryable_hint is not False
+        and category not in NON_RETRYABLE_ERROR_CATEGORIES
     )
 
 
@@ -270,6 +307,8 @@ class DownloadJob:
     image_total: int = 0
     progress: int = 0
     error: str = ""
+    error_category: str = ""
+    retryable_error: bool | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now().astimezone().isoformat(timespec="seconds")
     )
@@ -303,6 +342,8 @@ class DownloadRun:
     retry_limit: int = 2
     retry_backoff_seconds: int = 2
     error: str = ""
+    error_category: str = ""
+    retryable_error: bool | None = None
     started_at: str = ""
     finished_at: str = ""
     created_at: str = field(
@@ -314,7 +355,11 @@ class DownloadRun:
 
     @classmethod
     def from_job(cls, job: DownloadJob) -> "DownloadRun":
-        finished_at = job.created_at if job.state in {"완료", "오류", "중지됨"} else ""
+        finished_at = (
+            job.created_at
+            if job.state in {"완료", "오류", "인증 필요", "중지됨"}
+            else ""
+        )
         return cls(
             run_id=job.job_id,
             work_key=job.work_key,
@@ -334,6 +379,8 @@ class DownloadRun:
             retry_limit=job.retry_limit,
             retry_backoff_seconds=job.retry_backoff_seconds,
             error=job.error,
+            error_category=job.error_category,
+            retryable_error=job.retryable_error,
             finished_at=finished_at,
             created_at=job.created_at,
         )

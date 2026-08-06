@@ -2,6 +2,7 @@ import { connect } from "puppeteer-real-browser";
 import fs from 'node:fs';
 import path from 'node:path';
 import { selectEpisodeLinks } from './downloader_policy.js';
+import { classifyDownloaderError } from './downloader_errors.js';
 
 let info = {
     url: '',
@@ -308,7 +309,10 @@ async function main() {
         // await page.goto('https://booktoki350.com/');
         await Promise.all([page.waitForNavigation(), page.goto(info.url)]);
         // cloudflare에 막히기때문에 title이 바뀌기전까지 기다린다.
+        const challengeDeadline = Date.now() + 60000;
         while (!(await page.title()).includes(info.siteTitle)) {
+            if (Date.now() >= challengeDeadline)
+                throw new Error(`Cloudflare 또는 사이트 인증 확인 시간 초과: ${await page.title()}`);
             await sleep(100);
         }
         info.metadata = await page.evaluate(({ site, siteTitle, sourceUrl }) => {
@@ -550,7 +554,11 @@ async function main() {
         });
     } catch (error) {
         console.error(error);
-        emitEvent('error', { message: String(error?.stack || error) });
+        const diagnosis = classifyDownloaderError(error, {
+            pageTitle: await page.title().catch(() => ''),
+            pageUrl: page.url()
+        });
+        emitEvent('error', diagnosis);
         process.exitCode = 1;
     } finally {
         await browser.close().catch(() => {});
