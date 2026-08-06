@@ -1552,6 +1552,209 @@ def list_job_episode_images(
     }
 
 
+IMAGE_CONVERSION_FORMATS = {
+    "jpg": {"extension": ".jpg", "pillow": "JPEG"},
+    "png": {"extension": ".png", "pillow": "PNG"},
+    "webp": {"extension": ".webp", "pillow": "WEBP"},
+}
+
+
+def normalize_image_format(value: str) -> str:
+    image_format = str(value or "").strip().lower()
+    if image_format == "jpeg":
+        image_format = "jpg"
+    if image_format not in IMAGE_CONVERSION_FORMATS:
+        raise ValueError("지원 이미지 형식은 jpg, png, webp입니다.")
+    return image_format
+
+
+def normalize_image_quality(value: int | None) -> int:
+    quality = 90 if value is None else int(value)
+    if not 1 <= quality <= 100:
+        raise ValueError("이미지 품질은 1~100 사이여야 합니다.")
+    return quality
+
+
+def _collect_conversion_sources(output_path: Path) -> list[Path]:
+    sources: list[Path] = []
+    for entry in os.scandir(output_path):
+        if not entry.is_dir(follow_symlinks=False) or entry.name == "_converted":
+            continue
+        if not re.match(r"^0*(\d+)(?:\s|$)", entry.name):
+            continue
+        with os.scandir(entry.path) as children:
+            sources.extend(
+                Path(child.path).resolve()
+                for child in children
+                if child.is_file(follow_symlinks=False)
+                and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
+            )
+    return sorted(sources, key=lambda path: str(path).casefold())
+
+
+def plan_image_conversion(
+    job_id: str,
+    image_format: str,
+    *,
+    quality: int | None = None,
+    sample_limit: int = 100,
+) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if job.state in ACTIVE_JOB_STATES:
+        raise ValueError("대기 또는 실행 중인 작품 이미지는 변환할 수 없습니다.")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    normalized_format = normalize_image_format(image_format)
+    normalized_quality = normalize_image_quality(quality)
+    clean_sample_limit = max(1, min(1000, int(sample_limit)))
+    target_root = output_path / "_converted" / normalized_format
+    extension = IMAGE_CONVERSION_FORMATS[normalized_format]["extension"]
+    sources = _collect_conversion_sources(output_path)
+    used_targets: set[str] = set()
+    mappings: list[tuple[Path, Path]] = []
+    for source in sources:
+        relative_parent = source.parent.relative_to(output_path)
+        target = target_root / relative_parent / f"{source.stem}{extension}"
+        target_key = os.path.normcase(str(target))
+        if target_key in used_targets:
+            target = target.with_name(
+                f"{source.stem}_{source.suffix.lstrip('.').lower()}{extension}"
+            )
+            suffix = 2
+            while os.path.normcase(str(target)) in used_targets:
+                target = target.with_name(
+                    f"{source.stem}_{source.suffix.lstrip('.').lower()}_{suffix}{extension}"
+                )
+                suffix += 1
+        used_targets.add(os.path.normcase(str(target)))
+        mappings.append((source, target))
+    existing_targets = sum(1 for _source, target in mappings if target.exists())
+    try:
+        from PIL import __version__ as pillow_version
+
+        dependency_available = True
+    except ImportError:
+        pillow_version = ""
+        dependency_available = False
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": job.title,
+        "outputPath": str(output_path),
+        "targetRoot": str(target_root),
+        "format": normalized_format,
+        "quality": normalized_quality,
+        "sourceCount": len(mappings),
+        "sourceBytes": sum(source.stat().st_size for source, _target in mappings),
+        "existingTargetCount": existing_targets,
+        "pendingCount": len(mappings) - existing_targets,
+        "preservesOriginals": True,
+        "dependency": {
+            "name": "Pillow",
+            "available": dependency_available,
+            "version": str(pillow_version),
+            "requirementsFile": str(ROOT_DIR / "requirements-image-tools.txt"),
+        },
+        "sample": [
+            {"source": str(source), "target": str(target), "exists": target.exists()}
+            for source, target in mappings[:clean_sample_limit]
+        ],
+        "sampleTruncated": len(mappings) > clean_sample_limit,
+        "executed": False,
+    }
+
+
+def convert_job_images(
+    job_id: str,
+    image_format: str,
+    *,
+    quality: int | None = None,
+) -> dict[str, Any]:
+    plan = plan_image_conversion(job_id, image_format, quality=quality, sample_limit=1)
+    if not plan["dependency"]["available"]:
+        raise RuntimeError(
+            "이미지 변환에는 Pillow가 필요합니다. "
+            ".\\.venv\\Scripts\\python.exe -m pip install -r requirements-image-tools.txt"
+        )
+    from PIL import Image, ImageOps
+
+    output_path = Path(plan["outputPath"])
+    target_root = Path(plan["targetRoot"])
+    normalized_format = str(plan["format"])
+    pillow_format = IMAGE_CONVERSION_FORMATS[normalized_format]["pillow"]
+    extension = IMAGE_CONVERSION_FORMATS[normalized_format]["extension"]
+    sources = _collect_conversion_sources(output_path)
+    used_targets: set[str] = set()
+    converted = 0
+    skipped_existing = 0
+    failures: list[dict[str, str]] = []
+    for source in sources:
+        relative_parent = source.parent.relative_to(output_path)
+        target = target_root / relative_parent / f"{source.stem}{extension}"
+        target_key = os.path.normcase(str(target))
+        if target_key in used_targets:
+            target = target.with_name(
+                f"{source.stem}_{source.suffix.lstrip('.').lower()}{extension}"
+            )
+            suffix = 2
+            while os.path.normcase(str(target)) in used_targets:
+                target = target.with_name(
+                    f"{source.stem}_{source.suffix.lstrip('.').lower()}_{suffix}{extension}"
+                )
+                suffix += 1
+        used_targets.add(os.path.normcase(str(target)))
+        if target.exists():
+            skipped_existing += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        try:
+            with Image.open(source) as opened:
+                image = ImageOps.exif_transpose(opened)
+                if normalized_format == "jpg":
+                    if image.mode in {"RGBA", "LA"} or (
+                        image.mode == "P" and "transparency" in image.info
+                    ):
+                        rgba = image.convert("RGBA")
+                        background = Image.new("RGB", rgba.size, "white")
+                        background.paste(rgba, mask=rgba.getchannel("A"))
+                        image = background
+                    else:
+                        image = image.convert("RGB")
+                save_options: dict[str, Any] = {}
+                if normalized_format in {"jpg", "webp"}:
+                    save_options["quality"] = int(plan["quality"])
+                if normalized_format == "jpg":
+                    save_options.update({"optimize": True, "progressive": True})
+                elif normalized_format == "png":
+                    save_options["optimize"] = True
+                image.save(temporary, format=pillow_format, **save_options)
+            os.replace(temporary, target)
+            converted += 1
+        except Exception as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if len(failures) < 100:
+                failures.append({"source": str(source), "error": str(error)})
+    return {
+        **plan,
+        "executed": True,
+        "convertedCount": converted,
+        "skippedExistingCount": skipped_existing,
+        "failedCount": len(sources) - converted - skipped_existing,
+        "failures": failures,
+        "failuresTruncated": (len(sources) - converted - skipped_existing) > len(failures),
+        "success": converted + skipped_existing == len(sources),
+    }
+
+
 def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:

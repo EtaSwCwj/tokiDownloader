@@ -27,6 +27,7 @@ from toki_core import (
     hydrate_job_metadata,
     count_jobs,
     count_runs,
+    convert_job_images,
     delete_job_record,
     delete_job_records,
     error_category_label,
@@ -44,6 +45,7 @@ from toki_core import (
     normalize_work_concurrency,
     plan_job_folder_move,
     plan_metadata_rebuild,
+    plan_image_conversion,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
@@ -536,6 +538,23 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--show-gui", action="store_true", help="GUI 이미지 미리보기 창 표시")
     preview.add_argument("--json", action="store_true", help="JSON으로 출력")
     preview.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
+
+    convert_images = subparsers.add_parser(
+        "convert-images",
+        help="원본을 보존하고 _converted 폴더에 이미지 형식 변환",
+    )
+    convert_images.add_argument("--job", required=True, help="작업 ID")
+    convert_images.add_argument(
+        "--format", required=True, choices=("jpg", "jpeg", "png", "webp"), help="대상 형식"
+    )
+    convert_images.add_argument("--quality", type=int, default=90, help="JPG/WebP 품질(1~100)")
+    convert_mode = convert_images.add_mutually_exclusive_group()
+    convert_mode.add_argument("--dry-run", action="store_true", help="변환 대상과 충돌만 확인")
+    convert_mode.add_argument("--execute", action="store_true", help="별도 폴더에 실제 변환")
+    convert_images.add_argument("--yes", action="store_true", help="대량 새 파일 생성 확인")
+    convert_images.add_argument("--show-gui", action="store_true", help="GUI 확인/변환 창 표시")
+    convert_images.add_argument("--json", action="store_true", help="JSON으로 출력")
+    convert_images.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
@@ -1172,6 +1191,46 @@ def run_cli(args: argparse.Namespace) -> int:
             for image in result["images"]:
                 print(f"{image['index']}: {image['name']} ({image['size']} bytes)")
         return 0
+    if command == "convert-images":
+        if args.show_gui:
+            ensure_gui_running()
+            print_json(
+                control_request(
+                    {
+                        "action": "convert_images",
+                        "jobId": args.job,
+                        "format": args.format,
+                        "quality": args.quality,
+                    }
+                )
+            )
+            return 0
+        execute = bool(args.execute)
+        if execute and not args.yes:
+            raise ControlError("실제 이미지 변환에는 --execute --yes가 모두 필요합니다.")
+        result = (
+            convert_job_images(args.job, args.format, quality=args.quality)
+            if execute
+            else plan_image_conversion(args.job, args.format, quality=args.quality)
+        )
+        if args.json:
+            payload = {"ok": bool(result.get("success", True)), **result}
+            if args.ascii_json:
+                print(json.dumps(payload, ensure_ascii=True, indent=2))
+            else:
+                print_json(payload)
+        else:
+            print(f"대상: {result['targetRoot']}")
+            print(
+                f"원본 {result['sourceCount']} · 기존 결과 {result['existingTargetCount']} · "
+                f"변환 예정 {result['pendingCount']}"
+            )
+            if result.get("executed"):
+                print(
+                    f"완료 {result['convertedCount']} · 건너뜀 "
+                    f"{result['skippedExistingCount']} · 실패 {result['failedCount']}"
+                )
+        return 0 if result.get("success", True) else 2
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())
         Path(resolved).mkdir(parents=True, exist_ok=True)

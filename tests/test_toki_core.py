@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import json
+import importlib.util
 import sqlite3
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from toki_core import (
     build_work_key,
     count_jobs,
     count_runs,
+    convert_job_images,
     delete_job_record,
     delete_job_records,
     hydrate_job_metadata,
@@ -36,6 +38,7 @@ from toki_core import (
     normalize_work_concurrency,
     move_job_folder,
     plan_job_folder_move,
+    plan_image_conversion,
     plan_metadata_rebuild,
     read_run_log,
     rebuild_job_metadata,
@@ -852,6 +855,51 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual([image["name"] for image in second_page["images"]], ["image10.jpg"])
         with self.assertRaises(ValueError):
             list_job_episode_images(job.job_id, 99)
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow optional dependency")
+    def test_image_conversion_preserves_originals_and_skips_existing_outputs(self) -> None:
+        from PIL import Image
+
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 변환 작품"
+        episode = output / "0001 첫 회차"
+        episode.mkdir(parents=True)
+        png_path = episode / "same.png"
+        jpg_path = episode / "same.jpg"
+        Image.new("RGBA", (8, 6), (255, 0, 0, 100)).save(png_path)
+        Image.new("RGB", (7, 5), (0, 255, 0)).save(jpg_path)
+        original_png = png_path.read_bytes()
+        original_jpg = jpg_path.read_bytes()
+        job = DownloadJob(
+            job_id="convert-images",
+            url="https://newtoki1.org/manhwa/6400",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        plan = plan_image_conversion(job.job_id, "jpeg", quality=85)
+        self.assertEqual(plan["format"], "jpg")
+        self.assertEqual(plan["sourceCount"], 2)
+        self.assertEqual(plan["pendingCount"], 2)
+        self.assertTrue(plan["preservesOriginals"])
+        self.assertFalse(Path(plan["targetRoot"]).exists())
+        self.assertEqual(len({item["target"] for item in plan["sample"]}), 2)
+
+        result = convert_job_images(job.job_id, "jpg", quality=85)
+        targets = sorted(Path(result["targetRoot"]).rglob("*.jpg"))
+        self.assertTrue(result["success"])
+        self.assertEqual(result["convertedCount"], 2)
+        self.assertEqual(len(targets), 2)
+        self.assertEqual(png_path.read_bytes(), original_png)
+        self.assertEqual(jpg_path.read_bytes(), original_jpg)
+        with Image.open(targets[0]) as converted:
+            self.assertEqual(converted.mode, "RGB")
+
+        repeated = convert_job_images(job.job_id, "jpg", quality=85)
+        self.assertEqual(repeated["convertedCount"], 0)
+        self.assertEqual(repeated["skippedExistingCount"], 2)
 
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:
         jobs = [

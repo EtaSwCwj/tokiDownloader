@@ -120,6 +120,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd verify-files --job 작업ID --show-gui
 .\toki-cli.cmd preview --job 작업ID --episode 1 --json
 .\toki-cli.cmd preview --job 작업ID --episode 1 --show-gui
+.\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --dry-run --json
+.\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --json
+.\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --show-gui
 .\toki-cli.cmd copy-link --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
@@ -273,6 +276,17 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 선택과 이미지 목록, 원본 열기 버튼을 제공하며 선택한 한 장만 최대 1400×1000 크기로 Qt
 스레드 풀에서 축소 디코딩합니다. 따라서 작품 전체 이미지나 한 회차의 모든 이미지를 GUI
 메인 스레드에서 한꺼번에 읽지 않습니다.
+
+`convert-images`는 JPG·PNG·WebP 변환을 지원하며 결과를 작품 폴더 아래
+`_converted\형식\기존 회차 폴더`에 생성합니다. 원본은 덮어쓰거나 삭제하지 않고, 같은
+결과 파일이 있으면 건너뛰므로 중단 후 다시 실행할 수 있습니다. 기본 동작은 `dry-run`이고
+실제 대량 파일 생성에는 `--execute --yes`가 모두 필요합니다. GUI도 먼저 대상 수·기존
+결과·출력 경로를 보여준 뒤 `변환 실행...`에서 다시 확인합니다. 투명 이미지를 JPEG로
+변환할 때는 흰 배경 RGB로 합성합니다. 선택 기능이므로 다음 명령으로 Pillow를 설치합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-image-tools.txt
+```
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

@@ -776,6 +776,149 @@ class ImagePreviewDialog(QDialog):
             open_in_explorer(self.current_path)
 
 
+class ImageConversionDialog(QDialog):
+    def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.result = result
+        self.setWindowTitle("이미지 형식 변환")
+        self.resize(720, 500)
+        layout = QVBoxLayout(self)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("형식"))
+        self.format_combo = QComboBox()
+        for label, value in (("WebP", "webp"), ("JPEG", "jpg"), ("PNG", "png")):
+            self.format_combo.addItem(label, value)
+        format_index = self.format_combo.findData(str(result.get("format") or "webp"))
+        self.format_combo.setCurrentIndex(max(0, format_index))
+        controls.addWidget(self.format_combo)
+        controls.addWidget(QLabel("품질"))
+        self.quality_spin = QSpinBox()
+        self.quality_spin.setRange(1, 100)
+        self.quality_spin.setValue(int(result.get("quality") or 90))
+        controls.addWidget(self.quality_spin)
+        refresh_button = QPushButton("미리보기 갱신")
+        refresh_button.clicked.connect(self._refresh_plan)
+        controls.addWidget(refresh_button)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        dependency = result.get("dependency") or {}
+        state = "실행 결과" if result.get("executed") else "변환 계획"
+        heading = QLabel(
+            f"{state} · 원본 {result.get('sourceCount', 0)}장 · "
+            f"기존 결과 {result.get('existingTargetCount', 0)}장 · "
+            f"변환 예정 {result.get('pendingCount', 0)}장"
+        )
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        path_label = QLabel(f"출력: {result.get('targetRoot', '')}")
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+        layout.addWidget(
+            QLabel(
+                f"Pillow: "
+                f"{dependency.get('version') if dependency.get('available') else '설치 필요'} · "
+                "원본 파일은 변경하거나 삭제하지 않습니다."
+            )
+        )
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        lines = []
+        if result.get("executed"):
+            lines.extend(
+                [
+                    f"변환 완료: {result.get('convertedCount', 0)}",
+                    f"기존 결과 건너뜀: {result.get('skippedExistingCount', 0)}",
+                    f"실패: {result.get('failedCount', 0)}",
+                    "",
+                ]
+            )
+            for failure in result.get("failures") or []:
+                lines.append(f"[실패] {failure.get('source')}\n  {failure.get('error')}")
+        else:
+            output_root = Path(str(result.get("outputPath") or ""))
+            for item in result.get("sample") or []:
+                marker = "기존" if item.get("exists") else "예정"
+                source = Path(str(item.get("source") or ""))
+                target = Path(str(item.get("target") or ""))
+                source_short = re.search(
+                    r"(image\d+\.[a-zA-Z0-9]+)$", source.name
+                )
+                target_short = re.search(
+                    r"(image\d+(?:_[a-zA-Z0-9]+)?\.[a-zA-Z0-9]+)$", target.name
+                )
+                episode_match = re.match(r"^0*(\d+)", source.parent.name)
+                episode_label = (
+                    f"{int(episode_match.group(1))}회차"
+                    if episode_match
+                    else source.parent.name
+                )
+                source_text = (
+                    f"{episode_label} / "
+                    f"{source_short.group(1) if source_short else source.name}"
+                )
+                try:
+                    relative_target = target.relative_to(output_root)
+                    target_text = (
+                        f"{relative_target.parts[0]}/{relative_target.parts[1]} / "
+                        f"{episode_label} / "
+                        f"{target_short.group(1) if target_short else target.name}"
+                    )
+                except ValueError:
+                    target_text = str(target)
+                lines.append(f"[{marker}] {source_text}\n  → {target_text}")
+            if result.get("sampleTruncated"):
+                lines.append("\n일부 대상만 표시했습니다.")
+        details.setPlainText("\n".join(lines) or "변환할 이미지가 없습니다.")
+        layout.addWidget(details, 1)
+
+        buttons = QHBoxLayout()
+        open_button = QPushButton("출력 위치 열기")
+        open_button.clicked.connect(self._open_target)
+        buttons.addWidget(open_button)
+        buttons.addStretch(1)
+        self.execute_button = QPushButton("변환 실행...")
+        self.execute_button.setEnabled(
+            bool(dependency.get("available")) and int(result.get("pendingCount") or 0) > 0
+        )
+        self.execute_button.clicked.connect(self._execute)
+        buttons.addWidget(self.execute_button)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.close)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def _refresh_plan(self) -> None:
+        self.owner.start_image_conversion(
+            self.result["jobId"],
+            str(self.format_combo.currentData()),
+            self.quality_spin.value(),
+            execute=False,
+        )
+
+    def _execute(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "이미지 변환 실행",
+            f"{self.result.get('pendingCount', 0)}개 이미지를 별도 폴더에 변환할까요?\n\n"
+            f"{self.result.get('targetRoot', '')}\n\n"
+            "원본 이미지는 변경하거나 삭제하지 않습니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.owner.start_image_conversion(
+            self.result["jobId"],
+            str(self.format_combo.currentData()),
+            self.quality_spin.value(),
+            execute=True,
+        )
+
+    def _open_target(self) -> None:
+        target = Path(str(self.result.get("targetRoot") or ""))
+        open_in_explorer(target if target.exists() else Path(self.result["outputPath"]))
+
+
 @dataclass
 class ProcessContext:
     job: DownloadJob
@@ -812,6 +955,7 @@ class MainWindow(QMainWindow):
         self.self_test_process: QProcess | None = None
         self.file_verify_processes: dict[str, QProcess] = {}
         self.image_preview_processes: dict[str, QProcess] = {}
+        self.image_conversion_processes: dict[str, tuple[QProcess, bool]] = {}
         self.image_thread_pool = QThreadPool(self)
         self.image_thread_pool.setMaxThreadCount(2)
         self.self_test_stdout = ""
@@ -830,6 +974,7 @@ class MainWindow(QMainWindow):
         self.active_run_log_dialog: RunLogDialog | None = None
         self.active_file_verify_dialog: FileVerificationDialog | None = None
         self.active_image_preview_dialog: ImagePreviewDialog | None = None
+        self.active_image_conversion_dialog: ImageConversionDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -2459,6 +2604,97 @@ class MainWindow(QMainWindow):
             job_id=job_id,
         )
 
+    def start_image_conversion(
+        self,
+        job_id: str,
+        image_format: str = "webp",
+        quality: int = 90,
+        *,
+        execute: bool = False,
+    ) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("이미지를 변환할 작품을 선택해주세요.")
+        if job.job_id in self.image_conversion_processes:
+            return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
+        python = Path(sys.executable).with_name("python.exe")
+        arguments = [
+            str(ROOT_DIR / "toki_app.py"),
+            "convert-images",
+            "--job",
+            job.job_id,
+            "--format",
+            str(image_format),
+            "--quality",
+            str(int(quality)),
+            "--json",
+            "--ascii-json",
+        ]
+        arguments.extend(["--execute", "--yes"] if execute else ["--dry-run"])
+        process = QProcess(self)
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(str(python if python.is_file() else Path(sys.executable)))
+        process.setArguments(arguments)
+        process.finished.connect(
+            lambda exit_code, _status, selected=job.job_id: self._image_conversion_finished(
+                selected, exit_code
+            )
+        )
+        self.image_conversion_processes[job.job_id] = (process, execute)
+        process.start()
+        self.log(
+            "이미지 변환 시작(별도 프로세스)"
+            if execute
+            else "이미지 변환 계획 조회(별도 프로세스)",
+            job_id=job.job_id,
+        )
+        return {
+            "started": True,
+            "jobId": job.job_id,
+            "format": image_format,
+            "quality": int(quality),
+            "execute": execute,
+        }
+
+    def _image_conversion_finished(self, job_id: str, exit_code: int) -> None:
+        context = self.image_conversion_processes.pop(job_id, None)
+        if context is None:
+            return
+        process, execute = context
+        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+        process.deleteLater()
+        try:
+            result = json.loads(stdout.strip())
+        except json.JSONDecodeError:
+            message = stderr.strip() or stdout.strip() or f"종료 코드 {exit_code}"
+            self.log(f"이미지 변환 실패: {message}", "ERROR", job_id)
+            QMessageBox.critical(self, "이미지 변환 실패", message)
+            return
+        if self.active_image_conversion_dialog:
+            self.active_image_conversion_dialog.close()
+        dialog = ImageConversionDialog(self, result)
+        self.active_image_conversion_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_image_conversion_dialog", None)
+                if self.active_image_conversion_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        if execute:
+            self.log(
+                f"이미지 변환 종료: 완료 {result.get('convertedCount', 0)}, "
+                f"건너뜀 {result.get('skippedExistingCount', 0)}, "
+                f"실패 {result.get('failedCount', 0)}",
+                "INFO" if result.get("success") else "ERROR",
+                job_id,
+            )
+
     def open_job_source(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         if not job:
@@ -2590,6 +2826,15 @@ class MainWindow(QMainWindow):
         )
         preview_action.setEnabled(
             bool(job.output_path) and job.job_id not in self.image_preview_processes
+        )
+        convert_action = menu.addAction(
+            "이미지 형식 변환...",
+            lambda: self.start_image_conversion(job.job_id),
+        )
+        convert_action.setEnabled(
+            job.state not in ACTIVE_JOB_STATES
+            and bool(job.output_path)
+            and job.job_id not in self.image_conversion_processes
         )
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
@@ -2848,6 +3093,11 @@ class MainWindow(QMainWindow):
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         if (
+            self.active_image_conversion_dialog
+            and self.active_image_conversion_dialog.isVisible()
+        ):
+            screenshot = self.active_image_conversion_dialog.grab()
+        elif (
             self.active_image_preview_dialog
             and self.active_image_preview_dialog.isVisible()
         ):
@@ -2975,6 +3225,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd rebuild-metadata --job ID --execute --yes --json\n"
             "toki-cli.cmd verify-files --job ID [--json|--show-gui]\n"
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
+            "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -3049,6 +3300,7 @@ class MainWindow(QMainWindow):
             ),
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
+            "imageConversionJobs": sorted(self.image_conversion_processes),
             "lastSelfTest": self.last_self_test,
             "listFilter": {
                 "query": self.history_query,
@@ -3217,6 +3469,13 @@ class MainWindow(QMainWindow):
             return self.start_image_preview(
                 str(request.get("jobId") or ""),
                 int(episode) if episode is not None else None,
+            )
+        if action == "convert_images":
+            return self.start_image_conversion(
+                str(request.get("jobId") or ""),
+                str(request.get("format") or "webp"),
+                int(request.get("quality") or 90),
+                execute=False,
             )
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}

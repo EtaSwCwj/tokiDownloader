@@ -55,6 +55,38 @@ class _ProcessStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_image_conversion_gui_execution_uses_confirmed_cli_contract(self) -> None:
+        job = DownloadJob(
+            job_id="convert-job",
+            url="https://newtoki1.org/manhwa/9100",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\작품",
+            state="완료",
+        )
+        harness = type("ConversionHarness", (), {})()
+        harness.image_conversion_processes = {}
+        harness.selected_job = lambda _job_id=None: job
+        harness.log = lambda *_args, **_kwargs: None
+        _ProcessStub.instances = []
+
+        with patch("toki_gui.QProcess", _ProcessStub):
+            result = MainWindow.start_image_conversion(
+                harness,
+                job.job_id,
+                "webp",
+                82,
+                execute=True,
+            )
+
+        process = _ProcessStub.instances[0]
+        self.assertTrue(result["started"])
+        self.assertTrue(process.started_called)
+        self.assertIn("--execute", process.arguments)
+        self.assertIn("--yes", process.arguments)
+        self.assertEqual(
+            process.arguments[process.arguments.index("--quality") + 1], "82"
+        )
+
     def test_scheduler_starts_distinct_process_contexts_up_to_work_limit(self) -> None:
         jobs = [
             DownloadJob(

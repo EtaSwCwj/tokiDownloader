@@ -347,6 +347,58 @@ class CliParserTests(unittest.TestCase):
             {"action": "preview_images", "jobId": "job-1", "episode": 12}
         )
 
+    def test_convert_images_defaults_to_dry_run_and_requires_confirmation(self) -> None:
+        args = build_parser().parse_args(
+            ["convert-images", "--job", "job-1", "--format", "webp", "--json"]
+        )
+        result = {
+            "jobId": "job-1",
+            "targetRoot": r"C:\Manga\작품\_converted\webp",
+            "sourceCount": 3,
+            "existingTargetCount": 0,
+            "pendingCount": 3,
+            "executed": False,
+        }
+        with (
+            patch("toki_app.plan_image_conversion", return_value=result) as plan,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 0)
+        plan.assert_called_once_with("job-1", "webp", quality=90)
+
+        unsafe = build_parser().parse_args(
+            [
+                "convert-images", "--job", "job-1", "--format", "png",
+                "--execute",
+            ]
+        )
+        with self.assertRaises(RuntimeError):
+            run_cli(unsafe)
+
+        show_gui = build_parser().parse_args(
+            [
+                "convert-images", "--job", "job-1", "--format", "webp",
+                "--quality", "80", "--show-gui",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"planned": True, "jobId": "job-1"},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_gui), 0)
+        request.assert_called_once_with(
+            {
+                "action": "convert_images",
+                "jobId": "job-1",
+                "format": "webp",
+                "quality": 80,
+            }
+        )
+
     def test_work_and_run_detail_arguments(self) -> None:
         info = build_parser().parse_args(["info", "--job", "job-1", "--json"])
         self.assertEqual(info.job, "job-1")
