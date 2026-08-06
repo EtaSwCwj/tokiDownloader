@@ -35,6 +35,7 @@ from toki_core import (
     convert_job_images,
     delete_job_record,
     delete_job_records,
+    dependency_diagnostics,
     downloader_event_update_policy,
     error_category_label,
     load_config,
@@ -349,6 +350,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("gui", help="GUI 실행 또는 기존 GUI 앞으로 가져오기")
     subparsers.add_parser("show", help="실행 중인 GUI 앞으로 가져오기")
+    doctor = subparsers.add_parser("doctor", help="필수·선택 의존성과 실행 환경 진단")
+    doctor.add_argument("--json", action="store_true", help="JSON으로 출력")
+    doctor_window = doctor.add_mutually_exclusive_group()
+    doctor_window.add_argument("--show-gui", action="store_true", help="GUI 진단창 열기")
+    doctor_window.add_argument("--close", action="store_true", help="GUI 진단창 닫기")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -871,6 +877,29 @@ def run_cli(args: argparse.Namespace) -> int:
         ensure_gui_running()
         control_request({"action": "show"})
         return 0
+    if command == "doctor":
+        if args.show_gui or args.close:
+            ensure_gui_running()
+            result = control_request(
+                {"action": "show_doctor" if args.show_gui else "close_doctor"}
+            )
+        else:
+            result = dependency_diagnostics()
+        report = result.get("report") if isinstance(result.get("report"), dict) else result
+        if args.json:
+            print_json(result)
+        else:
+            for item in report.get("checks") or []:
+                state = "정상" if item["available"] else "없음"
+                version = f" {item['version']}" if item.get("version") else ""
+                print(f"[{item['kind']}] {item['name']}: {state}{version}")
+            required = report.get("required") or {}
+            if required:
+                print(f"필수 환경: {required['passed']}/{required['total']} 통과")
+            elif result.get("closed"):
+                print("환경 진단창을 닫았습니다.")
+        default_success = bool(args.show_gui or args.close)
+        return 0 if bool(report.get("ok", default_success)) else 2
     if command == "shortcuts":
         if args.show_gui or args.close:
             ensure_gui_running()

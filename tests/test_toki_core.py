@@ -24,6 +24,7 @@ from toki_core import (
     cleanup_run_history,
     count_jobs,
     count_runs,
+    dependency_diagnostics,
     convert_job_images,
     default_config,
     delete_job_record,
@@ -79,6 +80,18 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_dependency_doctor_separates_required_and_optional_tools(self) -> None:
+        report = dependency_diagnostics()
+        checks = {item["name"]: item for item in report["checks"]}
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(checks["Python"]["available"])
+        self.assertTrue(checks["Node.js"]["available"])
+        self.assertTrue(checks["puppeteer-real-browser"]["available"])
+        self.assertEqual(checks["Pillow"]["kind"], "optional")
+        self.assertEqual(checks["FFmpeg"]["kind"], "optional")
+        self.assertEqual(checks["yt-dlp"]["kind"], "optional")
+
     def test_bounded_text_keeps_utf8_tail_and_reports_dropped_bytes(self) -> None:
         text, dropped = append_bounded_text("앞" * 10, "끝" * 10, 17)
 

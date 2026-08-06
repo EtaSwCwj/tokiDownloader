@@ -105,6 +105,18 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_doctor_ipc_actions_share_gui_dialog_contract(self) -> None:
+        harness = type("DoctorIpcHarness", (), {})()
+        harness.show_dependency_diagnostics = lambda: {"ok": True, "checks": []}
+        harness.close_dependency_diagnostics = lambda: True
+
+        shown = MainWindow._handle_control_action(harness, {"action": "show_doctor"})
+        closed = MainWindow._handle_control_action(harness, {"action": "close_doctor"})
+
+        self.assertTrue(shown["shown"])
+        self.assertTrue(shown["report"]["ok"])
+        self.assertTrue(closed["closed"])
+
     def test_stability_ipc_action_passes_request_values(self) -> None:
         calls = []
         harness = type("StabilityIpcHarness", (), {})()

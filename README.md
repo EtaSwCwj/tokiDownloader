@@ -162,6 +162,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd performance resources --json
 .\toki-cli.cmd performance stability --records 10000 --cycles 100 --json
 .\toki-cli.cmd performance stability --records 1000 --cycles 10 --via-gui --json
+.\toki-cli.cmd doctor --json
+.\toki-cli.cmd doctor --show-gui --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -225,6 +227,11 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 중이던 작품과 실행 이력이 `중지됨`으로 복구되는지, SQLite 무결성과 임시 DB 제거까지
 검사해 `logs/stability-recovery.json`에 기록합니다. `--via-gui`는 성능 진단창의
 `장시간·강제 종료 복구 검증` 버튼과 같은 경로를 실행합니다.
+
+`doctor`는 Python 3.10+, PyQt6, psutil, Node.js와 `puppeteer-real-browser`를 필수 실행
+환경으로 검사합니다. npm은 설치 도구로, Pillow·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
+분리해 설치 여부·버전·실제 경로를 표시합니다. `--show-gui`와 도구 메뉴의
+`설치 및 선택 기능 진단...`은 같은 보고서를 표로 보여주며 `--close`로 닫을 수 있습니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

@@ -508,6 +508,12 @@ SQLite `integrity_check`, 복구 ID, 임시 DB 제거와 메모리 변화를 JSO
 - [ ] README의 GUI/CLI 명령과 실제 `--help` 일치 확인
 - [ ] 릴리스 체크리스트와 버전 규칙
 
+2026-08-07 설치 환경 진단 기반: `doctor --json`과 도구 메뉴의 설치 진단창이 Python,
+PyQt6, psutil, Node.js, npm, Puppeteer 및 Pillow·FFmpeg·yt-dlp·PyInstaller의 설치 여부,
+버전과 경로를 공용 서비스에서 조회한다. 필수와 선택 기능을 분리해 선택 도구가 없어도 기본
+다운로더는 정상으로 판정한다. 이 PC는 필수 5/5, 선택 1/4이며 `logs/doctor.json`과
+`logs/doctor-gui.png`에서 CLI와 GUI를 검증했다. Python 109건과 GUI IPC를 통과했다.
+
 완료 조건:
 
 - 깨끗한 Windows 환경에서 문서만 보고 설치와 실행이 가능하다.

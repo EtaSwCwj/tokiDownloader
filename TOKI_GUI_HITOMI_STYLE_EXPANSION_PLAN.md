@@ -171,7 +171,7 @@ GUI와 작업 큐는 공급자별 웹 구현을 알지 않고 공통 작업 이�
 - [ ] 설정창: 일반, 네트워크, 디스플레이, 고급, 공급자 페이지
 - [ ] 설정 검색
 - [ ] 변경 적용·취소·기본값 복원
-- [ ] optional dependency 상태 표시와 `doctor --json`
+- [x] optional dependency 상태 표시와 `doctor --json`
 
 완료 조건: GUI와 CLI에서 같은 설정을 읽고 쓰며 재시작 후 값이 보존된다.
 
@@ -280,7 +280,7 @@ GUI 중지 버튼과 `cancel-conversion --job ID`를 같은 IPC 동작으로 연
 
 ### 단계 H. YouTube 선택형 공급자
 
-- [ ] `yt-dlp`와 FFmpeg 설치 검사
+- [x] `yt-dlp`와 FFmpeg 설치 검사
 - [ ] 형식, 해상도, 비디오·오디오 코덱
 - [ ] 파일명 템플릿
 - [ ] 선호 언어, 자막, 오디오 트랙

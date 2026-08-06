@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.metadata
 import os
 import re
 import shutil
@@ -518,6 +519,129 @@ def find_node() -> str:
     if not node:
         raise RuntimeError("Node.js를 찾지 못했습니다. Node.js 18 이상을 설치해주세요.")
     return node
+
+
+def _command_version(command: str, *arguments: str) -> str:
+    options: dict[str, Any] = {}
+    if os.name == "nt":
+        options["creationflags"] = subprocess.CREATE_NO_WINDOW
+    completed = subprocess.run(
+        [command, *arguments],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+        **options,
+    )
+    output = (completed.stdout or completed.stderr).strip().splitlines()
+    return output[0].strip() if completed.returncode == 0 and output else ""
+
+
+def dependency_diagnostics() -> dict[str, Any]:
+    def package(name: str, distribution: str, required: bool) -> dict[str, Any]:
+        try:
+            version = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            version = ""
+        return {
+            "name": name,
+            "kind": "required" if required else "optional",
+            "available": bool(version),
+            "version": version,
+            "path": "",
+        }
+
+    python_version = ".".join(str(part) for part in sys.version_info[:3])
+    checks = [
+        {
+            "name": "Python",
+            "kind": "required",
+            "available": sys.version_info >= (3, 10),
+            "version": python_version,
+            "path": str(Path(sys.executable).resolve()),
+        },
+        package("PyQt6", "PyQt6", True),
+        package("psutil", "psutil", True),
+    ]
+    node = shutil.which("node") or ""
+    checks.append(
+        {
+            "name": "Node.js",
+            "kind": "required",
+            "available": bool(node),
+            "version": _command_version(node, "--version") if node else "",
+            "path": node,
+        }
+    )
+    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm") or shutil.which("npm") or ""
+    checks.append(
+        {
+            "name": "npm",
+            "kind": "setup",
+            "available": bool(npm),
+            "version": _command_version(npm, "--version") if npm else "",
+            "path": npm,
+        }
+    )
+    puppeteer_manifest = ROOT_DIR / "node_modules" / "puppeteer-real-browser" / "package.json"
+    puppeteer_version = ""
+    if puppeteer_manifest.is_file():
+        try:
+            puppeteer_version = str(
+                json.loads(puppeteer_manifest.read_text(encoding="utf-8")).get("version")
+                or ""
+            )
+        except (OSError, json.JSONDecodeError):
+            puppeteer_version = ""
+    checks.append(
+        {
+            "name": "puppeteer-real-browser",
+            "kind": "required",
+            "available": bool(puppeteer_version),
+            "version": puppeteer_version,
+            "path": str(puppeteer_manifest.parent) if puppeteer_manifest.is_file() else "",
+        }
+    )
+    checks.append(package("Pillow", "Pillow", False))
+    for name, executable, version_argument in (
+        ("FFmpeg", "ffmpeg", "-version"),
+        ("yt-dlp", "yt-dlp", "--version"),
+    ):
+        path = shutil.which(executable) or ""
+        checks.append(
+            {
+                "name": name,
+                "kind": "optional",
+                "available": bool(path),
+                "version": _command_version(path, version_argument) if path else "",
+                "path": path,
+            }
+        )
+    checks.append(package("PyInstaller", "PyInstaller", False))
+    required = [item for item in checks if item["kind"] == "required"]
+    missing_required = [item["name"] for item in required if not item["available"]]
+    optional = [item for item in checks if item["kind"] == "optional"]
+    return {
+        "ok": not missing_required,
+        "platform": {
+            "system": os.name,
+            "pythonArchitecture": 64 if sys.maxsize > 2**32 else 32,
+            "root": str(ROOT_DIR),
+        },
+        "required": {
+            "passed": len(required) - len(missing_required),
+            "total": len(required),
+            "missing": missing_required,
+        },
+        "optional": {
+            "available": sum(1 for item in optional if item["available"]),
+            "total": len(optional),
+        },
+        "checks": checks,
+    }
 
 
 def validate_url(url: str) -> str:

@@ -107,6 +107,7 @@ from toki_core import (
     count_runs,
     delete_job_record,
     delete_job_records,
+    dependency_diagnostics,
     downloader_event_update_policy,
     error_category_label,
     find_node,
@@ -671,6 +672,62 @@ class ShortcutHelpDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(table, 1)
 
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+
+class DependencyDiagnosticsDialog(QDialog):
+    def __init__(self, report: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.report = report
+        self.setWindowTitle("설치 및 선택 기능 진단")
+        self.resize(820, 520)
+        layout = QVBoxLayout(self)
+        required = report.get("required") or {}
+        optional = report.get("optional") or {}
+        summary = QLabel(
+            f"필수 {int(required.get('passed') or 0)}/{int(required.get('total') or 0)} · "
+            f"선택 {int(optional.get('available') or 0)}/{int(optional.get('total') or 0)} · "
+            f"{'실행 준비 완료' if report.get('ok') else '필수 설치 필요'}"
+        )
+        summary.setObjectName("mutedLabel")
+        layout.addWidget(summary)
+        checks = list(report.get("checks") or [])
+        table = QTableWidget(len(checks), 4)
+        table.setHorizontalHeaderLabels(("구분", "항목", "상태·버전", "경로"))
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        labels = {"required": "필수", "optional": "선택", "setup": "설치 도구"}
+        for row, item in enumerate(checks):
+            values = (
+                labels.get(str(item.get("kind")), str(item.get("kind") or "")),
+                str(item.get("name") or ""),
+                (
+                    f"정상 {item.get('version')}".strip()
+                    if item.get("available")
+                    else "설치되지 않음"
+                ),
+                str(item.get("path") or ""),
+            )
+            for column, value in enumerate(values):
+                table.setItem(row, column, QTableWidgetItem(value))
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table, 1)
+        note = QLabel(
+            "Pillow는 이미지 변환, FFmpeg·yt-dlp는 향후 동영상 공급자, "
+            "PyInstaller는 배포 빌드에만 필요합니다."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("mutedLabel")
+        layout.addWidget(note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
         buttons.rejected.connect(self.close)
@@ -1682,6 +1739,7 @@ class MainWindow(QMainWindow):
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
+        self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
@@ -1820,6 +1878,9 @@ class MainWindow(QMainWindow):
         self.self_test_action = QAction("자체 점검 실행", self)
         self.self_test_action.triggered.connect(self.start_self_test)
 
+        self.doctor_action = QAction("설치 및 선택 기능 진단...", self)
+        self.doctor_action.triggered.connect(self.show_dependency_diagnostics)
+
         self.performance_action = QAction("목록 성능 진단...", self)
         self.performance_action.triggered.connect(self.show_performance_diagnostics)
 
@@ -1913,6 +1974,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.settings_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.screenshot_action)
+        tools_menu.addAction(self.doctor_action)
         tools_menu.addAction(self.self_test_action)
         tools_menu.addAction(self.performance_action)
         tools_menu.addAction(self.clear_log_action)
@@ -4733,6 +4795,8 @@ class MainWindow(QMainWindow):
             and self.active_shortcut_help_dialog.isVisible()
         ):
             screenshot = self.active_shortcut_help_dialog.grab()
+        elif self.active_doctor_dialog and self.active_doctor_dialog.isVisible():
+            screenshot = self.active_doctor_dialog.grab()
         elif self.active_performance_dialog and self.active_performance_dialog.isVisible():
             screenshot = self.active_performance_dialog.grab()
         elif self.active_settings_dialog and self.active_settings_dialog.isVisible():
@@ -5180,6 +5244,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd performance stability [--records N --cycles N --json|--via-gui]\n"
             "toki-cli.cmd performance resources --json\n"
             "toki-cli.cmd performance event-policy --event EVENT --json\n"
+            "toki-cli.cmd doctor [--json|--show-gui|--close]\n"
             "toki-cli.cmd thumbnail-cache status|cleanup [--execute --json]\n"
             "toki-cli.cmd retention status|cleanup-runs [--execute --json]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
@@ -5214,6 +5279,35 @@ class MainWindow(QMainWindow):
         if not self.active_shortcut_help_dialog:
             return False
         self.active_shortcut_help_dialog.close()
+        return True
+
+    def show_dependency_diagnostics(self) -> dict[str, Any]:
+        report = dependency_diagnostics()
+        if self.active_doctor_dialog:
+            self.active_doctor_dialog.close()
+        dialog = DependencyDiagnosticsDialog(report, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.active_doctor_dialog = dialog
+        selected = dialog
+        dialog.destroyed.connect(
+            lambda: (
+                setattr(self, "active_doctor_dialog", None)
+                if self.active_doctor_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log(
+            f"설치 환경 진단: 필수 {report['required']['passed']}/{report['required']['total']}"
+        )
+        return report
+
+    def close_dependency_diagnostics(self) -> bool:
+        if not self.active_doctor_dialog:
+            return False
+        self.active_doctor_dialog.close()
         return True
 
     def show_performance_diagnostics(self) -> dict[str, Any]:
@@ -5321,6 +5415,9 @@ class MainWindow(QMainWindow):
             "performanceDiagnosticsOpen": bool(
                 self.active_performance_dialog
                 and self.active_performance_dialog.isVisible()
+            ),
+            "doctorOpen": bool(
+                self.active_doctor_dialog and self.active_doctor_dialog.isVisible()
             ),
             "window": {
                 **self.window_snapshot(),
@@ -5687,6 +5784,10 @@ class MainWindow(QMainWindow):
                 str(request.get("output") or ""),
             )
             return {"started": started, **self.performance_benchmark_snapshot()}
+        if action == "show_doctor":
+            return {"shown": True, "report": self.show_dependency_diagnostics()}
+        if action == "close_doctor":
+            return {"closed": self.close_dependency_diagnostics()}
         if action == "start_stability_test":
             if self.active_performance_dialog is None:
                 self.show_performance_diagnostics()

@@ -11,6 +11,53 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_doctor_cli_can_open_gui_report(self) -> None:
+        args = build_parser().parse_args(["doctor", "--show-gui", "--json"])
+        report = {
+            "shown": True,
+            "report": {
+                "ok": True,
+                "required": {"passed": 5, "total": 5, "missing": []},
+                "checks": [],
+            },
+        }
+        with (
+            patch("toki_app.ensure_gui_running") as ensure_gui,
+            patch("toki_app.control_request", return_value=report) as request,
+            redirect_stdout(StringIO()),
+        ):
+            exit_code = run_cli(args)
+
+        self.assertEqual(exit_code, 0)
+        ensure_gui.assert_called_once_with()
+        request.assert_called_once_with({"action": "show_doctor"})
+
+    def test_doctor_cli_returns_shared_dependency_report(self) -> None:
+        args = build_parser().parse_args(["doctor", "--json"])
+        report = {
+            "ok": True,
+            "required": {"passed": 1, "total": 1, "missing": []},
+            "optional": {"available": 0, "total": 1},
+            "checks": [
+                {
+                    "name": "Python",
+                    "kind": "required",
+                    "available": True,
+                    "version": "3.13",
+                    "path": "python.exe",
+                }
+            ],
+        }
+        with (
+            patch("toki_app.dependency_diagnostics", return_value=report) as service,
+            redirect_stdout(StringIO()) as output,
+        ):
+            exit_code = run_cli(args)
+
+        self.assertEqual(exit_code, 0)
+        service.assert_called_once_with()
+        self.assertTrue(json.loads(output.getvalue())["ok"])
+
     def test_performance_stability_cli_can_start_gui_contract(self) -> None:
         args = build_parser().parse_args(
             ["performance", "stability", "--records", "500", "--cycles", "5", "--via-gui", "--json"]
