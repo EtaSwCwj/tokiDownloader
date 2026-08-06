@@ -109,6 +109,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd set-settings --works 2 --images 8 --retry-count 2 --retry-backoff 2
 .\toki-cli.cmd set-settings --show-browser off --log-visible on --log-max-mib 2 --log-backups 1
 .\toki-cli.cmd set-settings --row-density compact
+.\toki-cli.cmd set-settings --theme dark
 .\toki-cli.cmd rescan --job 작업ID --mode new
 .\toki-cli.cmd rescan --job 작업ID --mode full
 .\toki-cli.cmd rescan --job 작업ID --mode range --start 10 --last 25
@@ -162,6 +163,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
 높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density
 compact|comfortable`로 같은 선택을 즉시 적용할 수 있습니다.
+테마는 `system`, `light`, `dark`를 지원합니다. 시스템 모드는 Windows 애플리케이션
+팔레트의 밝기를 따라 시작 시 결정하고 실행 중 팔레트 변경도 다시 적용합니다. 메인 입력,
+메뉴, 목록 카드, 진행률, 로그, 설정과 상세 대화상자는 같은 색상 토큰을 사용하므로 일부
+창만 흰 배경이나 흰 글씨로 남지 않습니다. `set-settings --theme system|light|dark`로
+실행 중에도 즉시 바꿀 수 있습니다.
 
 작품 목록은 작품당 한 줄만 유지하고, 다운로드·전체 재검사·범위 다운로드를 실행할
 때마다 별도의 실행 ID를 `runs` 이력에 누적합니다. `info`는 작품 메타데이터와 전체 실행
@@ -320,6 +326,12 @@ GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할
 기본값은 창이 보이지 않는 백그라운드 실행입니다. Cloudflare 인증이나 사이트 오류를
 직접 확인할 때만 GUI의 `브라우저 표시`를 켜거나 CLI에 `--show-browser`를 추가하세요.
 개인 Chrome 프로필이나 쿠키를 자동으로 가져오거나 접근 제한을 우회하지 않습니다.
+
+Windows에서 콘솔 창 없이 프로그램을 열려면 `start-gui.vbs`를 더블클릭하세요.
+기존 `start-gui.cmd`도 지원하지만 시작할 때 명령 프롬프트가 한 번 보일 수 있습니다.
+GUI가 실행하는 Node·Python 작업은 출력과 진행률을 유지하면서 Windows
+`CREATE_NO_WINDOW`로 실행하므로 다운로드·점검·미리보기·변환 중 콘솔 창을 만들지
+않습니다.
 
 ## 설치 방법
 ```bash

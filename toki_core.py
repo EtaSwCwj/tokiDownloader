@@ -46,6 +46,7 @@ SETTING_KEYS = frozenset(
         "logMaxMiB",
         "logBackupCount",
         "rowDensity",
+        "theme",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -95,6 +96,7 @@ def default_config() -> dict[str, Any]:
         "logMaxMiB": 2,
         "logBackupCount": 1,
         "rowDensity": "comfortable",
+        "theme": "system",
     }
 
 
@@ -125,6 +127,13 @@ def normalize_row_density(value: str | None) -> str:
     normalized = str(value or "comfortable").strip().lower()
     if normalized not in {"compact", "comfortable"}:
         raise ValueError("작업 행 밀도는 compact 또는 comfortable이어야 합니다.")
+    return normalized
+
+
+def normalize_theme(value: str | None) -> str:
+    normalized = str(value or "system").strip().lower()
+    if normalized not in {"system", "light", "dark"}:
+        raise ValueError("테마는 system, light 또는 dark여야 합니다.")
     return normalized
 
 
@@ -175,6 +184,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_row_density,
         source.get("rowDensity"),
         defaults["rowDensity"],
+    )
+    normalized["theme"] = _safe_normalize(
+        normalize_theme,
+        source.get("theme"),
+        defaults["theme"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -251,6 +265,7 @@ def update_app_settings(
         "logMaxMiB": normalize_log_max_mib,
         "logBackupCount": normalize_log_backup_count,
         "rowDensity": normalize_row_density,
+        "theme": normalize_theme,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

@@ -512,6 +512,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("compact", "comfortable"),
         help="작품 목록 행 높이와 정보 밀도",
     )
+    set_settings.add_argument(
+        "--theme", choices=("system", "light", "dark"), help="GUI 색상 테마"
+    )
     set_settings.add_argument("--defaults", action="store_true", help="일반 설정 기본값 복원")
     set_settings.add_argument("--json", action="store_true", help="JSON으로 출력")
 
@@ -1351,6 +1354,7 @@ def run_cli(args: argparse.Namespace) -> int:
             "logMaxMiB": args.log_max_mib,
             "logBackupCount": args.log_backups,
             "rowDensity": args.row_density,
+            "theme": args.theme,
         }
         updates = {key: value for key, value in mapping.items() if value is not None}
         if args.show_browser is not None:

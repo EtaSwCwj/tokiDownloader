@@ -6,6 +6,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Any
 from PyQt6.QtCore import (
     QByteArray,
     QAbstractListModel,
+    QEvent,
     QModelIndex,
     QObject,
     QPoint,
@@ -38,6 +40,7 @@ from PyQt6.QtGui import (
     QImage,
     QImageReader,
     QPainter,
+    QPalette,
     QPen,
     QPixmap,
 )
@@ -141,6 +144,132 @@ from toki_core import (
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def hidden_process_options() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startup,
+    }
+
+
+class HiddenProcess(QObject):
+    readyReadStandardOutput = pyqtSignal()
+    readyReadStandardError = pyqtSignal()
+    started = pyqtSignal()
+    errorOccurred = pyqtSignal(object)
+    finished = pyqtSignal(int, object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._working_directory = str(ROOT_DIR)
+        self._program = ""
+        self._arguments: list[str] = []
+        self._process: subprocess.Popen[bytes] | None = None
+        self._stdout = bytearray()
+        self._stderr = bytearray()
+        self._lock = threading.Lock()
+        self._error = ""
+        self._reader_threads: list[threading.Thread] = []
+
+    def setWorkingDirectory(self, path: str) -> None:
+        self._working_directory = path
+
+    def setProgram(self, program: str) -> None:
+        self._program = program
+
+    def setArguments(self, arguments: list[str]) -> None:
+        self._arguments = list(arguments)
+
+    def start(self) -> None:
+        try:
+            self._process = subprocess.Popen(
+                [self._program, *self._arguments],
+                cwd=self._working_directory,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **hidden_process_options(),
+            )
+        except OSError as error:
+            self._error = str(error)
+            self.errorOccurred.emit(QProcess.ProcessError.FailedToStart)
+            self.finished.emit(-1, QProcess.ExitStatus.CrashExit)
+            return
+        self.started.emit()
+        stdout_thread = threading.Thread(
+            target=self._read_stream,
+            args=(self._process.stdout, self._stdout, self.readyReadStandardOutput),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=self._read_stream,
+            args=(self._process.stderr, self._stderr, self.readyReadStandardError),
+            daemon=True,
+        )
+        self._reader_threads = [stdout_thread, stderr_thread]
+        stdout_thread.start()
+        stderr_thread.start()
+        threading.Thread(target=self._wait, daemon=True).start()
+
+    def _read_stream(self, stream: Any, target: bytearray, signal: Any) -> None:
+        if stream is None:
+            return
+        for chunk in iter(stream.readline, b""):
+            with self._lock:
+                target.extend(chunk)
+            signal.emit()
+        stream.close()
+
+    def _wait(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        code = process.wait()
+        for thread in self._reader_threads:
+            thread.join(timeout=2)
+        exit_status = (
+            QProcess.ExitStatus.NormalExit
+            if code >= 0
+            else QProcess.ExitStatus.CrashExit
+        )
+        self.finished.emit(code, exit_status)
+
+    def readAllStandardOutput(self) -> bytes:
+        with self._lock:
+            data = bytes(self._stdout)
+            self._stdout.clear()
+        return data
+
+    def readAllStandardError(self) -> bytes:
+        with self._lock:
+            data = bytes(self._stderr)
+            self._stderr.clear()
+        return data
+
+    def processId(self) -> int:
+        return int(self._process.pid) if self._process else 0
+
+    def state(self) -> QProcess.ProcessState:
+        if self._process is None or self._process.poll() is not None:
+            return QProcess.ProcessState.NotRunning
+        return QProcess.ProcessState.Running
+
+    def errorString(self) -> str:
+        return self._error
+
+    def kill(self) -> None:
+        if self._process and self._process.poll() is None:
+            self._process.kill()
+
+
+def create_background_process(parent: QObject) -> QProcess | HiddenProcess:
+    return HiddenProcess(parent) if os.name == "nt" else QProcess(parent)
+
+
 class JobListModel(QAbstractListModel):
     JobRole = int(Qt.ItemDataRole.UserRole) + 1
 
@@ -222,15 +351,22 @@ class JobListModel(QAbstractListModel):
 
 class JobItemDelegate(QStyledItemDelegate):
     def __init__(
-        self, parent: QWidget | None = None, density: str = "comfortable"
+        self,
+        parent: QWidget | None = None,
+        density: str = "comfortable",
+        theme: str = "light",
     ) -> None:
         super().__init__(parent)
         self.cover_cache: OrderedDict[str, QPixmap] = OrderedDict()
         self.cache_limit = 128
         self.density = density
+        self.theme = theme
 
     def set_density(self, density: str) -> None:
         self.density = density
+
+    def set_theme(self, theme: str) -> None:
+        self.theme = theme
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         return QSize(option.rect.width(), 66 if self.density == "compact" else 92)
@@ -241,10 +377,19 @@ class JobItemDelegate(QStyledItemDelegate):
             return
 
         painter.save()
-        card = option.rect.adjusted(4, 3, -4, -3)
+        dark = self.theme == "dark"
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        painter.setPen(QPen(QColor("#9ebfe7" if selected else "#d8dde5"), 1))
-        painter.setBrush(QColor("#dcecff" if selected else "#ffffff"))
+        border_color = "#46505d" if dark else "#d8dde5"
+        selected_border = "#5f9ee8" if dark else "#9ebfe7"
+        card_color = "#26374b" if selected and dark else (
+            "#dcecff" if selected else ("#252a31" if dark else "#ffffff")
+        )
+        surface_color = "#303741" if dark else "#eef1f4"
+        text_color = "#edf2f7" if dark else "#20262e"
+        detail_color = "#aeb9c7" if dark else "#667282"
+        card = option.rect.adjusted(4, 3, -4, -3)
+        painter.setPen(QPen(QColor(selected_border if selected else border_color), 1))
+        painter.setBrush(QColor(card_color))
         painter.drawRoundedRect(card, 5, 5)
         if job.tag_color and job.tag_color in TAG_COLORS:
             tag_rect = QRect(card.left(), card.top() + 5, 5, card.height() - 10)
@@ -256,8 +401,8 @@ class JobItemDelegate(QStyledItemDelegate):
         else:
             cover_rect = card.adjusted(9, 8, 0, -8)
             cover_rect.setWidth(52)
-            painter.setPen(QPen(QColor("#d8dde5"), 1))
-            painter.setBrush(QColor("#eef1f4"))
+            painter.setPen(QPen(QColor(border_color), 1))
+            painter.setBrush(QColor(surface_color))
             painter.drawRoundedRect(cover_rect, 4, 4)
             cover = self._cover(job.cover_path)
             if cover:
@@ -265,7 +410,7 @@ class JobItemDelegate(QStyledItemDelegate):
                 y = cover_rect.y() + (cover_rect.height() - cover.height()) // 2
                 painter.drawPixmap(x, y, cover)
             else:
-                painter.setPen(QColor("#7b8794"))
+                painter.setPen(QColor(detail_color))
                 painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "표지")
             body_x = cover_rect.right() + 11
         state_rect = card.adjusted(body_x - card.left(), 9, 0, 0)
@@ -294,7 +439,7 @@ class JobItemDelegate(QStyledItemDelegate):
         title_font = QFont(option.font)
         title_font.setBold(True)
         painter.setFont(title_font)
-        painter.setPen(QColor("#20262e"))
+        painter.setPen(QColor(text_color))
         display_title = f"★ {job.title}" if job.pinned else job.title
         title = painter.fontMetrics().elidedText(
             display_title, Qt.TextElideMode.ElideRight, max(20, title_rect.width())
@@ -322,7 +467,7 @@ class JobItemDelegate(QStyledItemDelegate):
         detail_rect = card.adjusted(body_x - card.left(), 35, -10, 0)
         detail_rect.setHeight(20)
         painter.setFont(option.font)
-        painter.setPen(QColor("#667282"))
+        painter.setPen(QColor(detail_color))
         detail_text = painter.fontMetrics().elidedText(
             detail_text, Qt.TextElideMode.ElideRight, max(20, detail_rect.width())
         )
@@ -332,14 +477,14 @@ class JobItemDelegate(QStyledItemDelegate):
             painter.restore()
             return
         progress_rect = card.adjusted(body_x - card.left(), 60, -10, -9)
-        painter.setPen(QPen(QColor("#cfd6df"), 1))
-        painter.setBrush(QColor("#eef1f4"))
+        painter.setPen(QPen(QColor(border_color), 1))
+        painter.setBrush(QColor(surface_color))
         painter.drawRect(progress_rect)
         progress = max(0, min(100, job.progress))
         chunk = progress_rect.adjusted(1, 1, -1, -1)
         chunk.setWidth(int(chunk.width() * progress / 100))
         painter.fillRect(chunk, QColor("#2f7de1"))
-        painter.setPen(QColor("#20262e"))
+        painter.setPen(QColor(text_color))
         painter.drawText(progress_rect, Qt.AlignmentFlag.AlignCenter, f"{progress}%")
         painter.restore()
 
@@ -420,7 +565,7 @@ class WorkDetailDialog(QDialog):
         self.cover_label = QLabel("대표 이미지 없음")
         self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cover_label.setFixedSize(150, 205)
-        self.cover_label.setStyleSheet("border: 1px solid #cfd6df; background: #eef1f4;")
+        self.cover_label.setObjectName("previewSurface")
         overview.addWidget(self.cover_label)
 
         metadata = QGridLayout()
@@ -722,10 +867,7 @@ class ImagePreviewDialog(QDialog):
         content = QHBoxLayout()
         self.image_list = QListWidget()
         self.image_list.setMinimumWidth(280)
-        self.image_list.setStyleSheet(
-            "QListWidget::item { padding: 7px; }"
-            "QListWidget::item:selected { background: #d6e8ff; color: #20262e; }"
-        )
+        self.image_list.setObjectName("imageList")
         for image in result.get("images") or []:
             name = str(image["name"])
             short_match = re.search(r"(image\d+\.[a-zA-Z0-9]+)$", name)
@@ -737,9 +879,7 @@ class ImagePreviewDialog(QDialog):
         self.preview_label = QLabel("이미지를 선택해주세요.")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(520, 480)
-        self.preview_label.setStyleSheet(
-            "background: #eef1f5; border: 1px solid #cfd6df; color: #52606d;"
-        )
+        self.preview_label.setObjectName("previewSurface")
         content.addWidget(self.preview_label, 1)
         layout.addLayout(content, 1)
 
@@ -860,6 +1000,11 @@ class SettingsDialog(QDialog):
         display_page = QWidget()
         display_page.setObjectName("settingsPage")
         display_form = QFormLayout(display_page)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("시스템 설정 사용", "system")
+        self.theme_combo.addItem("밝게", "light")
+        self.theme_combo.addItem("어둡게", "dark")
+        display_form.addRow("테마", self.theme_combo)
         self.row_density_combo = QComboBox()
         self.row_density_combo.addItem("편안하게 - 표지와 진행률 표시", "comfortable")
         self.row_density_combo.addItem("간략하게 - 낮은 행으로 많이 표시", "compact")
@@ -921,6 +1066,8 @@ class SettingsDialog(QDialog):
         self.log_backups_spin.setValue(int(values["logBackupCount"]))
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
+        theme_index = self.theme_combo.findData(str(values["theme"]))
+        self.theme_combo.setCurrentIndex(max(0, theme_index))
 
     def _load_defaults(self) -> None:
         from toki_core import default_config
@@ -947,6 +1094,7 @@ class SettingsDialog(QDialog):
             "logMaxMiB": self.log_max_spin.value(),
             "logBackupCount": self.log_backups_spin.value(),
             "rowDensity": str(self.row_density_combo.currentData()),
+            "theme": str(self.theme_combo.currentData()),
         }
         try:
             self.owner.apply_settings(updates)
@@ -1186,6 +1334,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.config = load_config()
+        self.theme_mode = str(self.config.get("theme") or "system")
+        self.resolved_theme = self._resolve_theme(self.theme_mode)
         self.jobs: dict[str, DownloadJob] = {}
         self.jobs_by_work: dict[str, DownloadJob] = {}
         self.history_page_size = 200
@@ -1552,7 +1702,9 @@ class MainWindow(QMainWindow):
         self.task_list.setModel(self.task_model)
         self.task_list.setItemDelegate(
             JobItemDelegate(
-                self.task_list, str(self.config.get("rowDensity") or "comfortable")
+                self.task_list,
+                str(self.config.get("rowDensity") or "comfortable"),
+                self.resolved_theme,
             )
         )
         self.task_list.setSelectionMode(QListView.SelectionMode.SingleSelection)
@@ -1608,59 +1760,70 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.overall_progress)
         self.setStatusBar(status)
 
+    def _resolve_theme(self, mode: str) -> str:
+        if mode in {"light", "dark"}:
+            return mode
+        window_color = QApplication.palette().color(QPalette.ColorRole.Window)
+        return "dark" if window_color.lightness() < 128 else "light"
+
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QWidget { color: #20262e; }
-            QMainWindow { background: #f3f5f7; color: #20262e; }
-            QDialog { background: #f3f5f7; color: #20262e; }
-            QMenuBar { background: #ffffff; color: #20262e; border-bottom: 1px solid #d9dee5; }
-            QMenuBar::item:selected { background: #e9f1ff; }
-            QMenu { background: #ffffff; color: #20262e; border: 1px solid #cfd6df; }
-            QMenu::item:selected { background: #e9f1ff; }
-            QTabWidget::pane { background: #ffffff; border: 1px solid #cfd6df; }
-            QTabBar::tab {
-                background: #e9edf2; color: #20262e; border: 1px solid #cfd6df;
-                border-bottom: 0; padding: 8px 18px;
-            }
-            QTabBar::tab:selected { background: #ffffff; color: #20262e; font-weight: 700; }
-            QTabWidget > QWidget { background: #ffffff; color: #20262e; }
-            #settingsPage { background: #ffffff; color: #20262e; }
-            #inputBox { background: #ffffff; border: 1px solid #d8dde5; border-radius: 5px; }
-            QLineEdit, QSpinBox, QPlainTextEdit, QListView, QTableWidget {
-                background: #ffffff; color: #20262e; border: 1px solid #cfd6df; border-radius: 4px;
-                padding: 5px; selection-background-color: #2f7de1;
-                selection-color: #ffffff;
-            }
-            QTableWidget { gridline-color: #d8dde5; padding: 0; }
-            QHeaderView::section {
-                background: #e9edf2; color: #20262e; border: 0;
-                border-right: 1px solid #cfd6df; border-bottom: 1px solid #cfd6df;
-                padding: 5px; font-weight: 700;
-            }
-            QPushButton { min-height: 28px; padding: 0 12px; border: 1px solid #c9d0d9;
-                border-radius: 4px; background: #ffffff; color: #20262e; }
-            QPushButton:hover { background: #edf4ff; border-color: #8eb8ee; }
-            QPushButton:pressed { background: #dfeeff; }
+        dark = self.resolved_theme == "dark"
+        colors = {
+            "text": "#edf2f7" if dark else "#20262e",
+            "muted": "#aeb9c7" if dark else "#667282",
+            "window": "#1f2329" if dark else "#f3f5f7",
+            "surface": "#252a31" if dark else "#ffffff",
+            "surface2": "#303741" if dark else "#e9edf2",
+            "border": "#46505d" if dark else "#cfd6df",
+            "hover": "#33455d" if dark else "#edf4ff",
+            "pressed": "#3a506b" if dark else "#dfeeff",
+            "selection": "#2f7de1",
+            "preview": "#303741" if dark else "#eef1f4",
+        }
+        stylesheet = """
+            QWidget { color: %(text)s; }
+            QMainWindow, QDialog { background: %(window)s; color: %(text)s; }
+            QMenuBar { background: %(surface)s; color: %(text)s; border-bottom: 1px solid %(border)s; }
+            QMenuBar::item:selected, QMenu::item:selected { background: %(hover)s; }
+            QMenu { background: %(surface)s; color: %(text)s; border: 1px solid %(border)s; }
+            QTabWidget::pane { background: %(surface)s; border: 1px solid %(border)s; }
+            QTabBar::tab { background: %(surface2)s; color: %(text)s; border: 1px solid %(border)s;
+                border-bottom: 0; padding: 8px 18px; }
+            QTabBar::tab:selected { background: %(surface)s; color: %(text)s; font-weight: 700; }
+            QTabWidget > QWidget, #settingsPage { background: %(surface)s; color: %(text)s; }
+            #inputBox { background: %(surface)s; border: 1px solid %(border)s; border-radius: 5px; }
+            QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QListView, QListWidget, QTableWidget {
+                background: %(surface)s; color: %(text)s; border: 1px solid %(border)s; border-radius: 4px;
+                padding: 5px; selection-background-color: %(selection)s; selection-color: #ffffff; }
+            QTableWidget { gridline-color: %(border)s; padding: 0; }
+            QHeaderView::section { background: %(surface2)s; color: %(text)s; border: 0;
+                border-right: 1px solid %(border)s; border-bottom: 1px solid %(border)s;
+                padding: 5px; font-weight: 700; }
+            QPushButton { min-height: 28px; padding: 0 12px; border: 1px solid %(border)s;
+                border-radius: 4px; background: %(surface)s; color: %(text)s; }
+            QPushButton:hover { background: %(hover)s; border-color: #5f9ee8; }
+            QPushButton:pressed { background: %(pressed)s; }
             #primaryButton { background: #2f7de1; color: white; border-color: #2469bd; font-weight: 700; }
             #primaryButton:hover { background: #3b89ee; }
             QListView { padding: 2px; }
             QListView::item { border: 0; }
-            #detailLabel, #mutedLabel { color: #667282; }
+            #imageList::item { padding: 7px; }
+            #detailLabel, #mutedLabel { color: %(muted)s; }
+            #previewSurface { background: %(preview)s; color: %(muted)s; border: 1px solid %(border)s; }
             #stateLabel { border-radius: 3px; padding: 3px; font-weight: 700; color: white; background: #7b8794; }
             #stateLabel[state="실행 중"] { background: #1a73e8; }
-            #stateLabel[state="재시도 대기"] { background: #cf7a18; }
+            #stateLabel[state="재시도 대기"], #stateLabel[state="중지됨"] { background: #cf7a18; }
             #stateLabel[state="인증 필요"] { background: #b33a7a; }
             #stateLabel[state="완료"] { background: #3b7d44; }
             #stateLabel[state="오류"] { background: #d13b32; }
-            #stateLabel[state="중지됨"] { background: #cf7a18; }
-            QProgressBar { border: 1px solid #cfd6df; border-radius: 3px; text-align: center; background: #eef1f4; }
+            QProgressBar { color: %(text)s; border: 1px solid %(border)s; border-radius: 3px;
+                text-align: center; background: %(preview)s; }
             QProgressBar::chunk { background: #2f7de1; }
-            QGroupBox { color: #20262e; font-weight: 700; }
-            QStatusBar { color: #20262e; background: #f3f5f7; }
+            QGroupBox { color: %(text)s; font-weight: 700; }
+            QStatusBar { color: %(text)s; background: %(window)s; }
             QGroupBox QPlainTextEdit { font-family: Consolas, "Malgun Gothic"; font-size: 9pt; font-weight: 400; }
-            """
-        )
+        """ % colors
+        self.setStyleSheet(stylesheet)
 
     def log(self, message: str, level: str = "INFO", job_id: str | None = None) -> None:
         clean = ANSI_RE.sub("", str(message)).strip()
@@ -2027,7 +2190,7 @@ class MainWindow(QMainWindow):
         context.run.error_category = ""
         context.run.retryable_error = None
         context.run.finished_at = ""
-        process = QProcess(self)
+        process = create_background_process(self)
         context.process = process
         self._update_job_card(context.job)
 
@@ -2579,13 +2742,19 @@ class MainWindow(QMainWindow):
             for widget in widgets:
                 widget.blockSignals(False)
         self.log_box.setVisible(bool(result["logVisible"]))
+        self.theme_mode = str(result["theme"])
+        self.resolved_theme = self._resolve_theme(self.theme_mode)
+        self._apply_style()
         delegate = self.task_list.itemDelegate()
         if isinstance(delegate, JobItemDelegate):
             delegate.set_density(str(result["rowDensity"]))
+            delegate.set_theme(self.resolved_theme)
             self.task_list.setUniformItemSizes(False)
             self.task_list.doItemsLayout()
             self.task_list.setUniformItemSizes(True)
             self.task_list.viewport().update()
+        if self.active_settings_dialog:
+            self.active_settings_dialog._load_values(result)
         self.log(
             "설정 저장: 작품 동시성 "
             f"{result['workConcurrency']}, 이미지 {result['imageConcurrency']}, "
@@ -2813,7 +2982,7 @@ class MainWindow(QMainWindow):
         if job.job_id in self.file_verify_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         python = Path(sys.executable).with_name("python.exe")
-        process = QProcess(self)
+        process = create_background_process(self)
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(str(python if python.is_file() else Path(sys.executable)))
         process.setArguments(
@@ -2893,7 +3062,7 @@ class MainWindow(QMainWindow):
         ]
         if episode:
             arguments.extend(["--episode", str(int(episode))])
-        process = QProcess(self)
+        process = create_background_process(self)
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(str(python if python.is_file() else Path(sys.executable)))
         process.setArguments(arguments)
@@ -2971,7 +3140,7 @@ class MainWindow(QMainWindow):
             if execute
             else ["--dry-run", "--json", "--ascii-json"]
         )
-        process = QProcess(self)
+        process = create_background_process(self)
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(str(python if python.is_file() else Path(sys.executable)))
         process.setArguments(arguments)
@@ -3596,7 +3765,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("자체 점검이 이미 실행 중입니다.", 2500)
             return False
 
-        process = QProcess(self)
+        process = create_background_process(self)
         self.self_test_process = process
         self.self_test_stdout = ""
         self.self_test_stderr = ""
@@ -3698,7 +3867,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd retry-policy [--json]\n"
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced]\n"
-            "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE]\n"
+            "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -4068,3 +4237,18 @@ class MainWindow(QMainWindow):
         self.control_server.close()
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
         event.accept()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if (
+            event.type() == QEvent.Type.ApplicationPaletteChange
+            and getattr(self, "theme_mode", "") == "system"
+        ):
+            resolved = self._resolve_theme("system")
+            if resolved != self.resolved_theme:
+                self.resolved_theme = resolved
+                self._apply_style()
+                delegate = self.task_list.itemDelegate()
+                if isinstance(delegate, JobItemDelegate):
+                    delegate.set_theme(resolved)
+                    self.task_list.viewport().update()

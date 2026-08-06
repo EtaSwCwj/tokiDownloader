@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import unittest
 from collections import deque
 from unittest.mock import patch
 
 from toki_core import DownloadJob, DownloadRun
-from toki_gui import ImageConversionProcessContext, MainWindow, ProcessContext
+from toki_gui import (
+    ImageConversionProcessContext,
+    MainWindow,
+    ProcessContext,
+    hidden_process_options,
+)
 
 
 class _ValueStub:
@@ -97,6 +104,17 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_windows_background_process_disables_console_window(self) -> None:
+        options = hidden_process_options()
+        if os.name == "nt":
+            self.assertEqual(
+                options["creationflags"] & subprocess.CREATE_NO_WINDOW,
+                subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertEqual(options["startupinfo"].wShowWindow, subprocess.SW_HIDE)
+        else:
+            self.assertEqual(options, {})
+
     def test_apply_settings_updates_all_live_controls_without_signal_writes(self) -> None:
         result = {
             "outputDir": r"C:\Manga",
@@ -109,6 +127,7 @@ class WorkSchedulerTests(unittest.TestCase):
             "logMaxMiB": 8,
             "logBackupCount": 3,
             "rowDensity": "compact",
+            "theme": "dark",
         }
         harness = type("SettingsHarness", (), {})()
         harness.config = {}
@@ -128,6 +147,11 @@ class WorkSchedulerTests(unittest.TestCase):
         )()
         harness.log = lambda *_args, **_kwargs: None
         harness._start_next_job = lambda: None
+        harness._resolve_theme = lambda mode: mode
+        harness._apply_style = lambda: None
+        harness.resolved_theme = "light"
+        harness.theme_mode = "system"
+        harness.active_settings_dialog = None
 
         with (
             patch("toki_gui.update_app_settings", return_value=result) as update,
@@ -173,7 +197,7 @@ class WorkSchedulerTests(unittest.TestCase):
         _ProcessStub.instances = []
 
         with (
-            patch("toki_gui.QProcess", _ProcessStub),
+            patch("toki_gui.create_background_process", _ProcessStub),
             patch("toki_gui.ImageConversionProgressDialog", _DialogStub),
         ):
             result = MainWindow.start_image_conversion(
@@ -272,7 +296,7 @@ class WorkSchedulerTests(unittest.TestCase):
         _ProcessStub.instances = []
 
         with (
-            patch("toki_gui.QProcess", _ProcessStub),
+            patch("toki_gui.create_background_process", _ProcessStub),
             patch("toki_gui.find_node", return_value="node"),
             patch("toki_gui.build_downloader_args", return_value=["down.js"]),
             patch("toki_gui.load_run", return_value=None),
