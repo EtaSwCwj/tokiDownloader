@@ -22,6 +22,8 @@ from toki_core import (
     load_jobs_page,
     load_run,
     load_runs_page,
+    mark_job_cancelled,
+    mark_run_cancelled,
     normalize_range,
     read_run_log,
     resolve_cover_path,
@@ -71,6 +73,21 @@ class CoreContractTests(unittest.TestCase):
         content_path_index = args.index("-content-path")
         self.assertEqual(args[content_path_index + 1], job.output_path)
         self.assertEqual(DownloadRun.from_job(job).operation, "metadata_refresh")
+
+    def test_pending_job_and_run_can_be_cancelled_before_start(self) -> None:
+        job = DownloadJob(
+            job_id="pending",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+        )
+        run = DownloadRun.from_job(job)
+        mark_job_cancelled(job)
+        mark_run_cancelled(run)
+        self.assertEqual(job.state, "취소됨")
+        self.assertEqual(run.state, "취소됨")
+        self.assertTrue(run.finished_at)
+        with self.assertRaises(ValueError):
+            mark_job_cancelled(job)
 
     def test_retry_contract_resets_previous_range(self) -> None:
         source = DownloadJob(

@@ -24,6 +24,12 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertFalse(args.show_browser)
 
+    def test_stop_and_cancel_accept_job_ids(self) -> None:
+        stop = build_parser().parse_args(["stop", "--job", "active-1"])
+        self.assertEqual(stop.job, "active-1")
+        cancel = build_parser().parse_args(["cancel", "--job", "queued-1"])
+        self.assertEqual(cancel.job, "queued-1")
+
     def test_list_query_arguments(self) -> None:
         args = build_parser().parse_args(
             [

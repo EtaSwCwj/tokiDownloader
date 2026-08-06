@@ -71,6 +71,8 @@ from toki_core import (
     load_jobs_page,
     load_run,
     load_runs_page,
+    mark_job_cancelled,
+    mark_run_cancelled,
     normalize_range,
     open_in_explorer,
     read_log_tail,
@@ -1392,10 +1394,19 @@ class MainWindow(QMainWindow):
         self.cancel_requested = False
         QTimer.singleShot(250, self._start_next_job)
 
-    def stop_active_job(self) -> bool:
+    def stop_active_job(self, job_id: str | None = None) -> bool:
+        requested_job_id = job_id if isinstance(job_id, str) and job_id else None
         if not self.process or self.process.state() == QProcess.ProcessState.NotRunning:
             self.log("중지할 실행 작업이 없습니다.")
             return False
+        if (
+            requested_job_id
+            and self.active_job
+            and self.active_job.job_id != requested_job_id
+        ):
+            raise ValueError(
+                f"지정한 작업은 현재 실행 중이 아닙니다: {requested_job_id}"
+            )
         self.cancel_requested = True
         pid = int(self.process.processId())
         self.log(f"작업 중지 요청: PID {pid}")
@@ -1409,6 +1420,30 @@ class MainWindow(QMainWindow):
         else:
             self.process.kill()
         return True
+
+    def cancel_queued_job(self, job_id: str) -> dict[str, Any]:
+        clean_job_id = str(job_id or "").strip()
+        pending = next(
+            (job for job in self.pending_jobs if job.job_id == clean_job_id),
+            None,
+        )
+        if not pending:
+            raise ValueError(f"대기 중인 작업을 찾을 수 없습니다: {clean_job_id}")
+        self.pending_jobs.remove(pending)
+        mark_job_cancelled(pending)
+        run = load_run(pending.job_id) or DownloadRun.from_job(pending)
+        mark_run_cancelled(run)
+        save_runs([run])
+        self._update_job_card(pending)
+        self.log("대기 작업 취소", job_id=pending.job_id)
+        return {"cancelled": True, "job": pending.to_dict(), "run": run.to_dict()}
+
+    def cancel_selected_queued_job(self, job_id: str) -> None:
+        try:
+            self.cancel_queued_job(job_id)
+        except (ValueError, OSError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "대기 작업을 취소할 수 없음", str(error))
+            self.log(str(error), "ERROR", job_id)
 
     def selected_job(self, job_id: str | None = None) -> DownloadJob | None:
         if job_id:
@@ -1620,6 +1655,11 @@ class MainWindow(QMainWindow):
         retry_action.setEnabled(job.state not in {"대기", "실행 중"})
         stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
         stop_action.setEnabled(bool(self.active_job and self.active_job.job_id == job.job_id))
+        cancel_action = menu.addAction(
+            "대기 작업 취소",
+            lambda: self.cancel_selected_queued_job(job.job_id),
+        )
+        cancel_action.setEnabled(any(item.job_id == job.job_id for item in self.pending_jobs))
         menu.aboutToHide.connect(lambda: setattr(self, "active_context_menu", None))
         self.active_context_menu = menu
         menu.popup(global_position)
@@ -2033,7 +2073,9 @@ class MainWindow(QMainWindow):
             )
             return job.to_dict()
         if action == "stop":
-            return {"stopped": self.stop_active_job()}
+            return {"stopped": self.stop_active_job(request.get("jobId"))}
+        if action == "cancel":
+            return self.cancel_queued_job(str(request.get("jobId") or ""))
         if action == "retry":
             job = self.retry_job(request.get("jobId"))
             return job.to_dict() if job else None

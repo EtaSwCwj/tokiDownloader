@@ -267,7 +267,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     download.add_argument("--direct", action="store_true", help="GUI 없이 직접 실행")
 
-    subparsers.add_parser("stop", help="현재 실행 작업 중지")
+    stop = subparsers.add_parser("stop", help="현재 실행 작업 중지")
+    stop.add_argument("--job", help="현재 실행 중인지 확인할 작업 ID")
+    cancel = subparsers.add_parser("cancel", help="작업 ID로 대기 작업 실행 전 취소")
+    cancel.add_argument("--job", required=True, help="대기 작업 ID")
     retry = subparsers.add_parser(
         "retry",
         help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
@@ -455,7 +458,10 @@ def run_cli(args: argparse.Namespace) -> int:
         control_request({"action": "show"})
         return 0
     if command == "stop":
-        print_json(control_request({"action": "stop"}))
+        print_json(control_request({"action": "stop", "jobId": args.job}))
+        return 0
+    if command == "cancel":
+        print_json(control_request({"action": "cancel", "jobId": args.job}))
         return 0
     if command == "retry":
         print_json(control_request({"action": "retry", "jobId": args.job}))

@@ -720,6 +720,23 @@ def retry_job_parameters(source: DownloadJob) -> dict[str, Any]:
     }
 
 
+def mark_job_cancelled(job: DownloadJob, reason: str = "") -> DownloadJob:
+    if job.state != "대기":
+        raise ValueError("대기 중인 작업만 실행 전에 취소할 수 있습니다.")
+    job.state = "취소됨"
+    job.error = str(reason or "사용자가 대기 작업을 취소했습니다.")
+    return job
+
+
+def mark_run_cancelled(run: DownloadRun, reason: str = "") -> DownloadRun:
+    if run.state not in {"대기", "취소됨"}:
+        raise ValueError("대기 중인 실행 기록만 취소할 수 있습니다.")
+    run.state = "취소됨"
+    run.error = str(reason or "사용자가 대기 작업을 취소했습니다.")
+    run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    return run
+
+
 def update_job_markers(
     job_id: str,
     *,
