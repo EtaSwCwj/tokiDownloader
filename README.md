@@ -147,6 +147,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
+.\toki-cli.cmd window --screen "모니터 이름" --center --normal
+.\toki-cli.cmd window --safe
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -160,6 +162,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 상태를 거르고 `--sort updated|title|progress`로 정렬할 수 있습니다. `--apply-gui`를
 추가하면 같은 조건을 실행 중인 GUI 검색창과 목록에도 적용합니다. 빈 조건으로
 `list --apply-gui`를 실행하면 GUI 필터가 초기화됩니다.
+
+`window`는 `--screen`으로 지정한 모니터로 창을 옮기고 `--center`로 가운데에 배치합니다.
+`--safe`는 모니터 분리나 해상도 변경으로 창이 화면 밖에 있을 때 현재 사용 가능한 화면으로
+복구합니다. 다중 모니터의 정상적인 음수 좌표는 그대로 유지합니다. `status --json`의
+`window`에서 현재 모니터 이름, 배율, 화면 안 배치 여부와 전체 모니터 목록을 확인할 수 있습니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

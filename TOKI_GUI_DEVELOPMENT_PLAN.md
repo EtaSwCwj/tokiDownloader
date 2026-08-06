@@ -350,7 +350,7 @@ GUI 실행 인자와 취소의 멱등성을 자동 테스트했다. 실제 사�
 - [x] 완료 알림과 선택적 트레이 동작
 - [x] 빈 화면, 로딩, 오류와 작업 없음 상태 정리
 - [x] 키보드 탐색과 단축키
-- [ ] 고해상도 DPI 및 여러 모니터에서 창 복원 검증
+- [x] 고해상도 DPI 및 여러 모니터에서 창 복원 검증
 
 완료 조건:
 
@@ -406,6 +406,14 @@ stderr, PID, 중지와 완료 신호는 기존 GUI 계약을 유지한다. 프�
 검증하며 GUI 도움말 표도 CLI로 열고 닫는다. Python 81건을 통과했고
 `logs/keyboard-shortcuts.png`, `logs/keyboard-navigation.png`에서 안내창과 선택 강조를 직접
 확인했다.
+
+2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
+정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
+주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와
+`status --json`의 `window.screens`, `screenName`, `screenDpr`, `onScreen`으로 같은 경로를
+제어·검증한다. 실제 3개 모니터 `X38 P` 125%, `G4309VX_D` 150%, `HDMI` 200%에서 창 이동,
+고배율 목록 재배치와 원래 위치 복원을 확인했고 `logs/window-primary-125.png`,
+`logs/window-side-150.png`, `logs/window-hdmi-200.png`를 캡처했다. Python 83건을 통과했다.
 
 ### 단계 6. 대규모 성능과 안정성
 

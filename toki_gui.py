@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import (
-    QByteArray,
     QAbstractListModel,
     QEvent,
     QModelIndex,
@@ -126,6 +125,7 @@ from toki_core import (
     open_in_explorer,
     plan_job_folder_move,
     plan_metadata_rebuild,
+    plan_window_geometry,
     read_log_tail,
     read_run_log,
     rebuild_job_metadata as execute_metadata_rebuild,
@@ -376,7 +376,11 @@ class JobItemDelegate(QStyledItemDelegate):
         self.theme = theme
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
-        return QSize(option.rect.width(), 66 if self.density == "compact" else 92)
+        view = self.parent()
+        width = option.rect.width()
+        if isinstance(view, QListView):
+            width = max(100, view.viewport().width() - (view.spacing() * 2) - 2)
+        return QSize(width, 66 if self.density == "compact" else 92)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         job = index.data(JobListModel.JobRole)
@@ -1476,30 +1480,16 @@ class MainWindow(QMainWindow):
         self.log("GUI 시작")
 
     def _restore_window_geometry(self, window_config: dict[str, Any]) -> None:
-        encoded_geometry = window_config.get("qtGeometry")
-        if isinstance(encoded_geometry, str) and encoded_geometry:
-            saved_geometry = QByteArray.fromBase64(encoded_geometry.encode("ascii"))
-            if not saved_geometry.isEmpty() and self.restoreGeometry(saved_geometry):
-                self.geometry_restored = True
-                return
-
-        width = max(self.minimumWidth(), int(window_config.get("width") or 860))
-        height = max(self.minimumHeight(), int(window_config.get("height") or 720))
-        self.resize(width, height)
-
-        saved_x = window_config.get("x")
-        saved_y = window_config.get("y")
-        if isinstance(saved_x, (int, float)) and isinstance(saved_y, (int, float)):
-            desired = QRect(int(saved_x), int(saved_y), width, height)
-            if any(screen.availableGeometry().intersects(desired) for screen in QApplication.screens()):
-                self.restore_position = desired.topLeft()
-                return
-
-        primary = QApplication.primaryScreen()
-        if primary:
-            available = primary.availableGeometry()
-            centered = available.center() - QPoint(width // 2, height // 2)
-            self.restore_position = centered
+        plan = plan_window_geometry(
+            window_config,
+            self.screen_layout_snapshot(),
+            minimum_width=self.minimumWidth(),
+            minimum_height=self.minimumHeight(),
+        )
+        self.window_restore_plan = plan
+        self.restore_maximized = bool(plan["maximized"])
+        self.resize(int(plan["width"]), int(plan["height"]))
+        self.restore_position = QPoint(int(plan["x"]), int(plan["y"]))
 
     def _build_actions(self) -> None:
         self.start_action = QAction("다운로드 시작", self)
@@ -1873,8 +1863,10 @@ class MainWindow(QMainWindow):
         self.task_list.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.task_list.setUniformItemSizes(True)
         self.task_list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.task_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.task_list.setSpacing(2)
         self.task_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.task_list.setToolTip(
             "한 번 클릭하면 선택, Enter는 상세 정보, 더블클릭은 다운로드 폴더 열기입니다."
         )
@@ -4388,7 +4380,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd logs --tail 200\n"
             "toki-cli.cmd copy-log [--tail 3000]\n"
             "toki-cli.cmd screenshot [--output PATH]\n"
-            "toki-cli.cmd window [--x N --y N --width N --height N --maximize|--normal]\n"
+            "toki-cli.cmd window [--x N --y N --width N --height N --screen NAME --center --safe --maximize|--normal]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
@@ -4487,20 +4479,68 @@ class MainWindow(QMainWindow):
                 self.active_shortcut_help_dialog
                 and self.active_shortcut_help_dialog.isVisible()
             ),
-            "window": self.window_snapshot(),
+            "window": {
+                **self.window_snapshot(),
+                "restorePlan": getattr(self, "window_restore_plan", None),
+                "screens": self.screen_layout_snapshot(),
+            },
         }
 
     def window_snapshot(self) -> dict[str, Any]:
         maximized = self.isMaximized()
         geometry = self.normalGeometry() if maximized else None
         position = geometry.topLeft() if geometry is not None else self.pos()
+        width = geometry.width() if geometry is not None else self.width()
+        height = geometry.height() if geometry is not None else self.height()
+        center = QPoint(position.x() + width // 2, position.y() + height // 2)
+        screen = QApplication.screenAt(center) or self.screen() or QApplication.primaryScreen()
+        screen_name = screen.name() if screen else ""
+        screen_dpr = float(screen.devicePixelRatio()) if screen else 1.0
+        available = screen.availableGeometry() if screen else QRect()
         return {
             "x": position.x(),
             "y": position.y(),
-            "width": geometry.width() if geometry is not None else self.width(),
-            "height": geometry.height() if geometry is not None else self.height(),
+            "width": width,
+            "height": height,
             "maximized": maximized,
+            "screenName": screen_name,
+            "screenDpr": screen_dpr,
+            "relativeX": position.x() - available.x() if screen else 0,
+            "relativeY": position.y() - available.y() if screen else 0,
+            "onScreen": bool(
+                screen
+                and available.intersects(
+                    QRect(position.x(), position.y(), width, height)
+                )
+            ),
         }
+
+    def screen_layout_snapshot(self) -> list[dict[str, Any]]:
+        primary = QApplication.primaryScreen()
+        screens: list[dict[str, Any]] = []
+        for screen in QApplication.screens():
+            available = screen.availableGeometry()
+            geometry = screen.geometry()
+            screens.append(
+                {
+                    "name": screen.name(),
+                    "x": available.x(),
+                    "y": available.y(),
+                    "width": available.width(),
+                    "height": available.height(),
+                    "geometry": {
+                        "x": geometry.x(),
+                        "y": geometry.y(),
+                        "width": geometry.width(),
+                        "height": geometry.height(),
+                    },
+                    "devicePixelRatio": float(screen.devicePixelRatio()),
+                    "logicalDpi": float(screen.logicalDotsPerInch()),
+                    "physicalDpi": float(screen.physicalDotsPerInch()),
+                    "primary": screen is primary,
+                }
+            )
+        return screens
 
     def set_window_geometry(self, request: dict[str, Any]) -> dict[str, Any]:
         width = request.get("width")
@@ -4508,19 +4548,47 @@ class MainWindow(QMainWindow):
         x = request.get("x")
         y = request.get("y")
         maximized = request.get("maximized")
+        target_screen = str(request.get("screenName") or "").strip()
+        center = bool(request.get("center"))
+        safe = bool(request.get("safe"))
 
-        if any(value is not None for value in (width, height, x, y)):
+        screens = self.screen_layout_snapshot()
+        if target_screen and not any(screen["name"] == target_screen for screen in screens):
+            available = ", ".join(screen["name"] for screen in screens)
+            raise ValueError(f"모니터를 찾을 수 없습니다: {target_screen} (사용 가능: {available})")
+        plan: dict[str, Any] | None = None
+        if any(value is not None for value in (width, height, x, y)) or target_screen or center or safe:
+            desired = self.window_snapshot()
+            if width is not None:
+                desired["width"] = int(width)
+            if height is not None:
+                desired["height"] = int(height)
+            if x is not None:
+                desired["x"] = int(x)
+            if y is not None:
+                desired["y"] = int(y)
+            plan = plan_window_geometry(
+                desired,
+                screens,
+                target_screen=target_screen,
+                center=center,
+                minimum_width=self.minimumWidth(),
+                minimum_height=self.minimumHeight(),
+            )
             self.showNormal()
-            target_width = max(self.minimumWidth(), int(width or self.width()))
-            target_height = max(self.minimumHeight(), int(height or self.height()))
-            self.resize(target_width, target_height)
-            self.move(int(x if x is not None else self.x()), int(y if y is not None else self.y()))
+            self.resize(int(plan["width"]), int(plan["height"]))
+            self.move(int(plan["x"]), int(plan["y"]))
+            self.window_restore_plan = plan
         if maximized is True:
             self.showMaximized()
         elif maximized is False:
             self.showNormal()
         QApplication.processEvents()
-        return self.window_snapshot()
+        return {
+            **self.window_snapshot(),
+            "restorePlan": plan or getattr(self, "window_restore_plan", None),
+            "screens": screens,
+        }
 
     def _update_summary(self) -> None:
         states = [job.state for job in self.task_model.rows]

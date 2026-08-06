@@ -45,6 +45,7 @@ from toki_core import (
     plan_job_folder_move,
     plan_image_conversion,
     plan_metadata_rebuild,
+    plan_window_geometry,
     read_run_log,
     rebuild_job_metadata,
     recover_interrupted_jobs,
@@ -65,6 +66,49 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_window_geometry_preserves_valid_monitor_and_recovers_missing_screen(self) -> None:
+        screens = [
+            {
+                "name": "Primary", "x": 0, "y": 0, "width": 3072, "height": 1232,
+                "devicePixelRatio": 1.25, "primary": True,
+            },
+            {
+                "name": "Side", "x": 3840, "y": -564, "width": 2560, "height": 1440,
+                "devicePixelRatio": 1.5, "primary": False,
+            },
+        ]
+        valid = plan_window_geometry(
+            {
+                "x": 3851, "y": -349, "width": 720, "height": 997,
+                "screenName": "Side", "screenDpr": 1.5,
+            },
+            screens,
+        )
+        recovered = plan_window_geometry(
+            {
+                "x": 9000, "y": 4000, "width": 1000, "height": 800,
+                "screenName": "Removed", "screenDpr": 2.0,
+                "relativeX": 40, "relativeY": 30,
+            },
+            screens,
+        )
+        centered = plan_window_geometry(
+            {"width": 800, "height": 600},
+            screens,
+            target_screen="Side",
+            center=True,
+        )
+
+        self.assertEqual((valid["x"], valid["y"]), (3851, -349))
+        self.assertEqual(valid["screenName"], "Side")
+        self.assertFalse(valid["clamped"])
+        self.assertEqual((recovered["x"], recovered["y"]), (40, 30))
+        self.assertEqual(recovered["screenName"], "Primary")
+        self.assertTrue(recovered["clamped"])
+        self.assertTrue(recovered["dpiChanged"])
+        self.assertEqual(centered["screenName"], "Side")
+        self.assertEqual(centered["x"], 3840 + (2560 - 800) // 2)
+
     def test_keyboard_shortcut_catalog_is_unique_and_cli_backed(self) -> None:
         catalog = keyboard_shortcut_catalog()
         action_ids = [item["id"] for item in catalog]

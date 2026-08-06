@@ -402,6 +402,34 @@ class CliParserTests(unittest.TestCase):
             {"action": "keyboard_focus", "target": "next", "clear": False}
         )
 
+    def test_window_cli_supports_screen_center_and_safe_restore(self) -> None:
+        args = build_parser().parse_args(
+            ["window", "--screen", "Side Display", "--center", "--safe"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"screenName": "Side Display", "onScreen": True},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            exit_code = run_cli(args)
+        self.assertEqual(exit_code, 0)
+        request.assert_called_once_with(
+            {
+                "action": "window",
+                "x": None,
+                "y": None,
+                "width": None,
+                "height": None,
+                "maximized": None,
+                "screenName": "Side Display",
+                "center": True,
+                "safe": True,
+            }
+        )
+
     def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
         dry_run = build_parser().parse_args(
             ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--json"]

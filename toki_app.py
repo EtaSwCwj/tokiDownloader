@@ -11,7 +11,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtCore import QCoreApplication, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
@@ -139,6 +139,9 @@ def ensure_gui_running(timeout_seconds: float = 12.0) -> None:
 
 
 def run_gui() -> int:
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setApplicationName("tokiDownloader")
     app.setOrganizationName("tokiDownloader")
@@ -159,6 +162,9 @@ def run_gui() -> int:
     if window.geometry_restored:
         window.show()
     elif window.restore_maximized:
+        window.show()
+        if window.restore_position is not None:
+            window.move(window.restore_position)
         window.showMaximized()
     else:
         window.show()
@@ -241,6 +247,12 @@ def run_gui_self_test_probe() -> dict[str, Any]:
         startup_recovery = status.get("startupRecovery")
         if not isinstance(startup_recovery, dict):
             raise ControlError("GUI 상태에 재시작 복구 결과가 없습니다.")
+        window_status = status.get("window")
+        if not isinstance(window_status, dict) or not window_status.get("onScreen"):
+            raise ControlError("GUI 창이 현재 모니터의 보이는 영역에 없습니다.")
+        screen_status = window_status.get("screens")
+        if not isinstance(screen_status, list) or not screen_status:
+            raise ControlError("GUI 상태에 모니터/DPI 정보가 없습니다.")
         queue_status = control_request({"action": "queue_list"})
         shortcut_status = control_request({"action": "keyboard_shortcuts"})
         if int(shortcut_status.get("count") or 0) < 1:
@@ -308,6 +320,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             "listViewState": list_view_state,
             "pendingQueueCount": queue_status.get("total", 0),
             "keyboardShortcutCount": shortcut_status.get("count", 0),
+            "windowScreenCount": len(screen_status),
             "screenshotPath": screenshot.get("path"),
             "workDetails": detail_probe,
         }
@@ -696,6 +709,9 @@ def build_parser() -> argparse.ArgumentParser:
     window_state = window.add_mutually_exclusive_group()
     window_state.add_argument("--maximize", action="store_true", help="창 최대화")
     window_state.add_argument("--normal", action="store_true", help="창을 보통 상태로 복원")
+    window.add_argument("--screen", help="이름으로 지정한 모니터로 이동")
+    window.add_argument("--center", action="store_true", help="대상 모니터 중앙에 배치")
+    window.add_argument("--safe", action="store_true", help="현재 창을 보이는 화면 영역 안으로 보정")
 
     logs = subparsers.add_parser("logs", help="파일 로그 출력")
     logs.add_argument("--tail", type=int, default=200, help="마지막 N줄")
@@ -1581,6 +1597,9 @@ def run_cli(args: argparse.Namespace) -> int:
                 "width": args.width,
                 "height": args.height,
                 "maximized": maximized,
+                "screenName": args.screen or "",
+                "center": args.center,
+                "safe": args.safe,
             }
         )
         print_json(result)

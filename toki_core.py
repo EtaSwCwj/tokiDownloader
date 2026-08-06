@@ -652,6 +652,152 @@ def keyboard_shortcut_keys(action_id: str) -> list[str]:
     raise ValueError(f"지원하지 않는 단축키 동작입니다: {action_id}")
 
 
+def plan_window_geometry(
+    saved: dict[str, Any] | None,
+    screens: list[dict[str, Any]],
+    *,
+    target_screen: str = "",
+    center: bool = False,
+    minimum_width: int = 720,
+    minimum_height: int = 580,
+    default_width: int = 860,
+    default_height: int = 720,
+) -> dict[str, Any]:
+    """Plan a logical-pixel window rect that remains visible across monitor/DPI changes."""
+    source = saved if isinstance(saved, dict) else {}
+    normalized_screens: list[dict[str, Any]] = []
+    for index, screen in enumerate(screens or []):
+        if not isinstance(screen, dict):
+            continue
+        try:
+            width = max(1, int(screen.get("width") or 0))
+            height = max(1, int(screen.get("height") or 0))
+            normalized_screens.append(
+                {
+                    "name": str(screen.get("name") or f"screen-{index + 1}"),
+                    "x": int(screen.get("x") or 0),
+                    "y": int(screen.get("y") or 0),
+                    "width": width,
+                    "height": height,
+                    "devicePixelRatio": float(screen.get("devicePixelRatio") or 1.0),
+                    "primary": bool(screen.get("primary", index == 0)),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    if not normalized_screens:
+        width = max(minimum_width, int(source.get("width") or default_width))
+        height = max(minimum_height, int(source.get("height") or default_height))
+        return {
+            "x": int(source.get("x") or 0),
+            "y": int(source.get("y") or 0),
+            "width": width,
+            "height": height,
+            "maximized": bool(source.get("maximized", False)),
+            "screenName": "",
+            "screenDpr": 1.0,
+            "relativeX": 0,
+            "relativeY": 0,
+            "clamped": False,
+            "dpiChanged": False,
+            "reason": "screen_information_unavailable",
+        }
+
+    primary = next(
+        (screen for screen in normalized_screens if screen["primary"]),
+        normalized_screens[0],
+    )
+    desired_name = str(target_screen or source.get("screenName") or "").strip()
+    target = next(
+        (screen for screen in normalized_screens if screen["name"] == desired_name),
+        None,
+    )
+
+    saved_x = source.get("x")
+    saved_y = source.get("y")
+    has_position = isinstance(saved_x, (int, float)) and isinstance(saved_y, (int, float))
+    requested_width = max(minimum_width, int(source.get("width") or default_width))
+    requested_height = max(minimum_height, int(source.get("height") or default_height))
+
+    def intersection_area(screen: dict[str, Any]) -> int:
+        if not has_position:
+            return 0
+        left = max(int(saved_x), screen["x"])
+        top = max(int(saved_y), screen["y"])
+        right = min(int(saved_x) + requested_width, screen["x"] + screen["width"])
+        bottom = min(int(saved_y) + requested_height, screen["y"] + screen["height"])
+        return max(0, right - left) * max(0, bottom - top)
+
+    reason = "saved_screen"
+    if target is None:
+        intersecting = max(normalized_screens, key=intersection_area)
+        if intersection_area(intersecting) > 0:
+            target = intersecting
+            reason = "intersecting_screen"
+        else:
+            target = primary
+            reason = "primary_fallback"
+    elif target_screen:
+        reason = "requested_screen"
+
+    width = min(requested_width, target["width"])
+    height = min(requested_height, target["height"])
+    if center or not has_position:
+        x = target["x"] + (target["width"] - width) // 2
+        y = target["y"] + (target["height"] - height) // 2
+        reason = "centered" if center else f"{reason}_centered"
+    else:
+        x = int(saved_x)
+        y = int(saved_y)
+        saved_screen_name = str(source.get("screenName") or "")
+        if (
+            not target_screen
+            and saved_screen_name
+            and saved_screen_name != target["name"]
+        ):
+            relative_x = source.get("relativeX")
+            relative_y = source.get("relativeY")
+            if isinstance(relative_x, (int, float)) and isinstance(relative_y, (int, float)):
+                x = target["x"] + int(relative_x)
+                y = target["y"] + int(relative_y)
+                reason = f"{reason}_relative"
+        maximum_x = target["x"] + target["width"] - width
+        maximum_y = target["y"] + target["height"] - height
+        x = min(max(x, target["x"]), maximum_x)
+        y = min(max(y, target["y"]), maximum_y)
+
+    saved_dpr = source.get("screenDpr")
+    try:
+        dpi_changed = saved_dpr is not None and abs(float(saved_dpr) - target["devicePixelRatio"]) > 0.01
+    except (TypeError, ValueError):
+        dpi_changed = False
+    clamped = bool(
+        width != requested_width
+        or height != requested_height
+        or (has_position and (x != int(saved_x) or y != int(saved_y)))
+    )
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "maximized": bool(source.get("maximized", False)),
+        "screenName": target["name"],
+        "screenDpr": target["devicePixelRatio"],
+        "relativeX": x - target["x"],
+        "relativeY": y - target["y"],
+        "available": {
+            "x": target["x"],
+            "y": target["y"],
+            "width": target["width"],
+            "height": target["height"],
+        },
+        "clamped": clamped,
+        "dpiChanged": dpi_changed,
+        "reason": reason,
+    }
+
+
 def retry_backoff_seconds(retry_number: int, base_seconds: int | None) -> int:
     retry = max(1, int(retry_number))
     base = normalize_retry_backoff(base_seconds)
