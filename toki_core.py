@@ -1478,6 +1478,80 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
     }
 
 
+def list_job_episode_images(
+    job_id: str,
+    episode: int | None = None,
+    *,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    clean_limit = max(1, min(1000, int(limit)))
+    clean_offset = max(0, int(offset))
+
+    episode_folders: dict[int, list[Path]] = {}
+    for entry in os.scandir(output_path):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        matched = re.match(r"^0*(\d+)(?:\s|$)", entry.name)
+        if matched:
+            episode_folders.setdefault(int(matched.group(1)), []).append(Path(entry.path))
+    available_episodes = sorted(episode_folders)
+    if not available_episodes:
+        raise FileNotFoundError("미리 볼 회차 폴더가 없습니다.")
+    requested_episode = int(episode or 0)
+    selected_episode = requested_episode or available_episodes[0]
+    if selected_episode not in episode_folders:
+        raise ValueError(f"{selected_episode}번 회차 폴더를 찾을 수 없습니다.")
+
+    def natural_key(path: Path) -> list[tuple[int, Any]]:
+        return [
+            (0, int(part)) if part.isdigit() else (1, part.casefold())
+            for part in re.split(r"(\d+)", path.name)
+        ]
+
+    images: list[Path] = []
+    for folder in sorted(episode_folders[selected_episode], key=natural_key):
+        with os.scandir(folder) as children:
+            images.extend(
+                Path(child.path)
+                for child in children
+                if child.is_file(follow_symlinks=False)
+                and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
+            )
+    images.sort(key=natural_key)
+    page = images[clean_offset : clean_offset + clean_limit]
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": job.title,
+        "outputPath": str(output_path),
+        "episode": selected_episode,
+        "availableEpisodes": available_episodes,
+        "episodeFolders": [str(path) for path in episode_folders[selected_episode]],
+        "total": len(images),
+        "limit": clean_limit,
+        "offset": clean_offset,
+        "images": [
+            {
+                "index": clean_offset + index,
+                "name": path.name,
+                "path": str(path.resolve()),
+                "extension": path.suffix.lower(),
+                "size": path.stat().st_size,
+            }
+            for index, path in enumerate(page)
+        ],
+    }
+
+
 def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:

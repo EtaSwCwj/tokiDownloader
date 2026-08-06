@@ -33,6 +33,7 @@ from toki_core import (
     load_config,
     load_job_by_id,
     load_jobs_page,
+    list_job_episode_images,
     load_run,
     load_runs_page,
     move_job_folder,
@@ -523,6 +524,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--ascii-json", action="store_true", help=argparse.SUPPRESS
     )
     verify_files.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    preview = subparsers.add_parser(
+        "preview",
+        help="작품 회차의 이미지 목록 조회 또는 GUI 미리보기",
+    )
+    preview.add_argument("--job", required=True, help="작업 ID")
+    preview.add_argument("--episode", type=int, help="회차 번호(생략 시 첫 보유 회차)")
+    preview.add_argument("--limit", type=int, default=200, help="가져올 이미지 수(최대 1000)")
+    preview.add_argument("--offset", type=int, default=0, help="건너뛸 이미지 수")
+    preview.add_argument("--show-gui", action="store_true", help="GUI 이미지 미리보기 창 표시")
+    preview.add_argument("--json", action="store_true", help="JSON으로 출력")
+    preview.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
@@ -1128,6 +1141,37 @@ def run_cli(args: argparse.Namespace) -> int:
             if summary["issuesTruncated"]:
                 print("- 나머지 문제는 --issue-limit 값을 늘려 확인하세요.")
         return 0 if result["healthy"] else 2
+    if command == "preview":
+        if args.show_gui:
+            ensure_gui_running()
+            print_json(
+                control_request(
+                    {
+                        "action": "preview_images",
+                        "jobId": args.job,
+                        "episode": args.episode,
+                    }
+                )
+            )
+            return 0
+        result = list_job_episode_images(
+            args.job,
+            args.episode,
+            limit=args.limit,
+            offset=args.offset,
+        )
+        if args.json:
+            payload = {"ok": True, **result}
+            if args.ascii_json:
+                print(json.dumps(payload, ensure_ascii=True, indent=2))
+            else:
+                print_json(payload)
+        else:
+            print(f"작품: {result['title']} | 회차: {result['episode']}")
+            print(f"이미지 {len(result['images'])} / 전체 {result['total']}")
+            for image in result["images"]:
+                print(f"{image['index']}: {image['name']} ({image['size']} bytes)")
+        return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())
         Path(resolved).mkdir(parents=True, exist_ok=True)

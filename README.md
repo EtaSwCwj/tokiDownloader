@@ -118,6 +118,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd rebuild-metadata --job 작업ID --execute --yes --json
 .\toki-cli.cmd verify-files --job 작업ID --json
 .\toki-cli.cmd verify-files --job 작업ID --show-gui
+.\toki-cli.cmd preview --job 작업ID --episode 1 --json
+.\toki-cli.cmd preview --job 작업ID --episode 1 --show-gui
 .\toki-cli.cmd copy-link --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
@@ -264,6 +266,13 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 `--issue-limit`으로 상세 문제 배열 크기를 제한할 수 있어 수천 파일에서도 출력이 무한히
 커지지 않습니다. GUI 우클릭 `보유 회차·파일 검사`와 `--show-gui`는 같은 CLI 검사를 별도
 프로세스로 실행하므로 검사 중에도 작품 목록과 창 조작이 멈추지 않습니다.
+
+`preview`는 보유 회차 번호와 이미지 파일을 자연 숫자 순서로 조회합니다. 기본 200장,
+최대 1,000장 범위에서 `--limit`·`--offset` 페이지 조회를 지원하며 `--episode`를 생략하면
+첫 보유 회차를 선택합니다. `--show-gui` 또는 작품 우클릭 `회차 이미지 미리보기`는 회차
+선택과 이미지 목록, 원본 열기 버튼을 제공하며 선택한 한 장만 최대 1400×1000 크기로 Qt
+스레드 풀에서 축소 디코딩합니다. 따라서 작품 전체 이미지나 한 회차의 모든 이미지를 GUI
+메인 스레드에서 한꺼번에 읽지 않습니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

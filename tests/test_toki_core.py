@@ -21,6 +21,7 @@ from toki_core import (
     hydrate_job_metadata,
     load_job_by_work_key,
     load_jobs_page,
+    list_job_episode_images,
     load_run,
     load_runs_page,
     mark_job_cancelled,
@@ -819,6 +820,38 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(result["summary"]["episodeFolders"], 1000)
         self.assertEqual(result["summary"]["images"], 1000)
         self.assertEqual(result["summary"]["returnedIssues"], 0)
+
+    def test_episode_image_preview_is_naturally_sorted_and_paginated(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 미리보기 작품"
+        first = output / "0001 첫 회차"
+        second = output / "0002 둘째 회차"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        for name in ("image10.jpg", "image2.jpg", "image1.jpg", "note.txt"):
+            (first / name).write_bytes(b"data")
+        (second / "image1.png").write_bytes(b"data")
+        job = DownloadJob(
+            job_id="preview-images",
+            url="https://newtoki1.org/manhwa/6300",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        first_page = list_job_episode_images(job.job_id, limit=2)
+        self.assertEqual(first_page["episode"], 1)
+        self.assertEqual(first_page["availableEpisodes"], [1, 2])
+        self.assertEqual(first_page["total"], 3)
+        self.assertEqual(
+            [image["name"] for image in first_page["images"]],
+            ["image1.jpg", "image2.jpg"],
+        )
+        second_page = list_job_episode_images(job.job_id, 1, limit=2, offset=2)
+        self.assertEqual([image["name"] for image in second_page["images"]], ["image10.jpg"])
+        with self.assertRaises(ValueError):
+            list_job_episode_images(job.job_id, 99)
 
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:
         jobs = [

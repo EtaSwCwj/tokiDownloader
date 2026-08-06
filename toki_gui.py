@@ -13,8 +13,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QByteArray, QAbstractListModel, QModelIndex, QPoint, QProcess, QRect, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QFont, QPainter, QPen, QPixmap
+from PyQt6.QtCore import (
+    QByteArray,
+    QAbstractListModel,
+    QModelIndex,
+    QObject,
+    QPoint,
+    QProcess,
+    QRect,
+    QRunnable,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+)
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QCloseEvent,
+    QDesktopServices,
+    QFont,
+    QImage,
+    QImageReader,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtWidgets import (
     QApplication,
@@ -30,6 +56,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListView,
+    QListWidget,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -628,6 +655,127 @@ class FileVerificationDialog(QDialog):
         layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
 
 
+class ImageLoadSignals(QObject):
+    loaded = pyqtSignal(str, object, str)
+
+
+class ImageLoadTask(QRunnable):
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = path
+        self.signals = ImageLoadSignals()
+
+    def run(self) -> None:
+        reader = QImageReader(self.path)
+        reader.setAutoTransform(True)
+        image = reader.read()
+        error = reader.errorString() if image.isNull() else ""
+        if not image.isNull() and (image.width() > 1400 or image.height() > 1000):
+            image = image.scaled(
+                QSize(1400, 1000),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self.signals.loaded.emit(self.path, image, error)
+
+
+class ImagePreviewDialog(QDialog):
+    def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.result = result
+        self.current_path = ""
+        self.setWindowTitle("회차 이미지 미리보기")
+        self.resize(980, 720)
+        layout = QVBoxLayout(self)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel(str(result.get("title") or "작품")), 1)
+        toolbar.addWidget(QLabel("회차"))
+        self.episode_combo = QComboBox()
+        for episode in result.get("availableEpisodes") or []:
+            self.episode_combo.addItem(str(episode), int(episode))
+        selected_index = self.episode_combo.findData(int(result.get("episode") or 0))
+        if selected_index >= 0:
+            self.episode_combo.setCurrentIndex(selected_index)
+        toolbar.addWidget(self.episode_combo)
+        layout.addLayout(toolbar)
+
+        content = QHBoxLayout()
+        self.image_list = QListWidget()
+        self.image_list.setMinimumWidth(280)
+        self.image_list.setStyleSheet(
+            "QListWidget::item { padding: 7px; }"
+            "QListWidget::item:selected { background: #d6e8ff; color: #20262e; }"
+        )
+        for image in result.get("images") or []:
+            name = str(image["name"])
+            short_match = re.search(r"(image\d+\.[a-zA-Z0-9]+)$", name)
+            display_name = short_match.group(1) if short_match else name
+            self.image_list.addItem(f"{int(image['index']) + 1}. {display_name}")
+            item = self.image_list.item(self.image_list.count() - 1)
+            item.setData(Qt.ItemDataRole.UserRole, image)
+        content.addWidget(self.image_list)
+        self.preview_label = QLabel("이미지를 선택해주세요.")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(520, 480)
+        self.preview_label.setStyleSheet(
+            "background: #eef1f5; border: 1px solid #cfd6df; color: #52606d;"
+        )
+        content.addWidget(self.preview_label, 1)
+        layout.addLayout(content, 1)
+
+        footer = QHBoxLayout()
+        self.page_label = QLabel(
+            f"이미지 {len(result.get('images') or [])} / 전체 {result.get('total', 0)}"
+        )
+        footer.addWidget(self.page_label, 1)
+        open_button = QPushButton("원본 이미지 열기")
+        open_button.clicked.connect(self._open_current)
+        footer.addWidget(open_button)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.close)
+        footer.addWidget(close_button)
+        layout.addLayout(footer)
+
+        self.image_list.currentItemChanged.connect(self._selection_changed)
+        self.episode_combo.currentIndexChanged.connect(self._episode_changed)
+        if self.image_list.count():
+            self.image_list.setCurrentRow(0)
+
+    def _selection_changed(self, current: Any, _previous: Any) -> None:
+        image = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not image:
+            return
+        self.current_path = str(image.get("path") or "")
+        self.preview_label.setText("이미지 불러오는 중…")
+        task = ImageLoadTask(self.current_path)
+        task.signals.loaded.connect(self._image_loaded)
+        self.owner.image_thread_pool.start(task)
+
+    def _image_loaded(self, path: str, image: QImage, error: str) -> None:
+        if path != self.current_path:
+            return
+        if image.isNull():
+            self.preview_label.setText(f"이미지를 열 수 없습니다.\n{error}")
+            return
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.preview_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_label.setPixmap(pixmap)
+
+    def _episode_changed(self, _index: int) -> None:
+        episode = self.episode_combo.currentData()
+        if episode is None or int(episode) == int(self.result.get("episode") or 0):
+            return
+        self.owner.start_image_preview(self.result["jobId"], int(episode))
+
+    def _open_current(self) -> None:
+        if self.current_path:
+            open_in_explorer(self.current_path)
+
+
 @dataclass
 class ProcessContext:
     job: DownloadJob
@@ -663,6 +811,9 @@ class MainWindow(QMainWindow):
         self.active_contexts: dict[str, ProcessContext] = {}
         self.self_test_process: QProcess | None = None
         self.file_verify_processes: dict[str, QProcess] = {}
+        self.image_preview_processes: dict[str, QProcess] = {}
+        self.image_thread_pool = QThreadPool(self)
+        self.image_thread_pool.setMaxThreadCount(2)
         self.self_test_stdout = ""
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
@@ -678,6 +829,7 @@ class MainWindow(QMainWindow):
         self.active_detail_dialog: WorkDetailDialog | None = None
         self.active_run_log_dialog: RunLogDialog | None = None
         self.active_file_verify_dialog: FileVerificationDialog | None = None
+        self.active_image_preview_dialog: ImagePreviewDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -2237,6 +2389,76 @@ class MainWindow(QMainWindow):
         )
         self.statusBar().showMessage("작품 파일 검사가 완료되었습니다.", 3500)
 
+    def start_image_preview(
+        self, job_id: str | None = None, episode: int | None = None
+    ) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("이미지를 미리 볼 작품을 선택해주세요.")
+        if job.job_id in self.image_preview_processes:
+            return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
+        python = Path(sys.executable).with_name("python.exe")
+        arguments = [
+            str(ROOT_DIR / "toki_app.py"),
+            "preview",
+            "--job",
+            job.job_id,
+            "--limit",
+            "200",
+            "--json",
+            "--ascii-json",
+        ]
+        if episode:
+            arguments.extend(["--episode", str(int(episode))])
+        process = QProcess(self)
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(str(python if python.is_file() else Path(sys.executable)))
+        process.setArguments(arguments)
+        process.finished.connect(
+            lambda exit_code, _status, selected=job.job_id: self._image_preview_finished(
+                selected, exit_code
+            )
+        )
+        self.image_preview_processes[job.job_id] = process
+        process.start()
+        self.log("회차 이미지 목록 조회 시작(별도 프로세스)", job_id=job.job_id)
+        return {"started": True, "jobId": job.job_id, "episode": episode}
+
+    def _image_preview_finished(self, job_id: str, exit_code: int) -> None:
+        process = self.image_preview_processes.pop(job_id, None)
+        if process is None:
+            return
+        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+        process.deleteLater()
+        try:
+            result = json.loads(stdout.strip())
+        except json.JSONDecodeError:
+            message = stderr.strip() or stdout.strip() or f"종료 코드 {exit_code}"
+            self.log(f"이미지 미리보기 준비 실패: {message}", "ERROR", job_id)
+            QMessageBox.critical(self, "이미지 미리보기 실패", message)
+            return
+        if self.active_image_preview_dialog:
+            self.active_image_preview_dialog.close()
+        dialog = ImagePreviewDialog(self, result)
+        self.active_image_preview_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_image_preview_dialog", None)
+                if self.active_image_preview_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log(
+            f"이미지 미리보기 표시: {result.get('episode')}회차, "
+            f"{len(result.get('images') or [])}장",
+            job_id=job_id,
+        )
+
     def open_job_source(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         if not job:
@@ -2361,6 +2583,13 @@ class MainWindow(QMainWindow):
         )
         verify_action.setEnabled(
             bool(job.output_path) and job.job_id not in self.file_verify_processes
+        )
+        preview_action = menu.addAction(
+            "회차 이미지 미리보기",
+            lambda: self.start_image_preview(job.job_id),
+        )
+        preview_action.setEnabled(
+            bool(job.output_path) and job.job_id not in self.image_preview_processes
         )
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
@@ -2619,6 +2848,11 @@ class MainWindow(QMainWindow):
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         if (
+            self.active_image_preview_dialog
+            and self.active_image_preview_dialog.isVisible()
+        ):
+            screenshot = self.active_image_preview_dialog.grab()
+        elif (
             self.active_file_verify_dialog
             and self.active_file_verify_dialog.isVisible()
         ):
@@ -2740,6 +2974,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd rebuild-metadata --job ID --dry-run --json\n"
             "toki-cli.cmd rebuild-metadata --job ID --execute --yes --json\n"
             "toki-cli.cmd verify-files --job ID [--json|--show-gui]\n"
+            "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -2813,6 +3048,7 @@ class MainWindow(QMainWindow):
                 and self.self_test_process.state() != QProcess.ProcessState.NotRunning
             ),
             "fileVerificationJobs": sorted(self.file_verify_processes),
+            "imagePreviewJobs": sorted(self.image_preview_processes),
             "lastSelfTest": self.last_self_test,
             "listFilter": {
                 "query": self.history_query,
@@ -2976,6 +3212,12 @@ class MainWindow(QMainWindow):
             )
         if action == "verify_files":
             return self.start_file_verification(str(request.get("jobId") or ""))
+        if action == "preview_images":
+            episode = request.get("episode")
+            return self.start_image_preview(
+                str(request.get("jobId") or ""),
+                int(episode) if episode is not None else None,
+            )
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}
         if action == "open_cover":
