@@ -11,6 +11,31 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_diagnostics_export_cli_supports_direct_and_gui_contracts(self) -> None:
+        direct_args = build_parser().parse_args(
+            ["diagnostics", "export", "--output", "bundle.zip", "--json"]
+        )
+        result = {"ok": True, "path": "bundle.zip", "bytes": 100, "files": []}
+        with (
+            patch("toki_app.export_diagnostics", return_value=result) as service,
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(direct_args), 0)
+        service.assert_called_once_with(Path("bundle.zip"))
+        self.assertEqual(json.loads(output.getvalue())["path"], "bundle.zip")
+
+        gui_args = build_parser().parse_args(
+            ["diagnostics", "export", "--via-gui", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running") as ensure_gui,
+            patch("toki_app.control_request", return_value=result) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(gui_args), 0)
+        ensure_gui.assert_called_once_with()
+        request.assert_called_once_with({"action": "export_diagnostics", "output": ""})
+
     def test_migrate_cli_reports_and_applies_shared_schema_services(self) -> None:
         status_args = build_parser().parse_args(["migrate", "status", "--json"])
         schema = {"ok": True, "version": 1, "currentVersion": 2}

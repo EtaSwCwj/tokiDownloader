@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
@@ -1990,6 +1991,131 @@ def job_database_diagnostics(database_path: Path | None = None) -> dict[str, Any
         "missingIndexes": missing_indexes,
         "indexes": indexes,
         "queries": query_plans,
+    }
+
+
+def _redact_diagnostic_value(
+    value: Any, sensitive_paths: tuple[str, ...] | None = None
+) -> Any:
+    paths = sensitive_paths or (str(ROOT_DIR.resolve()), str(Path.home().resolve()))
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_diagnostic_value(item, paths) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_diagnostic_value(item, paths) for item in value]
+    if not isinstance(value, str):
+        return value
+    redacted = value
+    replacements = tuple(
+        (source, "<APP_ROOT>" if index == 0 else "<PRIVATE_PATH>")
+        for index, source in enumerate(paths)
+    )
+    for source, replacement in replacements:
+        if source:
+            redacted = re.sub(re.escape(source), replacement, redacted, flags=re.IGNORECASE)
+            redacted = re.sub(
+                re.escape(source.replace("\\", "/")),
+                replacement,
+                redacted,
+                flags=re.IGNORECASE,
+            )
+    redacted = re.sub(r"https?://[^\s\"']+", "<URL>", redacted)
+    redacted = re.sub(
+        r"(\[[A-Z]+\]) \[[^\]]+\]", r"\1 [<JOB>]", redacted
+    )
+    redacted = re.sub(
+        r"\b(?:manatoki|newtoki|booktoki):\d+\b",
+        "<WORK_ID>",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    return redacted
+
+
+def export_diagnostics(output_path: Path | None = None) -> dict[str, Any]:
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    target = (
+        Path(output_path).expanduser().resolve()
+        if output_path is not None
+        else (LOG_DIR / f"toki-diagnostics-{timestamp}.zip").resolve()
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    settings = settings_snapshot()
+    sensitive_paths = tuple(
+        dict.fromkeys(
+            (
+                str(ROOT_DIR.resolve()),
+                str(Path.home().resolve()),
+                str(Path(str(settings.get("outputDir") or ROOT_DIR)).expanduser().resolve()),
+            )
+        )
+    )
+    settings["outputDir"] = "<REDACTED>"
+    self_test_summary: dict[str, Any] | None = None
+    self_test_path = LOG_DIR / "self-test.json"
+    if self_test_path.is_file():
+        try:
+            self_test = json.loads(self_test_path.read_text(encoding="utf-8"))
+            self_test_summary = {
+                "ok": bool(self_test.get("ok")),
+                "startedAt": self_test.get("startedAt"),
+                "durationMs": self_test.get("durationMs"),
+                "summary": self_test.get("summary"),
+                "checks": [
+                    {
+                        "name": item.get("name"),
+                        "ok": item.get("ok"),
+                        "durationMs": item.get("duration_ms"),
+                        "detail": item.get("detail"),
+                    }
+                    for item in self_test.get("checks") or []
+                ],
+            }
+        except (OSError, json.JSONDecodeError):
+            self_test_summary = None
+    report = _redact_diagnostic_value(
+        {
+            "formatVersion": 1,
+            "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "dependencies": dependency_diagnostics(),
+            "schemas": {
+                "config": config_schema_status(),
+                "database": database_schema_status(),
+            },
+            "database": job_database_diagnostics(),
+            "resources": resource_budget(),
+            "retention": log_retention_status(),
+            "settings": settings,
+            "selfTest": self_test_summary,
+        },
+        sensitive_paths,
+    )
+    log_text = "\n".join(
+        str(_redact_diagnostic_value(line, sensitive_paths))
+        for line in read_log_tail(1_000)
+    )
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with zipfile.ZipFile(
+        temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+    ) as archive:
+        archive.writestr(
+            "diagnostics.json",
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
+        archive.writestr("recent-gui.log.txt", log_text + ("\n" if log_text else ""))
+        archive.writestr(
+            "README.txt",
+            "This bundle excludes config files, databases, cookies, and downloaded files.\n"
+            "Application paths, the user home path, outputDir, and HTTP(S) URLs are redacted.\n",
+        )
+    os.replace(temporary, target)
+    return {
+        "ok": True,
+        "path": str(target),
+        "bytes": target.stat().st_size,
+        "files": ["diagnostics.json", "recent-gui.log.txt", "README.txt"],
+        "redacted": ["appRoot", "userHome", "outputDir", "httpUrls"],
     }
 
 

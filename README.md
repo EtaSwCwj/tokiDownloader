@@ -170,6 +170,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd doctor --show-gui --json
 .\toki-cli.cmd migrate status --json
 .\toki-cli.cmd migrate apply --json
+.\toki-cli.cmd diagnostics export --json
+.\toki-cli.cmd diagnostics export --output "D:\Reports\toki-diagnostics.zip" --via-gui --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -246,6 +248,11 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 DB 백업 절차를 거칩니다. 업데이트 전에는 GUI를 종료하고 두 백업 파일과 다운로드 폴더를
 별도 위치에 보관한 뒤 `setup-gui.cmd`, `migrate apply`, `self-test --core-only` 순서로
 검증하세요.
+
+`diagnostics export`는 오류 보고에 필요한 의존성, 스키마, DB 쿼리 계획, 자원·보존 정책,
+안전한 설정 요약과 최근 로그를 ZIP으로 만듭니다. `config.json`, `jobs.db`, 쿠키와 다운로드
+파일은 포함하지 않으며 앱 경로·사용자 홈·저장 폴더·URL·작업 ID·작품 키를 치환합니다.
+도구 메뉴의 `오류 보고용 진단 묶음 내보내기`와 `--via-gui`도 같은 서비스를 사용합니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

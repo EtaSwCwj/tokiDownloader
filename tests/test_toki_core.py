@@ -7,6 +7,7 @@ import os
 import sqlite3
 import time
 import unittest
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -30,6 +31,7 @@ from toki_core import (
     delete_job_record,
     delete_job_records,
     downloader_event_update_policy,
+    export_diagnostics,
     hydrate_job_metadata,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
@@ -81,6 +83,34 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_diagnostics_bundle_excludes_user_data_and_redacts_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "diagnostics.zip"
+
+            result = export_diagnostics(target)
+
+            self.assertTrue(result["ok"])
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(
+                    set(archive.namelist()),
+                    {"diagnostics.json", "recent-gui.log.txt", "README.txt"},
+                )
+                combined = "\n".join(
+                    archive.read(name).decode("utf-8") for name in archive.namelist()
+                )
+            self.assertNotIn(str(ROOT_DIR), combined)
+            self.assertNotIn(str(Path.home()), combined)
+            self.assertNotIn("https://", combined)
+            self.assertIn('"outputDir": "<REDACTED>"', combined)
+            sample = toki_core._redact_diagnostic_value(
+                "[INFO] [abc123] D:\\Private Manga\\title manatoki:34360 https://example.com",
+                (str(ROOT_DIR), str(Path.home()), r"D:\Private Manga"),
+            )
+            self.assertEqual(
+                sample,
+                "[INFO] [<JOB>] <PRIVATE_PATH>\\title <WORK_ID> <URL>",
+            )
+
     def test_config_schema_migration_backs_up_and_preserves_unknown_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "config.json"

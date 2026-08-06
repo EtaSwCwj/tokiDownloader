@@ -504,7 +504,7 @@ SQLite `integrity_check`, 복구 ID, 임시 DB 제거와 메모리 변화를 JSO
 - [x] 개발자용 재현 가능한 설치 스크립트 정리
 - [ ] PyInstaller GUI 실행 파일과 Node/Puppeteer 런타임 묶음 검토
 - [x] 업데이트 및 데이터베이스 마이그레이션 절차
-- [ ] 오류 보고용 진단 정보 내보내기
+- [x] 오류 보고용 진단 정보 내보내기
 - [ ] README의 GUI/CLI 명령과 실제 `--help` 일치 확인
 - [ ] 릴리스 체크리스트와 버전 규칙
 
@@ -528,6 +528,12 @@ CMD 전달 경로를 통과했으며 Python 110건을 통과했다.
 GUI에도 설정·DB 현재/지원 버전을 표시한다. 실제 설정 v0→v1, DB v0→v2를 적용한 뒤 작품
 2개가 유지되고 `config.json.pre-v1.bak`, `jobs.db.pre-v2.bak`과 이력 1·2를 확인했다.
 레거시 DB·설정 백업과 미래 버전 무변경 거부 테스트를 포함해 Python 113건을 통과했다.
+
+2026-08-07 오류 보고 진단 묶음: `diagnostics export`와 도구 메뉴가 공용 서비스로
+`diagnostics.json`, 최근 로그, 포함 범위 안내문만 ZIP에 저장한다. 원본 설정·DB·쿠키·다운로드
+파일은 포함하지 않고 앱 루트, 사용자 홈, 별도 저장 폴더, HTTP URL, 작업 ID와 작품 키를
+치환한다. 실제 `logs/diagnostics-gui.zip`을 다시 열어 세 파일만 존재하고 실제 앱/홈 경로와
+URL이 0건임을 검사했다. 직접/GUI CLI 계약과 치환 테스트를 포함해 Python 116건을 통과했다.
 
 완료 조건:
 

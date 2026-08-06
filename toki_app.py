@@ -42,6 +42,7 @@ from toki_core import (
     database_schema_status,
     downloader_event_update_policy,
     error_category_label,
+    export_diagnostics,
     load_config,
     load_job_by_id,
     load_jobs_page,
@@ -365,6 +366,18 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_status.add_argument("--json", action="store_true", help="JSON으로 출력")
     migrate_apply = migrate_commands.add_parser("apply", help="백업 후 최신 스키마 적용")
     migrate_apply.add_argument("--json", action="store_true", help="JSON으로 출력")
+    diagnostics = subparsers.add_parser("diagnostics", help="민감정보 제거 진단 묶음")
+    diagnostics_commands = diagnostics.add_subparsers(
+        dest="diagnostics_command", required=True
+    )
+    diagnostics_export = diagnostics_commands.add_parser(
+        "export", help="진단 JSON과 최근 로그를 ZIP으로 내보내기"
+    )
+    diagnostics_export.add_argument("--output", help="저장할 ZIP 경로")
+    diagnostics_export.add_argument("--json", action="store_true", help="JSON으로 출력")
+    diagnostics_export.add_argument(
+        "--via-gui", action="store_true", help="GUI 도구 메뉴와 같은 경로로 실행"
+    )
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -932,6 +945,19 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"{result['database'].get('after', result['database']).get('currentVersion', 0)}"
             )
         return 0 if result["ok"] else 2
+    if command == "diagnostics":
+        if args.via_gui:
+            ensure_gui_running()
+            result = control_request(
+                {"action": "export_diagnostics", "output": args.output or ""}
+            )
+        else:
+            result = export_diagnostics(Path(args.output) if args.output else None)
+        if args.json or args.via_gui:
+            print_json(result)
+        else:
+            print(f"진단 묶음: {result['path']} ({int(result['bytes']):,} bytes)")
+        return 0 if result.get("ok") else 2
     if command == "shortcuts":
         if args.show_gui or args.close:
             ensure_gui_running()

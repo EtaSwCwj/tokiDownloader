@@ -110,6 +110,7 @@ from toki_core import (
     dependency_diagnostics,
     downloader_event_update_policy,
     error_category_label,
+    export_diagnostics,
     find_node,
     hydrate_job_metadata,
     job_database_diagnostics,
@@ -1888,6 +1889,11 @@ class MainWindow(QMainWindow):
         self.doctor_action = QAction("설치 및 선택 기능 진단...", self)
         self.doctor_action.triggered.connect(self.show_dependency_diagnostics)
 
+        self.export_diagnostics_action = QAction("오류 보고용 진단 묶음 내보내기", self)
+        self.export_diagnostics_action.triggered.connect(
+            lambda: self.export_diagnostic_bundle()
+        )
+
         self.performance_action = QAction("목록 성능 진단...", self)
         self.performance_action.triggered.connect(self.show_performance_diagnostics)
 
@@ -1982,6 +1988,7 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(self.screenshot_action)
         tools_menu.addAction(self.doctor_action)
+        tools_menu.addAction(self.export_diagnostics_action)
         tools_menu.addAction(self.self_test_action)
         tools_menu.addAction(self.performance_action)
         tools_menu.addAction(self.clear_log_action)
@@ -5252,6 +5259,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd performance resources --json\n"
             "toki-cli.cmd performance event-policy --event EVENT --json\n"
             "toki-cli.cmd doctor [--json|--show-gui|--close]\n"
+            "toki-cli.cmd diagnostics export [--output PATH --json|--via-gui]\n"
             "toki-cli.cmd thumbnail-cache status|cleanup [--execute --json]\n"
             "toki-cli.cmd retention status|cleanup-runs [--execute --json]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
@@ -5316,6 +5324,13 @@ class MainWindow(QMainWindow):
             return False
         self.active_doctor_dialog.close()
         return True
+
+    def export_diagnostic_bundle(self, output: str = "") -> dict[str, Any]:
+        result = export_diagnostics(Path(output) if output else None)
+        message = f"진단 묶음 저장: {result['path']}"
+        self.log(message)
+        self.statusBar().showMessage(message, 8000)
+        return result
 
     def show_performance_diagnostics(self) -> dict[str, Any]:
         report = job_database_diagnostics()
@@ -5795,6 +5810,8 @@ class MainWindow(QMainWindow):
             return {"shown": True, "report": self.show_dependency_diagnostics()}
         if action == "close_doctor":
             return {"closed": self.close_dependency_diagnostics()}
+        if action == "export_diagnostics":
+            return self.export_diagnostic_bundle(str(request.get("output") or ""))
         if action == "start_stability_test":
             if self.active_performance_dialog is None:
                 self.show_performance_diagnostics()

@@ -105,6 +105,21 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_diagnostics_ipc_action_passes_output_path(self) -> None:
+        harness = type("DiagnosticsIpcHarness", (), {})()
+        harness.export_diagnostic_bundle = lambda output: {
+            "ok": True,
+            "path": output,
+        }
+
+        result = MainWindow._handle_control_action(
+            harness,
+            {"action": "export_diagnostics", "output": "bundle.zip"},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["path"], "bundle.zip")
+
     def test_doctor_ipc_actions_share_gui_dialog_contract(self) -> None:
         harness = type("DoctorIpcHarness", (), {})()
         harness.show_dependency_diagnostics = lambda: {"ok": True, "checks": []}
