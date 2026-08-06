@@ -493,25 +493,21 @@ def settings_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     return {key: source[key] for key in sorted(SETTING_KEYS)}
 
 
-def update_app_settings(
-    updates: dict[str, Any], *, reset: bool = False
+def validate_app_setting_updates(
+    updates: dict[str, Any], *, create_output_dir: bool = False
 ) -> dict[str, Any]:
     unknown = sorted(set(updates) - SETTING_KEYS)
     if unknown:
         raise ValueError(f"지원하지 않는 설정입니다: {', '.join(unknown)}")
-    current = load_config()
-    if reset:
-        window = current.get("window")
-        current.update(default_config())
-        if isinstance(window, dict):
-            current["window"] = window
+    validated: dict[str, Any] = {}
     if "outputDir" in updates:
         raw_output = str(updates["outputDir"] or "").strip()
         if not raw_output:
             raise ValueError("저장 폴더 경로를 입력해주세요.")
         output_path = Path(raw_output).expanduser().resolve()
-        output_path.mkdir(parents=True, exist_ok=True)
-        current["outputDir"] = str(output_path)
+        if create_output_dir:
+            output_path.mkdir(parents=True, exist_ok=True)
+        validated["outputDir"] = str(output_path)
     for key in (
         "logVisible",
         "showBrowser",
@@ -524,7 +520,7 @@ def update_app_settings(
         if key in updates:
             if not isinstance(updates[key], bool):
                 raise ValueError(f"{key} 설정은 true 또는 false여야 합니다.")
-            current[key] = updates[key]
+            validated[key] = updates[key]
     normalizers: dict[str, Callable[[Any], Any]] = {
         "workConcurrency": normalize_work_concurrency,
         "imageConcurrency": normalize_image_concurrency,
@@ -537,9 +533,98 @@ def update_app_settings(
     }
     for key, normalizer in normalizers.items():
         if key in updates:
-            current[key] = normalizer(updates[key])
+            validated[key] = normalizer(updates[key])
+    return validated
+
+
+def update_app_settings(
+    updates: dict[str, Any], *, reset: bool = False
+) -> dict[str, Any]:
+    validated = validate_app_setting_updates(updates, create_output_dir=True)
+    current = load_config()
+    if reset:
+        window = current.get("window")
+        current.update(default_config())
+        if isinstance(window, dict):
+            current["window"] = window
+    current.update(validated)
     save_config(current)
     return settings_snapshot(current)
+
+
+def export_app_settings(output_path: Path) -> dict[str, Any]:
+    target = Path(output_path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format": "tokiDownloader-settings",
+        "formatVersion": 1,
+        "appVersion": APP_VERSION,
+        "configVersion": CONFIG_SCHEMA_VERSION,
+        "settings": settings_snapshot(),
+    }
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, target)
+    return {
+        "ok": True,
+        "path": str(target),
+        "bytes": target.stat().st_size,
+        "settings": payload["settings"],
+    }
+
+
+def import_app_settings(input_path: Path, *, execute: bool = False) -> dict[str, Any]:
+    source = Path(input_path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"설정 가져오기 파일이 없습니다: {source}")
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("설정 가져오기 파일은 JSON 객체여야 합니다.")
+    raw_settings = payload.get("settings", payload)
+    if not isinstance(raw_settings, dict):
+        raise ValueError("settings 항목은 JSON 객체여야 합니다.")
+    validated = validate_app_setting_updates(raw_settings)
+    before = settings_snapshot()
+    proposed_config = load_config()
+    proposed_config.update(validated)
+    proposed = settings_snapshot(normalize_config(proposed_config))
+    changed = sorted(key for key in SETTING_KEYS if before[key] != proposed[key])
+    backup_path = ""
+    applied = before
+    if execute:
+        if CONFIG_PATH.is_file():
+            timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+            backup = CONFIG_PATH.with_suffix(
+                CONFIG_PATH.suffix + f".before-import-{timestamp}.bak"
+            )
+            shutil.copy2(CONFIG_PATH, backup)
+            backup_path = str(backup.resolve())
+        applied = update_app_settings(raw_settings)
+    return {
+        "ok": True,
+        "executed": execute,
+        "path": str(source),
+        "changedKeys": changed,
+        "before": before,
+        "after": applied if execute else proposed,
+        "backupPath": backup_path,
+    }
+
+
+def reset_app_settings(*, execute: bool = False) -> dict[str, Any]:
+    before = settings_snapshot()
+    defaults = settings_snapshot(default_config())
+    changed = sorted(key for key in SETTING_KEYS if before[key] != defaults[key])
+    after = update_app_settings({}, reset=True) if execute else defaults
+    return {
+        "ok": True,
+        "executed": execute,
+        "changedKeys": changed,
+        "before": before,
+        "after": after,
+    }
 
 
 def append_log(message: str, level: str = "INFO", job_id: str = "-") -> str:

@@ -22,6 +22,7 @@ from toki_core import (
     apply_database_migrations,
     CONTROL_SERVER_NAME,
     ROOT_DIR,
+    SETTING_KEYS,
     DownloadJob,
     append_log,
     build_job_list_view_state,
@@ -44,7 +45,9 @@ from toki_core import (
     downloader_event_update_policy,
     error_category_label,
     export_diagnostics,
+    export_app_settings,
     load_config,
+    import_app_settings,
     load_job_by_id,
     load_jobs_page,
     log_retention_status,
@@ -67,6 +70,7 @@ from toki_core import (
     rebuild_job_metadata,
     resolve_cover_path,
     resource_budget,
+    reset_app_settings,
     retry_backoff_seconds,
     run_job_database_benchmark,
     run_stability_recovery_test,
@@ -380,6 +384,29 @@ def build_parser() -> argparse.ArgumentParser:
     diagnostics_export.add_argument(
         "--via-gui", action="store_true", help="GUI 도구 메뉴와 같은 경로로 실행"
     )
+    config_parser = subparsers.add_parser(
+        "config", help="설정 조회·변경·내보내기·가져오기"
+    )
+    config_commands = config_parser.add_subparsers(dest="config_command", required=True)
+    config_get = config_commands.add_parser("get", help="전체 설정 또는 한 항목 조회")
+    config_get.add_argument("--key", choices=tuple(sorted(SETTING_KEYS)))
+    config_get.add_argument("--json", action="store_true", help="JSON으로 출력")
+    config_set = config_commands.add_parser("set", help="한 설정 항목 변경")
+    config_set.add_argument("--key", required=True, choices=tuple(sorted(SETTING_KEYS)))
+    config_set.add_argument("--value", required=True, help="문자열 또는 JSON 값")
+    config_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    config_export = config_commands.add_parser("export", help="설정을 JSON 파일로 내보내기")
+    config_export.add_argument("--output", required=True, help="저장할 JSON 경로")
+    config_export.add_argument("--json", action="store_true", help="JSON으로 출력")
+    config_import = config_commands.add_parser("import", help="설정 JSON 미리보기 또는 적용")
+    config_import.add_argument("--input", required=True, help="가져올 JSON 경로")
+    config_import.add_argument("--execute", action="store_true", help="실제로 적용")
+    config_import.add_argument("--yes", action="store_true", help="적용 확인")
+    config_import.add_argument("--json", action="store_true", help="JSON으로 출력")
+    config_reset = config_commands.add_parser("reset", help="기본 설정 미리보기 또는 적용")
+    config_reset.add_argument("--execute", action="store_true", help="실제로 초기화")
+    config_reset.add_argument("--yes", action="store_true", help="초기화 확인")
+    config_reset.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -689,13 +716,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     settings = subparsers.add_parser("settings", help="전체 일반 설정 조회")
     settings.add_argument("--json", action="store_true", help="JSON으로 출력")
-    settings.add_argument("--show-gui", action="store_true", help="GUI 설정 창 표시")
+    settings_window = settings.add_mutually_exclusive_group()
+    settings_window.add_argument("--show-gui", action="store_true", help="GUI 설정 창 표시")
+    settings_window.add_argument("--close", action="store_true", help="GUI 설정 창 닫기")
     settings.add_argument(
         "--tab",
-        choices=("general", "network", "display", "advanced"),
+        choices=("general", "network", "display", "advanced", "provider"),
         default="general",
         help="GUI에서 처음 표시할 설정 탭",
     )
+    settings.add_argument("--search", default="", help="설정 창에서 검색할 문구")
 
     set_settings = subparsers.add_parser("set-settings", help="일반 설정 일괄 변경")
     set_settings.add_argument("--output", help="기본 저장 폴더")
@@ -959,6 +989,62 @@ def run_cli(args: argparse.Namespace) -> int:
             print_json(result)
         else:
             print(f"진단 묶음: {result['path']} ({int(result['bytes']):,} bytes)")
+        return 0 if result.get("ok") else 2
+    if command == "config":
+        if args.config_command == "get":
+            settings = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            result = {
+                "ok": True,
+                "key": args.key or "",
+                "value": settings[args.key] if args.key else settings,
+            }
+        elif args.config_command == "set":
+            try:
+                value = json.loads(args.value)
+            except json.JSONDecodeError:
+                value = args.value
+            updated = (
+                control_request(
+                    {"action": "set_settings", "updates": {args.key: value}, "reset": False}
+                )
+                if gui_is_running()
+                else update_app_settings({args.key: value})
+            )
+            result = {"ok": True, "key": args.key, "value": updated[args.key]}
+        elif args.config_command == "export":
+            result = export_app_settings(Path(args.output))
+        elif args.config_command == "import":
+            if args.execute and not args.yes:
+                raise ValueError("설정을 적용하려면 --execute --yes를 함께 지정하세요.")
+            result = (
+                control_request(
+                    {
+                        "action": "import_settings",
+                        "input": args.input,
+                        "execute": True,
+                    }
+                )
+                if args.execute and gui_is_running()
+                else import_app_settings(Path(args.input), execute=bool(args.execute))
+            )
+        else:
+            if args.execute and not args.yes:
+                raise ValueError("설정을 초기화하려면 --execute --yes를 함께 지정하세요.")
+            result = (
+                control_request({"action": "reset_settings", "execute": True})
+                if args.execute and gui_is_running()
+                else reset_app_settings(execute=bool(args.execute))
+            )
+        if args.json:
+            print_json(result)
+        elif args.config_command == "get" and args.key:
+            print(result["value"])
+        else:
+            print_json(result)
         return 0 if result.get("ok") else 2
     if command == "shortcuts":
         if args.show_gui or args.close:
@@ -1831,9 +1917,18 @@ def run_cli(args: argparse.Namespace) -> int:
         print_json(result)
         return 0 if result.get("cancelled") else 2
     if command == "settings":
-        if args.show_gui:
+        if args.show_gui or args.close:
             ensure_gui_running()
-            result = control_request({"action": "show_settings", "tab": args.tab})
+            if args.close:
+                result = control_request({"action": "close_settings"})
+            else:
+                result = control_request(
+                    {
+                        "action": "show_settings",
+                        "tab": args.tab,
+                        "search": args.search,
+                    }
+                )
             print_json(result)
             return 0
         result = (

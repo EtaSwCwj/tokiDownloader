@@ -77,6 +77,14 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd gui
 .\toki-cli.cmd show
 .\toki-cli.cmd --version
+.\toki-cli.cmd config get --json
+.\toki-cli.cmd config get --key theme --json
+.\toki-cli.cmd config set --key theme --value dark --json
+.\toki-cli.cmd config export --output "D:\Backup\toki-settings.json" --json
+.\toki-cli.cmd config import --input "D:\Backup\toki-settings.json" --json
+.\toki-cli.cmd config import --input "D:\Backup\toki-settings.json" --execute --yes --json
+.\toki-cli.cmd config reset --json
+.\toki-cli.cmd config reset --execute --yes --json
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
@@ -126,6 +134,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd set-retry-policy --count 2 --backoff 2
 .\toki-cli.cmd settings --json
 .\toki-cli.cmd settings --show-gui --tab network
+.\toki-cli.cmd settings --show-gui --tab provider --search yt-dlp
+.\toki-cli.cmd settings --close
 .\toki-cli.cmd set-settings --works 2 --images 8 --retry-count 2 --retry-backoff 2
 .\toki-cli.cmd set-settings --show-browser off --log-visible on --log-max-mib 2 --log-backups 1
 .\toki-cli.cmd set-settings --row-density compact
@@ -266,13 +276,19 @@ DB 백업 절차를 거칩니다. 업데이트 전에는 GUI를 종료하고 두
 목록 행의 왼쪽에 색상 표시를 추가합니다. 같은 기능은 작품 우클릭 메뉴에서도 사용할 수
 있습니다.
 
-`도구 → 설정...` 또는 `settings --show-gui`는 일반·네트워크·고급 탭을 엽니다.
+`도구 → 설정...` 또는 `settings --show-gui`는 일반·네트워크·디스플레이·고급·공급자 탭을 엽니다.
 기본 저장 폴더, 자동화 브라우저 표시, 로그 패널, 작품/이미지 동시성, 재시도 정책과
-로그 순환 크기·백업 수를 한 화면에서 바꿀 수 있습니다. 같은 값은 `settings --json`으로
+로그 순환 크기·백업 수를 한 화면에서 바꿀 수 있습니다. 검색란은 관련 설정 페이지만 남기며
+`--search`로 같은 검색을 CLI에서 재현할 수 있습니다. `적용`은 창을 유지하고 값을 저장하고,
+`저장 후 닫기`, `취소`, `기본값`은 각각 CLI의 설정 변경, `settings --close`, `config reset`
+계약에 대응합니다. 같은 값은 `settings --json`으로
 조회하고 `set-settings`로 변경할 수 있으며 `status --json`의 `settings`에도 포함됩니다.
 설정 파일의 잘못된 타입이나 범위 값은 시작할 때 안전한 기본값으로 정규화되고 저장은
 임시 파일을 거친 원자 교체로 처리됩니다. GUI 로그는 설정한 최대 크기를 넘으면
 `gui.log.1`, `gui.log.2` 순서로 지정 개수만큼 순환 보존합니다.
+`config import`와 `config reset`은 기본적으로 변경 예정만 보여줍니다. 실제 반영에는
+`--execute --yes`가 모두 필요하며, 가져오기 전 기존 설정은 타임스탬프 백업으로 보존됩니다.
+GUI 실행 중 CLI로 설정을 바꾸거나 가져오면 현재 창에도 즉시 반영됩니다.
 디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
 높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density
 compact|comfortable`로 같은 선택을 즉시 적용할 수 있습니다.

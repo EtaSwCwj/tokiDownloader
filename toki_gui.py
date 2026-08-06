@@ -114,6 +114,7 @@ from toki_core import (
     export_diagnostics,
     find_node,
     hydrate_job_metadata,
+    import_app_settings,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
@@ -144,6 +145,7 @@ from toki_core import (
     rescan_job_parameters,
     resource_admission,
     resource_budget,
+    reset_app_settings,
     resolve_cover_path,
     reorder_pending_jobs,
     save_config,
@@ -1261,6 +1263,15 @@ class ImagePreviewDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
+    TAB_KEYS = ("general", "network", "display", "advanced", "provider")
+    TAB_SEARCH_TERMS = (
+        "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화",
+        "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
+        "디스플레이 화면 테마 밝게 어둡게 목록 밀도 표지 진행률",
+        "고급 로그 파일 크기 보존 순환 기록",
+        "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
+    )
+
     def __init__(self, owner: "MainWindow") -> None:
         super().__init__(owner)
         self.owner = owner
@@ -1270,6 +1281,14 @@ class SettingsDialog(QDialog):
         heading = QLabel("tokiDownloader 설정")
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("설정 검색 (예: 테마, 재시도, 공급자)")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._filter_tabs)
+        layout.addWidget(self.search_edit)
+        self.search_status = QLabel("")
+        self.search_status.setObjectName("mutedLabel")
+        layout.addWidget(self.search_status)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
 
@@ -1371,23 +1390,95 @@ class SettingsDialog(QDialog):
         advanced_form.addRow("", advanced_note)
         self.tabs.addTab(advanced_page, "고급")
 
+        provider_page = QWidget()
+        provider_page.setObjectName("settingsPage")
+        provider_form = QFormLayout(provider_page)
+        toki_status = QLabel("사용 가능 · Newtoki / Manatoki / Booktoki 내장")
+        toki_status.setWordWrap(True)
+        provider_form.addRow("Toki", toki_status)
+        hitomi_status = QLabel("선택 기능 · 아직 설치되지 않음")
+        hitomi_status.setWordWrap(True)
+        provider_form.addRow("Hitomi / ExHentai", hitomi_status)
+        youtube_status = QLabel("선택 기능 · yt-dlp와 FFmpeg 상태는 진단에서 확인")
+        youtube_status.setWordWrap(True)
+        provider_form.addRow("YouTube", youtube_status)
+        dependency_button = QPushButton("의존성 진단 열기")
+        dependency_button.clicked.connect(owner.show_dependency_diagnostics)
+        provider_form.addRow("설치 상태", dependency_button)
+        provider_note = QLabel(
+            "선택 공급자는 기본 다운로드와 분리됩니다. 설치되지 않아도 Toki 기능은 정상 작동합니다."
+        )
+        provider_note.setObjectName("mutedLabel")
+        provider_note.setWordWrap(True)
+        provider_form.addRow("", provider_note)
+        self.tabs.addTab(provider_page, "공급자")
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Apply
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.RestoreDefaults
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("저장")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("저장 후 닫기")
+        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("적용")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
         buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).setText(
             "기본값"
         )
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
+            self._apply_without_closing
+        )
         buttons.button(
             QDialogButtonBox.StandardButton.RestoreDefaults
         ).clicked.connect(self._load_defaults)
         layout.addWidget(buttons)
         self._load_values(settings_snapshot(owner.config))
+
+    def set_search_query(self, query: str) -> None:
+        self.search_edit.setText(str(query or ""))
+
+    @classmethod
+    def matching_tab_indexes(cls, query: str) -> list[int]:
+        words = [word.casefold() for word in str(query).split() if word.strip()]
+        if not words:
+            return list(range(len(cls.TAB_KEYS)))
+        return [
+            index
+            for index, terms in enumerate(cls.TAB_SEARCH_TERMS)
+            if all(word in terms.casefold() for word in words)
+        ]
+
+    def _filter_tabs(self, query: str) -> None:
+        words = [word for word in str(query).split() if word.strip()]
+        matches = self.matching_tab_indexes(query)
+        for index in range(self.tabs.count()):
+            visible = index in matches
+            self.tabs.setTabVisible(index, visible)
+        if words and not matches:
+            for index in range(self.tabs.count()):
+                self.tabs.setTabVisible(index, True)
+            self.search_status.setText("검색 결과가 없어 전체 설정을 표시합니다.")
+            return
+        self.search_status.setText(
+            f"검색 결과: {len(matches)}개 페이지" if words else ""
+        )
+        if matches and self.tabs.currentIndex() not in matches:
+            self.tabs.setCurrentIndex(matches[0])
+
+    def state_snapshot(self) -> dict[str, Any]:
+        index = self.tabs.currentIndex()
+        return {
+            "open": self.isVisible(),
+            "tab": self.TAB_KEYS[index] if 0 <= index < len(self.TAB_KEYS) else "",
+            "search": self.search_edit.text(),
+            "visibleTabs": [
+                self.TAB_KEYS[index]
+                for index in range(self.tabs.count())
+                if self.tabs.isTabVisible(index)
+            ],
+        }
 
     def _load_values(self, values: dict[str, Any]) -> None:
         self.output_edit.setText(str(values["outputDir"]))
@@ -1422,8 +1513,8 @@ class SettingsDialog(QDialog):
         if selected:
             self.output_edit.setText(selected)
 
-    def _save(self) -> None:
-        updates = {
+    def _collect_updates(self) -> dict[str, Any]:
+        return {
             "outputDir": self.output_edit.text(),
             "showBrowser": self.show_browser_check.isChecked(),
             "logVisible": self.log_visible_check.isChecked(),
@@ -1441,12 +1532,22 @@ class SettingsDialog(QDialog):
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
         }
+
+    def _apply(self, *, close_after: bool) -> None:
         try:
-            self.owner.apply_settings(updates)
+            self.owner.apply_settings(self._collect_updates())
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "설정을 저장할 수 없음", str(error))
             return
-        self.accept()
+        self.search_status.setText("설정을 적용했습니다.")
+        if close_after:
+            self.accept()
+
+    def _save(self) -> None:
+        self._apply(close_after=True)
+
+    def _apply_without_closing(self) -> None:
+        self._apply(close_after=False)
 
 
 class ImageConversionDialog(QDialog):
@@ -3593,7 +3694,7 @@ class MainWindow(QMainWindow):
         if selected:
             self.set_output_folder(selected)
 
-    def show_settings_dialog(self, tab: str = "general") -> bool:
+    def show_settings_dialog(self, tab: str = "general", search: str = "") -> bool:
         if self.active_settings_dialog:
             self.active_settings_dialog.close()
         dialog = SettingsDialog(self)
@@ -3602,8 +3703,10 @@ class MainWindow(QMainWindow):
             "network": 1,
             "display": 2,
             "advanced": 3,
+            "provider": 4,
         }.get(str(tab), 0)
         dialog.tabs.setCurrentIndex(tab_index)
+        dialog.set_search_query(search)
         self.active_settings_dialog = dialog
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.destroyed.connect(
@@ -3617,6 +3720,12 @@ class MainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         self.log("설정 창 표시")
+        return True
+
+    def close_settings_dialog(self) -> bool:
+        if not self.active_settings_dialog:
+            return False
+        self.active_settings_dialog.close()
         return True
 
     def apply_settings(
@@ -5240,7 +5349,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-concurrency [--works 1~4] [--images 1~16]\n"
             "toki-cli.cmd retry-policy [--json]\n"
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
-            "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced]\n"
+            "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced|provider --search TEXT|--close]\n"
+            "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
@@ -5441,6 +5551,11 @@ class MainWindow(QMainWindow):
             ),
             "doctorOpen": bool(
                 self.active_doctor_dialog and self.active_doctor_dialog.isVisible()
+            ),
+            "settingsDialog": (
+                self.active_settings_dialog.state_snapshot()
+                if self.active_settings_dialog
+                else {"open": False, "tab": "", "search": "", "visibleTabs": []}
             ),
             "window": {
                 **self.window_snapshot(),
@@ -5654,8 +5769,28 @@ class MainWindow(QMainWindow):
             if not isinstance(updates, dict):
                 raise ValueError("설정 변경 내용이 올바르지 않습니다.")
             return self.apply_settings(updates, reset=bool(request.get("reset")))
+        if action == "import_settings":
+            result = import_app_settings(
+                Path(str(request.get("input") or "")),
+                execute=bool(request.get("execute")),
+            )
+            if result.get("executed"):
+                self.apply_settings(dict(result["after"]))
+            return result
+        if action == "reset_settings":
+            result = reset_app_settings(execute=bool(request.get("execute")))
+            if result.get("executed"):
+                self.apply_settings(dict(result["after"]))
+            return result
         if action == "show_settings":
-            return {"shown": self.show_settings_dialog(str(request.get("tab") or "general"))}
+            return {
+                "shown": self.show_settings_dialog(
+                    str(request.get("tab") or "general"),
+                    str(request.get("search") or ""),
+                )
+            }
+        if action == "close_settings":
+            return {"closed": self.close_settings_dialog()}
         if action == "tray":
             return self.handle_tray_command(
                 str(request.get("command") or "status"),

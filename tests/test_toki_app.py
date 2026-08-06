@@ -14,6 +14,93 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_config_cli_routes_get_set_export_import_and_reset(self) -> None:
+        get_args = build_parser().parse_args(
+            ["config", "get", "--key", "theme", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value={"theme": "dark"}),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(get_args), 0)
+        self.assertEqual(json.loads(output.getvalue())["value"], "dark")
+
+        set_args = build_parser().parse_args(
+            ["config", "set", "--key", "workConcurrency", "--value", "3", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value={"workConcurrency": 3}) as setter,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        setter.assert_called_once_with({"workConcurrency": 3})
+
+        export_args = build_parser().parse_args(
+            ["config", "export", "--output", "settings.json", "--json"]
+        )
+        with (
+            patch("toki_app.export_app_settings", return_value={"ok": True}) as exporter,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(export_args), 0)
+        exporter.assert_called_once_with(Path("settings.json"))
+
+        import_args = build_parser().parse_args(
+            ["config", "import", "--input", "settings.json", "--execute", "--yes", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.import_app_settings", return_value={"ok": True}) as importer,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(import_args), 0)
+        importer.assert_called_once_with(Path("settings.json"), execute=True)
+
+        reset_args = build_parser().parse_args(
+            ["config", "reset", "--execute", "--yes", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.reset_app_settings", return_value={"ok": True}) as resetter,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(reset_args), 0)
+        resetter.assert_called_once_with(execute=True)
+
+        running_set = build_parser().parse_args(
+            ["config", "set", "--key", "theme", "--value", "dark", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request", return_value={"theme": "dark"}
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(running_set), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_settings",
+                "updates": {"theme": "dark"},
+                "reset": False,
+            }
+        )
+
+        running_import = build_parser().parse_args(
+            ["config", "import", "--input", "settings.json", "--execute", "--yes", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value={"ok": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(running_import), 0)
+        request.assert_called_once_with(
+            {"action": "import_settings", "input": "settings.json", "execute": True}
+        )
+
     def test_version_file_is_semver_and_cli_reports_same_value(self) -> None:
         version = (toki_app.ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
         self.assertRegex(version, r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
@@ -435,7 +522,7 @@ class CliParserTests(unittest.TestCase):
         )
 
         show = build_parser().parse_args(
-            ["settings", "--show-gui", "--tab", "network"]
+            ["settings", "--show-gui", "--tab", "provider", "--search", "yt-dlp"]
         )
         with (
             patch("toki_app.ensure_gui_running"),
@@ -443,7 +530,18 @@ class CliParserTests(unittest.TestCase):
             redirect_stdout(StringIO()),
         ):
             self.assertEqual(run_cli(show), 0)
-        request.assert_called_once_with({"action": "show_settings", "tab": "network"})
+        request.assert_called_once_with(
+            {"action": "show_settings", "tab": "provider", "search": "yt-dlp"}
+        )
+
+        close = build_parser().parse_args(["settings", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close), 0)
+        request.assert_called_once_with({"action": "close_settings"})
 
         tray = build_parser().parse_args(
             ["tray", "notify", "--message", "완료 테스트"]

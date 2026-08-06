@@ -83,6 +83,45 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_settings_export_import_preview_apply_and_reset_are_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = root / "config.json"
+            export_path = root / "export.json"
+            with patch.object(toki_core, "CONFIG_PATH", config_path):
+                current = default_config()
+                current["workConcurrency"] = 2
+                toki_core.save_config(current)
+                exported = toki_core.export_app_settings(export_path)
+                payload = json.loads(export_path.read_text(encoding="utf-8"))
+                payload["settings"]["workConcurrency"] = 3
+                payload["settings"]["theme"] = "dark"
+                export_path.write_text(json.dumps(payload), encoding="utf-8")
+
+                preview = toki_core.import_app_settings(export_path)
+                self.assertFalse(preview["executed"])
+                self.assertEqual(settings_snapshot()["workConcurrency"], 2)
+                self.assertEqual(preview["after"]["workConcurrency"], 3)
+
+                applied = toki_core.import_app_settings(export_path, execute=True)
+                self.assertTrue(applied["executed"])
+                self.assertTrue(Path(applied["backupPath"]).is_file())
+                self.assertEqual(settings_snapshot()["workConcurrency"], 3)
+                self.assertEqual(settings_snapshot()["theme"], "dark")
+
+                reset_preview = toki_core.reset_app_settings()
+                self.assertFalse(reset_preview["executed"])
+                self.assertEqual(settings_snapshot()["workConcurrency"], 3)
+                reset_result = toki_core.reset_app_settings(execute=True)
+                self.assertTrue(reset_result["executed"])
+                self.assertEqual(settings_snapshot()["workConcurrency"], 1)
+                self.assertTrue(exported["ok"])
+
+                payload["settings"]["workConcurrency"] = 99
+                export_path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    toki_core.import_app_settings(export_path)
+
     def test_diagnostics_bundle_excludes_user_data_and_redacts_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "diagnostics.zip"

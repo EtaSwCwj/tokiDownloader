@@ -4,6 +4,7 @@ import os
 import subprocess
 import unittest
 from collections import deque
+from pathlib import Path
 from unittest.mock import patch
 
 from toki_core import DownloadJob, DownloadRun
@@ -12,6 +13,7 @@ from toki_gui import (
     JobListModel,
     MainWindow,
     ProcessContext,
+    SettingsDialog,
     hidden_process_options,
 )
 
@@ -105,6 +107,56 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_settings_search_catalog_matches_pages_without_opening_gui(self) -> None:
+        self.assertEqual(SettingsDialog.matching_tab_indexes("테마"), [2])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("존재하지않음"), [])
+        self.assertEqual(SettingsDialog.matching_tab_indexes(""), [0, 1, 2, 3, 4])
+
+    def test_settings_ipc_passes_tab_and_search_and_can_close(self) -> None:
+        calls = []
+        harness = type("SettingsIpcHarness", (), {})()
+        harness.show_settings_dialog = (
+            lambda tab, search: calls.append(("show", tab, search)) or True
+        )
+        harness.close_settings_dialog = lambda: calls.append(("close",)) or True
+
+        shown = MainWindow._handle_control_action(
+            harness,
+            {"action": "show_settings", "tab": "provider", "search": "yt-dlp"},
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_settings"}
+        )
+
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(calls, [("show", "provider", "yt-dlp"), ("close",)])
+
+    def test_settings_import_ipc_applies_executed_values_to_live_gui(self) -> None:
+        applied = []
+        harness = type("SettingsImportHarness", (), {})()
+        harness.apply_settings = lambda values: applied.append(values) or values
+        result = {
+            "ok": True,
+            "executed": True,
+            "after": {"theme": "dark", "workConcurrency": 2},
+        }
+
+        with patch("toki_gui.import_app_settings", return_value=result) as importer:
+            response = MainWindow._handle_control_action(
+                harness,
+                {
+                    "action": "import_settings",
+                    "input": "settings.json",
+                    "execute": True,
+                },
+            )
+
+        importer.assert_called_once_with(Path("settings.json"), execute=True)
+        self.assertEqual(response, result)
+        self.assertEqual(applied, [result["after"]])
+
     def test_diagnostics_ipc_action_passes_output_path(self) -> None:
         harness = type("DiagnosticsIpcHarness", (), {})()
         harness.export_diagnostic_bundle = lambda output: {

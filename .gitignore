@@ -6,6 +6,7 @@ jobs.db
 jobs.db-shm
 jobs.db-wal
 *.pre-v*.bak
+*.before-import-*.bak
 logs/
 .cache/
 gui-preview.png

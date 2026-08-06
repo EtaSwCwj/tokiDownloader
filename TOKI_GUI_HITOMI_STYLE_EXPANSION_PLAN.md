@@ -167,13 +167,19 @@ GUI와 작업 큐는 공급자별 웹 구현을 알지 않고 공통 작업 이�
 ### 단계 A. 설정 기반과 설정창 골격
 
 - [x] 버전 설정 스키마와 안전한 마이그레이션
-- [ ] `config get/set/export/import/reset --json`
-- [ ] 설정창: 일반, 네트워크, 디스플레이, 고급, 공급자 페이지
-- [ ] 설정 검색
-- [ ] 변경 적용·취소·기본값 복원
+- [x] `config get/set/export/import/reset --json`
+- [x] 설정창: 일반, 네트워크, 디스플레이, 고급, 공급자 페이지
+- [x] 설정 검색
+- [x] 변경 적용·취소·기본값 복원
 - [x] optional dependency 상태 표시와 `doctor --json`
 
 완료 조건: GUI와 CLI에서 같은 설정을 읽고 쓰며 재시작 후 값이 보존된다.
+
+구현 메모: 설정 내보내기는 원자 교체, 가져오기는 기본 미리보기와 실행 전 백업을 사용한다.
+GUI가 실행 중이면 CLI 변경도 IPC를 통해 즉시 반영한다. `settings --show-gui --tab provider
+--search yt-dlp`와 `status --json`으로 공급자 탭·검색 상태를 검증했고 프로그램 자체 캡처는
+`logs/settings-provider-search.png`에 저장했다. Python 계약·CLI·GUI IPC 테스트 124건을
+통과했다.
 
 ### 단계 B. 작업·도구 메뉴
 
