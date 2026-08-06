@@ -160,6 +160,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd retention cleanup-runs --max-per-work 500 --max-age-days 365 --json
 .\toki-cli.cmd retention cleanup-runs --max-per-work 500 --max-age-days 365 --execute --json
 .\toki-cli.cmd performance resources --json
+.\toki-cli.cmd performance stability --records 10000 --cycles 100 --json
+.\toki-cli.cmd performance stability --records 1000 --cycles 10 --via-gui --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -217,6 +219,12 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 `list --offset` 조회는 전체 기록을 계속 대상으로 합니다. 프로세스별 stdout/stderr 버퍼는
 각 2MiB로 제한되며 생략된 출력량은 `performance resources --json`의 `memory` 진단에
 누적됩니다.
+
+`performance stability`는 사용자 `jobs.db`와 분리된 임시 WAL 데이터베이스를 만들고 반복
+읽기·쓰기 후 테스트용 숨김 자식 프로세스를 실제로 강제 종료합니다. 이어 새 연결에서 실행
+중이던 작품과 실행 이력이 `중지됨`으로 복구되는지, SQLite 무결성과 임시 DB 제거까지
+검사해 `logs/stability-recovery.json`에 기록합니다. `--via-gui`는 성능 진단창의
+`장시간·강제 종료 복구 검증` 버튼과 같은 경로를 실행합니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

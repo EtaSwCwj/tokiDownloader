@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 from collections import deque
@@ -1848,8 +1850,233 @@ def run_job_database_benchmark(
     return result
 
 
+def run_stability_recovery_test(
+    *,
+    records: int = 10_000,
+    cycles: int = 100,
+    report_path: Path | None = None,
+) -> dict[str, Any]:
+    safe_records = max(100, min(100_000, int(records)))
+    safe_cycles = max(1, min(1_000, int(cycles)))
+    target = Path(report_path) if report_path else LOG_DIR / "stability-recovery.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    process_memory = psutil.Process()
+    memory_before = int(process_memory.memory_info().rss)
+    started = time.perf_counter()
+    child: subprocess.Popen[bytes] | None = None
+    result: dict[str, Any]
+    with tempfile.TemporaryDirectory(prefix="toki-stability-") as temporary_folder:
+        temporary_root = Path(temporary_folder)
+        database_path = temporary_root / "stability.db"
+        ready_path = temporary_root / "child.ready"
+        connection = _connect_job_db(database_path)
+        try:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS stability_cycles (cycle INTEGER PRIMARY KEY, created_at TEXT NOT NULL)"
+            )
+            for batch_start in range(0, safe_records, 1_000):
+                rows = []
+                batch_end = min(safe_records, batch_start + 1_000)
+                for index in range(batch_start, batch_end):
+                    job = DownloadJob(
+                        job_id=f"stable-{index:06d}",
+                        url=f"https://newtoki1.org/manhwa/{500_000 + index}",
+                        output_dir=str(temporary_root / "downloads"),
+                        title=f"안정성 작품 {index:06d}",
+                        state="완료",
+                        progress=100,
+                    )
+                    payload = json.dumps(job.to_dict(), ensure_ascii=False)
+                    rows.append(
+                        (
+                            job.job_id,
+                            job.work_key,
+                            job.title,
+                            job.state,
+                            job.progress,
+                            job.url,
+                            0,
+                            "",
+                            job.created_at,
+                            job.created_at,
+                            payload,
+                        )
+                    )
+                with connection:
+                    connection.executemany(
+                        """
+                        INSERT INTO jobs(
+                            job_id, work_key, title, state, progress, url, pinned,
+                            tag_color, created_at, updated_at, payload
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+        finally:
+            connection.close()
+
+        cycle_started = time.perf_counter()
+        for cycle in range(safe_cycles):
+            connection = _connect_job_db(database_path)
+            try:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO stability_cycles(cycle, created_at) VALUES (?, ?)",
+                        (
+                            cycle,
+                            datetime.now().astimezone().isoformat(timespec="microseconds"),
+                        ),
+                    )
+                offset = (cycle * 200) % max(1, safe_records - 200)
+                rows = connection.execute(
+                    "SELECT job_id FROM jobs ORDER BY updated_at DESC, job_id DESC LIMIT 200 OFFSET ?",
+                    (offset,),
+                ).fetchall()
+                if len(rows) != min(200, safe_records):
+                    raise RuntimeError("장시간 목록 페이지 검증 결과가 부족합니다.")
+            finally:
+                connection.close()
+        cycle_duration_ms = round((time.perf_counter() - cycle_started) * 1_000, 3)
+
+        child_script = """
+import os
+import time
+from pathlib import Path
+import toki_core
+
+toki_core.JOB_DB_PATH = Path(os.environ["TOKI_JOB_DB_PATH"])
+toki_core._INITIALIZED_JOB_DBS.clear()
+from toki_core import DownloadJob, DownloadRun, save_jobs, save_runs
+
+job = DownloadJob(
+    job_id="forced-crash",
+    url="https://newtoki1.org/manhwa/999999",
+    output_dir=str(Path(os.environ["TOKI_READY_PATH"]).parent / "downloads"),
+    title="강제 종료 복구 검증",
+    state="실행 중",
+    progress=47,
+)
+run = DownloadRun.from_job(job)
+run.process_pid = os.getpid()
+save_jobs([job])
+save_runs([run])
+Path(os.environ["TOKI_READY_PATH"]).write_text("ready", encoding="utf-8")
+while True:
+    time.sleep(1)
+"""
+        environment = os.environ.copy()
+        environment["TOKI_JOB_DB_PATH"] = str(database_path)
+        environment["TOKI_READY_PATH"] = str(ready_path)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            [str(ROOT_DIR), environment.get("PYTHONPATH", "")]
+        ).rstrip(os.pathsep)
+        process_options: dict[str, Any] = {}
+        if os.name == "nt":
+            process_options["creationflags"] = subprocess.CREATE_NO_WINDOW
+        child = subprocess.Popen(
+            [sys.executable, "-c", child_script],
+            cwd=ROOT_DIR,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **process_options,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not ready_path.is_file() and time.monotonic() < deadline:
+                if child.poll() is not None:
+                    raise RuntimeError(
+                        f"강제 종료 검증 자식 프로세스가 조기 종료했습니다: {child.returncode}"
+                    )
+                time.sleep(0.05)
+            if not ready_path.is_file():
+                raise TimeoutError("강제 종료 검증 자식 프로세스 준비 시간이 초과됐습니다.")
+            child_pid = int(child.pid)
+            child.kill()
+            child_exit_code = int(child.wait(timeout=5))
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+
+        recovery = recover_interrupted_jobs(
+            "안정성 검증에서 강제 종료된 작업입니다.",
+            database_path=database_path,
+        )
+        connection = _connect_job_db(database_path)
+        try:
+            integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
+            cycle_count = int(
+                connection.execute("SELECT COUNT(*) FROM stability_cycles").fetchone()[0]
+            )
+            job_row = connection.execute(
+                "SELECT state, payload FROM jobs WHERE job_id = 'forced-crash'"
+            ).fetchone()
+            run_row = connection.execute(
+                "SELECT state, finished_at, payload FROM runs WHERE run_id = 'forced-crash'"
+            ).fetchone()
+            total_jobs = int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        finally:
+            connection.close()
+        recovery_passed = bool(
+            recovery.get("jobIds") == ["forced-crash"]
+            and recovery.get("runIds") == ["forced-crash"]
+            and job_row
+            and job_row[0] == "중지됨"
+            and run_row
+            and run_row[0] == "중지됨"
+            and run_row[1]
+        )
+        database_bytes = sum(
+            path.stat().st_size
+            for path in (
+                database_path,
+                Path(str(database_path) + "-wal"),
+                Path(str(database_path) + "-shm"),
+            )
+            if path.is_file()
+        )
+        memory_after = int(process_memory.memory_info().rss)
+        result = {
+            "ok": integrity == "ok" and recovery_passed and cycle_count == safe_cycles,
+            "records": safe_records,
+            "cycles": safe_cycles,
+            "cycleDurationMs": cycle_duration_ms,
+            "averageCycleMs": round(cycle_duration_ms / safe_cycles, 3),
+            "databaseBytes": database_bytes,
+            "totalJobsBeforeCleanup": total_jobs,
+            "integrity": integrity,
+            "forcedTermination": {
+                "pid": child_pid,
+                "exitCode": child_exit_code,
+                "recoveryPassed": recovery_passed,
+                "recoveredJobIds": recovery.get("jobIds") or [],
+                "recoveredRunIds": recovery.get("runIds") or [],
+            },
+            "memory": {
+                "beforeBytes": memory_before,
+                "afterBytes": memory_after,
+                "deltaBytes": memory_after - memory_before,
+            },
+            "temporaryDatabaseRemoved": False,
+            "durationMs": round((time.perf_counter() - started) * 1_000, 3),
+            "reportPath": str(target.resolve()),
+        }
+    result["temporaryDatabaseRemoved"] = not Path(temporary_folder).exists()
+    result["ok"] = bool(result["ok"] and result["temporaryDatabaseRemoved"])
+    temporary_report = target.with_suffix(target.suffix + ".tmp")
+    temporary_report.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary_report.replace(target)
+    return result
+
+
 def recover_interrupted_jobs(
     reason: str = "이전 GUI가 종료되어 작업이 중단되었습니다.",
+    *,
+    database_path: Path | None = None,
 ) -> dict[str, Any]:
     interrupted_states = tuple(sorted(ACTIVE_JOB_STATES))
     placeholders = ", ".join("?" for _ in interrupted_states)
@@ -1857,7 +2084,7 @@ def recover_interrupted_jobs(
     recovered_jobs: list[DownloadJob] = []
     recovered_run_ids: list[str] = []
     job_field_names = set(DownloadJob.__dataclass_fields__)
-    connection = _connect_job_db()
+    connection = _connect_job_db(database_path)
     try:
         job_rows = connection.execute(
             f"SELECT job_id, payload FROM jobs WHERE state IN ({placeholders})",

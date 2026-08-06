@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import psutil
 from PyQt6.QtCore import (
     QAbstractListModel,
     QEvent,
@@ -302,8 +303,17 @@ class HiddenProcess(QObject):
             return dict(self._dropped_output_bytes)
 
     def kill(self) -> None:
-        if self._process and self._process.poll() is None:
-            self._process.kill()
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            root = psutil.Process(process.pid)
+            descendants = root.children(recursive=True)
+            for child in reversed(descendants):
+                child.kill()
+            root.kill()
+        except (psutil.Error, OSError):
+            process.kill()
 
 
 def create_background_process(parent: QObject) -> QProcess | HiddenProcess:
@@ -724,11 +734,20 @@ class PerformanceDiagnosticsDialog(QDialog):
         self.benchmark_button = QPushButton("100~100,000개 벤치마크 실행")
         benchmark_row.addWidget(self.benchmark_button)
         layout.addLayout(benchmark_row)
+        stability_row = QHBoxLayout()
+        self.stability_status_label = QLabel("안정성·복구: 실행 전")
+        self.stability_status_label.setObjectName("mutedLabel")
+        stability_row.addWidget(self.stability_status_label, 1)
+        self.stability_button = QPushButton("10,000개 장시간·강제 종료 복구 검증")
+        stability_row.addWidget(self.stability_button)
+        layout.addLayout(stability_row)
         if parent is not None and hasattr(parent, "start_performance_benchmark"):
             self.benchmark_button.clicked.connect(
                 lambda: parent.start_performance_benchmark()
             )
             self.update_benchmark_status(parent.performance_benchmark_snapshot())
+            self.stability_button.clicked.connect(lambda: parent.start_stability_test())
+            self.update_stability_status(parent.stability_test_snapshot())
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
@@ -751,6 +770,22 @@ class PerformanceDiagnosticsDialog(QDialog):
             )
         else:
             self.benchmark_status_label.setText("합성 벤치마크: 실행 전")
+
+    def update_stability_status(self, snapshot: dict[str, Any]) -> None:
+        running = bool(snapshot.get("running"))
+        last = snapshot.get("last") if isinstance(snapshot.get("last"), dict) else None
+        self.stability_button.setEnabled(not running)
+        if running:
+            self.stability_status_label.setText("안정성·복구: 격리 환경에서 실행 중...")
+        elif last:
+            forced = last.get("forcedTermination") or {}
+            self.stability_status_label.setText(
+                f"최근 결과: {'통과' if last.get('ok') else '실패'} · "
+                f"{int(last.get('records') or 0):,}개/{int(last.get('cycles') or 0):,}회 · "
+                f"복구 {'통과' if forced.get('recoveryPassed') else '실패'}"
+            )
+        else:
+            self.stability_status_label.setText("안정성·복구: 실행 전")
 
 
 class WorkDetailDialog(QDialog):
@@ -1603,6 +1638,7 @@ class MainWindow(QMainWindow):
         self.active_contexts: dict[str, ProcessContext] = {}
         self.self_test_process: QProcess | None = None
         self.performance_benchmark_process: QProcess | HiddenProcess | None = None
+        self.stability_test_process: QProcess | HiddenProcess | None = None
         self.resource_limits = resource_budget()
         self.file_verify_processes: dict[str, ServiceTask] = {}
         self.image_preview_processes: dict[str, ServiceTask] = {}
@@ -1617,8 +1653,12 @@ class MainWindow(QMainWindow):
         self.performance_benchmark_stdout = ""
         self.performance_benchmark_stderr = ""
         self.performance_output_dropped_bytes = 0
+        self.stability_test_stdout = ""
+        self.stability_test_stderr = ""
+        self.stability_output_dropped_bytes = 0
         self.total_output_dropped_bytes = 0
         self.last_performance_benchmark: dict[str, Any] | None = None
+        self.last_stability_test: dict[str, Any] | None = None
         self.startup_recovery: dict[str, Any] = {
             "jobCount": 0,
             "runCount": 0,
@@ -4964,6 +5004,131 @@ class MainWindow(QMainWindow):
         self.performance_benchmark_process = None
         self._update_performance_benchmark_dialog()
 
+    def stability_test_snapshot(self) -> dict[str, Any]:
+        running = bool(
+            self.stability_test_process
+            and self.stability_test_process.state()
+            != QProcess.ProcessState.NotRunning
+        )
+        return {"running": running, "last": self.last_stability_test}
+
+    def _update_stability_test_dialog(self) -> None:
+        if self.active_performance_dialog:
+            self.active_performance_dialog.update_stability_status(
+                self.stability_test_snapshot()
+            )
+
+    def start_stability_test(
+        self,
+        records: int = 10_000,
+        cycles: int = 100,
+        output: str = "",
+    ) -> bool:
+        if self.stability_test_snapshot()["running"]:
+            self.statusBar().showMessage("안정성·복구 검증이 이미 실행 중입니다.", 2500)
+            return False
+        safe_records = max(100, min(100_000, int(records)))
+        safe_cycles = max(1, min(1_000, int(cycles)))
+        process = create_background_process(self)
+        self.stability_test_process = process
+        self.stability_test_stdout = ""
+        self.stability_test_stderr = ""
+        self.stability_output_dropped_bytes = 0
+        self.last_stability_test = None
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(sys.executable)
+        arguments = [
+            str(ROOT_DIR / "toki_app.py"),
+            "performance",
+            "stability",
+            "--records",
+            str(safe_records),
+            "--cycles",
+            str(safe_cycles),
+            "--json",
+        ]
+        if output:
+            arguments.extend(("--output", str(output)))
+        process.setArguments(arguments)
+        process.readyReadStandardOutput.connect(self._read_stability_test_stdout)
+        process.readyReadStandardError.connect(self._read_stability_test_stderr)
+        process.errorOccurred.connect(self._stability_test_process_error)
+        process.finished.connect(self._stability_test_finished)
+        self.status_label.setText("안정성·강제 종료 복구 검증 중")
+        self.log(
+            f"격리 안정성 검증 시작: {safe_records:,}개, {safe_cycles:,}회",
+            job_id="stability",
+        )
+        process.start()
+        self._update_stability_test_dialog()
+        return True
+
+    def _read_stability_test_stdout(self) -> None:
+        if self.stability_test_process:
+            self.stability_test_stdout, dropped = append_bounded_text(
+                self.stability_test_stdout,
+                bytes(self.stability_test_process.readAllStandardOutput()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            self.stability_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
+
+    def _read_stability_test_stderr(self) -> None:
+        if self.stability_test_process:
+            self.stability_test_stderr, dropped = append_bounded_text(
+                self.stability_test_stderr,
+                bytes(self.stability_test_process.readAllStandardError()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            self.stability_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
+
+    def _stability_test_process_error(self, _error: QProcess.ProcessError) -> None:
+        if not self.stability_test_process:
+            return
+        message = (
+            "안정성 검증 프로세스 오류: "
+            f"{self.stability_test_process.errorString()}"
+        )
+        self.log(message, "ERROR", job_id="stability")
+        self.status_label.setText("안정성·복구 검증 실행 오류")
+
+    def _stability_test_finished(
+        self, exit_code: int, _exit_status: QProcess.ExitStatus
+    ) -> None:
+        self._read_stability_test_stdout()
+        self._read_stability_test_stderr()
+        if isinstance(self.stability_test_process, HiddenProcess):
+            hidden_drops = self.stability_test_process.droppedOutputBytes()
+            dropped = sum(hidden_drops.values())
+            self.stability_output_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
+        try:
+            result = json.loads(self.stability_test_stdout.strip())
+            if not isinstance(result, dict):
+                raise ValueError("안정성 검증 결과가 JSON 객체가 아닙니다.")
+        except (json.JSONDecodeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": str(error),
+                "stderr": self.stability_test_stderr.strip(),
+            }
+        result["ok"] = bool(result.get("ok")) and exit_code == 0
+        result["outputDroppedBytes"] = self.stability_output_dropped_bytes
+        self.last_stability_test = result
+        message = f"안정성·강제 종료 복구 검증 {'통과' if result['ok'] else '실패'}"
+        self.log(message, "INFO" if result["ok"] else "ERROR", job_id="stability")
+        if self.stability_test_stderr.strip() and not result["ok"]:
+            self.log(self.stability_test_stderr.strip(), "ERROR", job_id="stability")
+        self.status_label.setText(message)
+        self.statusBar().showMessage(message, 5000)
+        self.stability_test_process = None
+        self._update_stability_test_dialog()
+
     def show_cli_help(self) -> None:
         QMessageBox.information(
             self,
@@ -5012,6 +5177,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd window [--x N --y N --width N --height N --screen NAME --center --safe --maximize|--normal]\n"
             "toki-cli.cmd performance audit [--json|--show-gui|--close]\n"
             "toki-cli.cmd performance benchmark [--sizes N...] [--page-size N --json|--via-gui]\n"
+            "toki-cli.cmd performance stability [--records N --cycles N --json|--via-gui]\n"
+            "toki-cli.cmd performance resources --json\n"
             "toki-cli.cmd performance event-policy --event EVENT --json\n"
             "toki-cli.cmd thumbnail-cache status|cleanup [--execute --json]\n"
             "toki-cli.cmd retention status|cleanup-runs [--execute --json]\n"
@@ -5122,6 +5289,7 @@ class MainWindow(QMainWindow):
                 and self.self_test_process.state() != QProcess.ProcessState.NotRunning
             ),
             "performanceBenchmark": self.performance_benchmark_snapshot(),
+            "stabilityTest": self.stability_test_snapshot(),
             "eventUpdates": self.event_update_snapshot(),
             "thumbnailCache": self.thumbnail_cache_snapshot(),
             "retention": self.retention_snapshot(),
@@ -5519,6 +5687,15 @@ class MainWindow(QMainWindow):
                 str(request.get("output") or ""),
             )
             return {"started": started, **self.performance_benchmark_snapshot()}
+        if action == "start_stability_test":
+            if self.active_performance_dialog is None:
+                self.show_performance_diagnostics()
+            started = self.start_stability_test(
+                int(request.get("records") or 10_000),
+                int(request.get("cycles") or 100),
+                str(request.get("output") or ""),
+            )
+            return {"started": started, **self.stability_test_snapshot()}
         if action == "resource_status":
             return {"ok": True, **self.resource_snapshot()}
         if action == "keyboard_focus":
@@ -5552,6 +5729,16 @@ class MainWindow(QMainWindow):
         raise ValueError(f"지원하지 않는 CLI 동작입니다: {action}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        diagnostic_processes = tuple(
+            process
+            for process in (
+                self.self_test_process,
+                self.performance_benchmark_process,
+                self.stability_test_process,
+            )
+            if process
+            and process.state() != QProcess.ProcessState.NotRunning
+        )
         if (
             not self.force_close
             and not self.exit_requested
@@ -5564,12 +5751,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("시스템 트레이로 숨겼습니다.", 3000)
             return
         if not self.force_close and (
-            self.active_contexts or self.image_conversion_processes
+            self.active_contexts
+            or self.image_conversion_processes
+            or diagnostic_processes
         ):
             answer = QMessageBox.question(
                 self,
                 "실행 중인 작업",
-                "다운로드 또는 이미지 변환이 진행 중입니다. 작업을 중지하고 종료할까요?",
+                "다운로드·이미지 변환 또는 진단 작업이 진행 중입니다. "
+                "작업을 중지하고 종료할까요?",
             )
             if answer != QMessageBox.StandardButton.Yes:
                 self.exit_requested = False
@@ -5579,6 +5769,8 @@ class MainWindow(QMainWindow):
                 self.stop_active_job(job_id)
             for context in list(self.image_conversion_processes.values()):
                 context.process.kill()
+        for process in diagnostic_processes:
+            process.kill()
         window_config = self.window_snapshot()
         window_config["qtGeometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self.config["window"] = window_config

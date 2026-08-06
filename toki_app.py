@@ -62,6 +62,7 @@ from toki_core import (
     resource_budget,
     retry_backoff_seconds,
     run_job_database_benchmark,
+    run_stability_recovery_test,
     save_config,
     save_jobs,
     settings_snapshot,
@@ -462,6 +463,20 @@ def build_parser() -> argparse.ArgumentParser:
     performance_benchmark.add_argument("--output", help="JSON 보고서 저장 경로")
     performance_benchmark.add_argument("--json", action="store_true", help="JSON으로 출력")
     performance_benchmark.add_argument(
+        "--via-gui", action="store_true", help="GUI 진단창을 열고 백그라운드에서 실행"
+    )
+    performance_stability = performance_commands.add_parser(
+        "stability", help="격리 DB에서 반복 실행·강제 종료·재시작 복구 검증"
+    )
+    performance_stability.add_argument(
+        "--records", type=int, default=10_000, help="격리 DB 작품 수(100~100000)"
+    )
+    performance_stability.add_argument(
+        "--cycles", type=int, default=100, help="읽기·쓰기 재시작 반복 수(1~1000)"
+    )
+    performance_stability.add_argument("--output", help="JSON 보고서 저장 경로")
+    performance_stability.add_argument("--json", action="store_true", help="JSON으로 출력")
+    performance_stability.add_argument(
         "--via-gui", action="store_true", help="GUI 진단창을 열고 백그라운드에서 실행"
     )
     performance_event_policy = performance_commands.add_parser(
@@ -1066,6 +1081,23 @@ def run_cli(args: argparse.Namespace) -> int:
                 )
         elif args.performance_command == "event-policy":
             result = {"ok": True, **downloader_event_update_policy(args.event)}
+        elif args.performance_command == "stability":
+            if args.via_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {
+                        "action": "start_stability_test",
+                        "records": args.records,
+                        "cycles": args.cycles,
+                        "output": args.output or "",
+                    }
+                )
+            else:
+                result = run_stability_recovery_test(
+                    records=args.records,
+                    cycles=args.cycles,
+                    report_path=Path(args.output) if args.output else None,
+                )
         elif args.performance_command == "resources":
             if gui_is_running():
                 result = control_request({"action": "resource_status"})
@@ -1102,6 +1134,20 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"{int(result['uiIntervalMs'])}ms | 실행 이력 저장 "
                 f"{'예' if result['persistRun'] else '아니오'}"
             )
+        elif args.performance_command == "stability":
+            if result.get("running") and not result.get("last"):
+                print("GUI에서 안정성·강제 종료 복구 검증을 시작했습니다.")
+            else:
+                effective_stability = result.get("last") or result
+                forced = effective_stability.get("forcedTermination") or {}
+                print(
+                    f"{int(effective_stability.get('records') or 0):,}개 · "
+                    f"{int(effective_stability.get('cycles') or 0):,}회 | "
+                    f"DB {effective_stability.get('integrity') or '실행 중'} | 강제 종료 복구 "
+                    f"{'통과' if forced.get('recoveryPassed') else '실패'} | "
+                    f"{float(effective_stability.get('durationMs') or 0):.1f}ms"
+                )
+                print(f"보고서: {effective_stability.get('reportPath') or '실행 중'}")
         elif args.performance_command == "resources":
             limits = result["limits"]
             print(

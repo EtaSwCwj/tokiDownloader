@@ -105,6 +105,62 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_stability_ipc_action_passes_request_values(self) -> None:
+        calls = []
+        harness = type("StabilityIpcHarness", (), {})()
+        harness.active_performance_dialog = None
+        harness.show_performance_diagnostics = lambda: calls.append(("show",))
+        harness.start_stability_test = (
+            lambda records, cycles, output: calls.append(
+                ("start", records, cycles, output)
+            )
+            or True
+        )
+        harness.stability_test_snapshot = lambda: {"running": True, "last": None}
+
+        result = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "start_stability_test",
+                "records": 2_000,
+                "cycles": 25,
+                "output": "report.json",
+            },
+        )
+
+        self.assertTrue(result["started"])
+        self.assertEqual(calls, [("show",), ("start", 2_000, 25, "report.json")])
+
+    def test_stability_button_uses_background_cli_contract(self) -> None:
+        status = type("StatusHarness", (), {"showMessage": lambda _self, *_args: None})()
+        label = type("LabelHarness", (), {"setText": lambda _self, *_args: None})()
+        harness = type("StabilityHarness", (), {})()
+        harness.stability_test_process = None
+        harness.stability_test_stdout = ""
+        harness.stability_test_stderr = ""
+        harness.last_stability_test = None
+        harness.stability_test_snapshot = lambda: {"running": False, "last": None}
+        harness._read_stability_test_stdout = lambda: None
+        harness._read_stability_test_stderr = lambda: None
+        harness._stability_test_process_error = lambda _error: None
+        harness._stability_test_finished = lambda _code, _status: None
+        harness._update_stability_test_dialog = lambda: None
+        harness.statusBar = lambda: status
+        harness.status_label = label
+        harness.log = lambda *_args, **_kwargs: None
+        _ProcessStub.instances = []
+
+        with patch("toki_gui.create_background_process", _ProcessStub):
+            started = MainWindow.start_stability_test(harness, 2_000, 25)
+
+        process = _ProcessStub.instances[0]
+        self.assertTrue(started)
+        self.assertTrue(process.started_called)
+        self.assertIn("stability", process.arguments)
+        self.assertIn("2000", process.arguments)
+        self.assertIn("25", process.arguments)
+        self.assertIn("--json", process.arguments)
+
     def test_job_model_trims_tail_to_loaded_memory_limit(self) -> None:
         model = JobListModel()
         jobs = [

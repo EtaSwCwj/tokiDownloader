@@ -11,6 +11,52 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_performance_stability_cli_can_start_gui_contract(self) -> None:
+        args = build_parser().parse_args(
+            ["performance", "stability", "--records", "500", "--cycles", "5", "--via-gui", "--json"]
+        )
+        result = {"started": True, "running": True, "last": None}
+        with (
+            patch("toki_app.ensure_gui_running") as ensure_gui,
+            patch("toki_app.control_request", return_value=result) as request,
+            redirect_stdout(StringIO()),
+        ):
+            exit_code = run_cli(args)
+
+        self.assertEqual(exit_code, 0)
+        ensure_gui.assert_called_once_with()
+        request.assert_called_once_with(
+            {
+                "action": "start_stability_test",
+                "records": 500,
+                "cycles": 5,
+                "output": "",
+            }
+        )
+
+    def test_performance_stability_cli_uses_shared_recovery_service(self) -> None:
+        args = build_parser().parse_args(
+            ["performance", "stability", "--records", "500", "--cycles", "5", "--json"]
+        )
+        result = {
+            "ok": True,
+            "records": 500,
+            "cycles": 5,
+            "integrity": "ok",
+            "durationMs": 10.0,
+            "forcedTermination": {"recoveryPassed": True},
+            "reportPath": "report.json",
+        }
+        with (
+            patch("toki_app.run_stability_recovery_test", return_value=result) as service,
+            redirect_stdout(StringIO()) as output,
+        ):
+            exit_code = run_cli(args)
+
+        self.assertEqual(exit_code, 0)
+        service.assert_called_once_with(records=500, cycles=5, report_path=None)
+        self.assertTrue(json.loads(output.getvalue())["forcedTermination"]["recoveryPassed"])
+
     def test_performance_resources_cli_uses_gui_state_when_running(self) -> None:
         args = build_parser().parse_args(["performance", "resources", "--json"])
         result = {

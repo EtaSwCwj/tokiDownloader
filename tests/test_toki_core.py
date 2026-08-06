@@ -63,6 +63,7 @@ from toki_core import (
     resource_admission,
     resource_budget,
     run_job_database_benchmark,
+    run_stability_recovery_test,
     save_jobs,
     save_runs,
     set_job_pause_state,
@@ -693,6 +694,24 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertTrue(report_path.is_file())
         self.assertEqual([item["count"] for item in report["results"]], [100, 1_000])
         self.assertTrue(all(item["firstPageMs"] <= 2_000 for item in report["results"]))
+        self.assertEqual(count_jobs(), 0)
+
+    def test_stability_recovery_test_forces_child_exit_and_uses_isolated_db(self) -> None:
+        report_path = Path(self.temp_dir.name) / "stability.json"
+
+        report = run_stability_recovery_test(
+            records=100,
+            cycles=2,
+            report_path=report_path,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["integrity"], "ok")
+        self.assertTrue(report["forcedTermination"]["recoveryPassed"])
+        self.assertEqual(report["forcedTermination"]["recoveredJobIds"], ["forced-crash"])
+        self.assertEqual(report["forcedTermination"]["recoveredRunIds"], ["forced-crash"])
+        self.assertTrue(report["temporaryDatabaseRemoved"])
+        self.assertTrue(report_path.is_file())
         self.assertEqual(count_jobs(), 0)
 
     def test_restart_recovery_scans_beyond_first_history_page(self) -> None:
