@@ -54,8 +54,10 @@ from toki_core import (
     build_downloader_args,
     clear_log_file,
     count_jobs,
+    delete_job_record,
     find_node,
     load_config,
+    load_job_by_id,
     load_job_by_work_key,
     load_jobs_page,
     normalize_range,
@@ -1133,6 +1135,12 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, selected=color: self.set_job_tag(job.job_id, selected)
             )
         menu.addSeparator()
+        remove_action = menu.addAction(
+            "목록 기록 제거...",
+            lambda: self.confirm_remove_job_record(job.job_id),
+        )
+        remove_action.setEnabled(job.state not in {"대기", "실행 중"})
+        menu.addSeparator()
         retry_action = menu.addAction("작품 전체 재검사", self.retry_selected_job)
         retry_action.setEnabled(job.state not in {"대기", "실행 중"})
         stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
@@ -1179,6 +1187,47 @@ class MainWindow(QMainWindow):
         self.task_model.update_job(updated)
         self.log(f"작품 색상 태그 변경: {color}", job_id=job_id)
         return updated.to_dict()
+
+    def confirm_remove_job_record(self, job_id: str) -> None:
+        job = self.selected_job(job_id)
+        if not job:
+            return
+        answer = QMessageBox.question(
+            self,
+            "작품 기록 제거",
+            f"목록에서 다음 작품 기록을 제거할까요?\n\n{job.title}\n\n"
+            "다운로드한 폴더와 이미지 파일은 삭제하지 않습니다.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.remove_job_record(job_id)
+
+    def remove_job_record(self, job_id: str) -> dict[str, Any]:
+        job = self.jobs.get(job_id) or load_job_by_id(job_id)
+        if not job:
+            raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+        removed = delete_job_record(job_id)
+        was_visible = self.task_model.remove_work_key(job.work_key)
+        self.jobs.pop(job_id, None)
+        self.jobs_by_work.pop(job.work_key, None)
+        self.dirty_job_ids.discard(job_id)
+        self.history_all_total = max(0, self.history_all_total - 1)
+        if was_visible:
+            self.history_total = max(0, self.history_total - 1)
+        self.history_loaded = self.task_model.rowCount()
+        if self.task_model.rowCount():
+            self.task_list.setCurrentIndex(self.task_model.index(0, 0))
+        self._update_summary()
+        self.log(
+            f"작품 기록 제거(파일 보존): {removed.title}",
+            job_id=removed.job_id,
+        )
+        return {
+            "removed": True,
+            "jobId": removed.job_id,
+            "workKey": removed.work_key,
+            "outputPath": removed.output_path,
+            "filesDeleted": False,
+        }
 
     def clear_logs(self) -> None:
         clear_log_file()
@@ -1301,6 +1350,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd list [--query TEXT --status STATE --sort updated|title|progress --apply-gui --json]\n"
             "toki-cli.cmd pin --job ID --on|--off\n"
             "toki-cli.cmd tag --job ID --color COLOR\n"
+            "toki-cli.cmd remove-record --job ID --yes\n"
             "toki-cli.cmd stop\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -1476,6 +1526,8 @@ class MainWindow(QMainWindow):
             return self.set_job_tag(
                 str(request.get("jobId") or ""), str(request.get("color") or "none")
             )
+        if action == "remove_record":
+            return self.remove_job_record(str(request.get("jobId") or ""))
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}
         if action == "window":

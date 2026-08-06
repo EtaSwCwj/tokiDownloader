@@ -11,6 +11,7 @@ from toki_core import (
     build_downloader_args,
     build_work_key,
     count_jobs,
+    delete_job_record,
     load_job_by_work_key,
     load_jobs_page,
     normalize_range,
@@ -154,6 +155,24 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(load_jobs_page(sort="title")[0].job_id, "pinned")
         with self.assertRaises(ValueError):
             update_job_markers("pinned", tag_color="unknown")
+
+    def test_delete_record_never_deletes_download_files(self) -> None:
+        output_folder = Path(self.temp_dir.name) / "downloaded-work"
+        output_folder.mkdir()
+        image = output_folder / "001.jpg"
+        image.write_bytes(b"image")
+        job = DownloadJob(
+            job_id="delete-me",
+            url="https://newtoki1.org/manhwa/4001",
+            output_dir=self.temp_dir.name,
+            output_path=str(output_folder),
+            state="완료",
+        )
+        save_jobs([job])
+        deleted = delete_job_record(job.job_id)
+        self.assertEqual(deleted.job_id, job.job_id)
+        self.assertEqual(count_jobs(), 0)
+        self.assertTrue(image.is_file())
 
 
 if __name__ == "__main__":

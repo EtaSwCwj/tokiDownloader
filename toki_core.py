@@ -476,6 +476,21 @@ def update_job_markers(
     return job
 
 
+def delete_job_record(job_id: str) -> DownloadJob:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if job.state in {"대기", "실행 중"}:
+        raise ValueError("대기 또는 실행 중인 작품 기록은 제거할 수 없습니다.")
+    connection = _connect_job_db()
+    try:
+        with connection:
+            connection.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+    finally:
+        connection.close()
+    return job
+
+
 def open_in_explorer(target: str | os.PathLike[str]) -> None:
     resolved = str(Path(target).expanduser().resolve())
     if os.name != "nt":

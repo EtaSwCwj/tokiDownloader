@@ -24,6 +24,7 @@ from toki_core import (
     clear_log_file,
     find_node,
     count_jobs,
+    delete_job_record,
     load_config,
     load_jobs_page,
     update_job_markers,
@@ -248,6 +249,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="태그 색상",
     )
 
+    remove_record = subparsers.add_parser(
+        "remove-record",
+        help="다운로드 파일은 보존하고 작품 기록만 제거",
+    )
+    remove_record.add_argument("--job", required=True, help="작업 ID")
+    remove_record.add_argument(
+        "--yes",
+        action="store_true",
+        help="기록 제거 확인(다운로드 파일은 삭제하지 않음)",
+    )
+
     set_output = subparsers.add_parser("set-output", help="기본 저장 폴더 설정")
     set_output.add_argument("path", help="저장 폴더 경로")
 
@@ -402,6 +414,24 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             result = update_job_markers(args.job, tag_color=args.color).to_dict()
         print_json({"ok": True, "job": result})
+        return 0
+    if command == "remove-record":
+        if not args.yes:
+            raise ControlError(
+                "기록 제거에는 --yes가 필요합니다. 다운로드 파일은 삭제되지 않습니다."
+            )
+        if gui_is_running():
+            result = control_request({"action": "remove_record", "jobId": args.job})
+        else:
+            removed = delete_job_record(args.job)
+            result = {
+                "removed": True,
+                "jobId": removed.job_id,
+                "workKey": removed.work_key,
+                "outputPath": removed.output_path,
+                "filesDeleted": False,
+            }
+        print_json({"ok": True, **result})
         return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())

@@ -43,6 +43,10 @@ class CliParserTests(unittest.TestCase):
         tag = build_parser().parse_args(["tag", "--job", "abc", "--color", "blue"])
         self.assertEqual(tag.color, "blue")
 
+    def test_remove_record_requires_explicit_confirmation_flag(self) -> None:
+        args = build_parser().parse_args(["remove-record", "--job", "abc", "--yes"])
+        self.assertTrue(args.yes)
+
 
 if __name__ == "__main__":
     unittest.main()
