@@ -15,6 +15,7 @@ from toki_core import (
     load_jobs_page,
     normalize_range,
     save_jobs,
+    update_job_markers,
 )
 
 
@@ -132,6 +133,27 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual([job.job_id for job in sorted_jobs], ["alpha", "beta"])
         with self.assertRaises(ValueError):
             load_jobs_page(sort="invalid")
+
+    def test_pin_and_color_tag_persist_and_sort_first(self) -> None:
+        normal = DownloadJob(
+            job_id="normal",
+            url="https://newtoki1.org/manhwa/3001",
+            output_dir=r"C:\Manga",
+            title="가 작품",
+        )
+        pinned = DownloadJob(
+            job_id="pinned",
+            url="https://newtoki1.org/manhwa/3002",
+            output_dir=r"C:\Manga",
+            title="나 작품",
+        )
+        save_jobs([normal, pinned])
+        updated = update_job_markers("pinned", pinned=True, tag_color="purple")
+        self.assertTrue(updated.pinned)
+        self.assertEqual(updated.tag_color, "purple")
+        self.assertEqual(load_jobs_page(sort="title")[0].job_id, "pinned")
+        with self.assertRaises(ValueError):
+            update_job_markers("pinned", tag_color="unknown")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ from toki_core import (
     count_jobs,
     load_config,
     load_jobs_page,
+    update_job_markers,
     open_in_explorer,
     read_log_tail,
     save_config,
@@ -232,6 +233,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_jobs.add_argument("--json", action="store_true", help="JSON으로 출력")
 
+    pin = subparsers.add_parser("pin", help="작품 고정 상태 변경")
+    pin.add_argument("--job", required=True, help="작업 ID")
+    pin_state = pin.add_mutually_exclusive_group(required=True)
+    pin_state.add_argument("--on", action="store_true", help="목록 상단에 고정")
+    pin_state.add_argument("--off", action="store_true", help="고정 해제")
+
+    tag = subparsers.add_parser("tag", help="작품 색상 태그 변경")
+    tag.add_argument("--job", required=True, help="작업 ID")
+    tag.add_argument(
+        "--color",
+        required=True,
+        choices=("none", "red", "orange", "yellow", "green", "blue", "purple", "gray"),
+        help="태그 색상",
+    )
+
     set_output = subparsers.add_parser("set-output", help="기본 저장 폴더 설정")
     set_output.add_argument("path", help="저장 폴더 경로")
 
@@ -368,6 +384,24 @@ def run_cli(args: argparse.Namespace) -> int:
             for job in result["jobs"]:
                 print(f"{job['job_id']} | {job['state']} | {job['title']}")
             print(f"표시 {len(result['jobs'])} / 전체 {result['total']}")
+        return 0
+    if command == "pin":
+        if gui_is_running():
+            result = control_request(
+                {"action": "pin_job", "jobId": args.job, "pinned": bool(args.on)}
+            )
+        else:
+            result = update_job_markers(args.job, pinned=bool(args.on)).to_dict()
+        print_json({"ok": True, "job": result})
+        return 0
+    if command == "tag":
+        if gui_is_running():
+            result = control_request(
+                {"action": "tag_job", "jobId": args.job, "color": args.color}
+            )
+        else:
+            result = update_job_markers(args.job, tag_color=args.color).to_dict()
+        print_json({"ok": True, "job": result})
         return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())

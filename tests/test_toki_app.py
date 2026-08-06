@@ -37,6 +37,12 @@ class CliParserTests(unittest.TestCase):
         self.assertTrue(args.apply_gui)
         self.assertTrue(args.json)
 
+    def test_pin_and_tag_arguments(self) -> None:
+        pin = build_parser().parse_args(["pin", "--job", "abc", "--on"])
+        self.assertTrue(pin.on)
+        tag = build_parser().parse_args(["tag", "--job", "abc", "--color", "blue"])
+        self.assertEqual(tag.color, "blue")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,16 @@ JOB_DB_PATH = ROOT_DIR / "jobs.db"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
+TAG_COLORS = {
+    "none": "",
+    "red": "#d84a4a",
+    "orange": "#df862f",
+    "yellow": "#d4ad2c",
+    "green": "#3b9a59",
+    "blue": "#3f7fd6",
+    "purple": "#8856c6",
+    "gray": "#7b8794",
+}
 
 
 def default_config() -> dict[str, Any]:
@@ -135,6 +145,8 @@ class DownloadJob:
     output_path: str = ""
     cover_url: str = ""
     cover_path: str = ""
+    pinned: bool = False
+    tag_color: str = ""
     show_browser: bool = False
     episode_index: int = 0
     episode_total: int = 0
@@ -185,6 +197,8 @@ def _connect_job_db() -> sqlite3.Connection:
             state TEXT NOT NULL DEFAULT '',
             progress INTEGER NOT NULL DEFAULT 0,
             url TEXT NOT NULL DEFAULT '',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            tag_color TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
@@ -205,6 +219,8 @@ def _connect_job_db() -> sqlite3.Connection:
             ("state", "TEXT NOT NULL DEFAULT ''"),
             ("progress", "INTEGER NOT NULL DEFAULT 0"),
             ("url", "TEXT NOT NULL DEFAULT ''"),
+            ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+            ("tag_color", "TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in columns:
                 connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
@@ -226,7 +242,8 @@ def _connect_job_db() -> sqlite3.Connection:
             connection.execute(
                 """
                 UPDATE jobs
-                SET work_key = ?, title = ?, state = ?, progress = ?, url = ?, payload = ?
+                SET work_key = ?, title = ?, state = ?, progress = ?, url = ?,
+                    pinned = ?, tag_color = ?, payload = ?
                 WHERE job_id = ?
                 """,
                 (
@@ -235,6 +252,8 @@ def _connect_job_db() -> sqlite3.Connection:
                     str(data.get("state") or ""),
                     int(data.get("progress") or 0),
                     str(data.get("url") or ""),
+                    int(bool(data.get("pinned", False))),
+                    str(data.get("tag_color") or ""),
                     json.dumps(data, ensure_ascii=False),
                     job_id,
                 ),
@@ -259,6 +278,9 @@ def _connect_job_db() -> sqlite3.Connection:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_progress ON jobs(progress DESC)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_pinned_updated ON jobs(pinned DESC, updated_at DESC)"
+    )
     return connection
 
 
@@ -274,6 +296,8 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
             job.state,
             job.progress,
             job.url,
+            int(job.pinned),
+            job.tag_color,
             job.created_at,
             updated_at,
             json.dumps(job.to_dict(), ensure_ascii=False),
@@ -286,16 +310,18 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
             connection.executemany(
                 """
             INSERT INTO jobs(
-                job_id, work_key, title, state, progress, url,
+                job_id, work_key, title, state, progress, url, pinned, tag_color,
                 created_at, updated_at, payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_key) DO UPDATE SET
                 job_id=excluded.job_id,
                 title=excluded.title,
                 state=excluded.state,
                 progress=excluded.progress,
                 url=excluded.url,
+                pinned=excluded.pinned,
+                tag_color=excluded.tag_color,
                 created_at=excluded.created_at,
                 updated_at=excluded.updated_at,
                 payload=excluded.payload
@@ -338,12 +364,22 @@ def count_jobs(query: str = "", state: str = "") -> int:
 
 
 def load_job_by_work_key(work_key: str) -> DownloadJob | None:
+    return _load_job("work_key", work_key)
+
+
+def load_job_by_id(job_id: str) -> DownloadJob | None:
+    return _load_job("job_id", job_id)
+
+
+def _load_job(column: str, value: str) -> DownloadJob | None:
+    if column not in {"job_id", "work_key"}:
+        raise ValueError("지원하지 않는 작품 조회 열입니다.")
     field_names = set(DownloadJob.__dataclass_fields__)
     connection = _connect_job_db()
     try:
         row = connection.execute(
-            "SELECT payload FROM jobs WHERE work_key = ?",
-            (work_key,),
+            f"SELECT payload FROM jobs WHERE {column} = ?",
+            (value,),
         ).fetchone()
     finally:
         connection.close()
@@ -366,9 +402,9 @@ def load_jobs_page(
 ) -> list[DownloadJob]:
     field_names = set(DownloadJob.__dataclass_fields__)
     order_by = {
-        "updated": "updated_at DESC, rowid DESC",
-        "title": "title COLLATE NOCASE ASC, updated_at DESC",
-        "progress": "progress DESC, updated_at DESC",
+        "updated": "pinned DESC, updated_at DESC, rowid DESC",
+        "title": "pinned DESC, title COLLATE NOCASE ASC, updated_at DESC",
+        "progress": "pinned DESC, progress DESC, updated_at DESC",
     }.get(sort)
     if order_by is None:
         raise ValueError(f"지원하지 않는 작업 정렬입니다: {sort}")
@@ -418,6 +454,26 @@ def retry_job_parameters(source: DownloadJob) -> dict[str, Any]:
         "output_dir": source.output_dir,
         "show_browser": source.show_browser,
     }
+
+
+def update_job_markers(
+    job_id: str,
+    *,
+    pinned: bool | None = None,
+    tag_color: str | None = None,
+) -> DownloadJob:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if pinned is not None:
+        job.pinned = bool(pinned)
+    if tag_color is not None:
+        clean_color = str(tag_color).strip().lower() or "none"
+        if clean_color not in TAG_COLORS:
+            raise ValueError(f"지원하지 않는 태그 색상입니다: {tag_color}")
+        job.tag_color = clean_color if clean_color != "none" else ""
+    save_jobs([job])
+    return job
 
 
 def open_in_explorer(target: str | os.PathLike[str]) -> None:

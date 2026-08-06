@@ -47,6 +47,7 @@ from toki_core import (
     JOB_DB_PATH,
     LOG_PATH,
     ROOT_DIR,
+    TAG_COLORS,
     DownloadJob,
     append_log,
     build_work_key,
@@ -63,6 +64,7 @@ from toki_core import (
     retry_job_parameters,
     save_config,
     save_jobs,
+    update_job_markers,
     validate_url,
 )
 
@@ -169,6 +171,9 @@ class JobItemDelegate(QStyledItemDelegate):
         painter.setPen(QPen(QColor("#9ebfe7" if selected else "#d8dde5"), 1))
         painter.setBrush(QColor("#dcecff" if selected else "#ffffff"))
         painter.drawRoundedRect(card, 5, 5)
+        if job.tag_color and job.tag_color in TAG_COLORS:
+            tag_rect = QRect(card.left(), card.top() + 5, 5, card.height() - 10)
+            painter.fillRect(tag_rect, QColor(TAG_COLORS[job.tag_color]))
 
         cover_rect = card.adjusted(9, 8, 0, -8)
         cover_rect.setWidth(52)
@@ -209,8 +214,9 @@ class JobItemDelegate(QStyledItemDelegate):
         title_font.setBold(True)
         painter.setFont(title_font)
         painter.setPen(QColor("#20262e"))
+        display_title = f"★ {job.title}" if job.pinned else job.title
         title = painter.fontMetrics().elidedText(
-            job.title, Qt.TextElideMode.ElideRight, max(20, title_rect.width())
+            display_title, Qt.TextElideMode.ElideRight, max(20, title_rect.width())
         )
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter, title)
 
@@ -1105,6 +1111,28 @@ class MainWindow(QMainWindow):
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
         menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
         menu.addSeparator()
+        menu.addAction(
+            "고정 해제" if job.pinned else "목록 상단에 고정",
+            lambda: self.set_job_pin(job.job_id, not job.pinned),
+        )
+        tag_menu = menu.addMenu("색상 태그")
+        for label, color in (
+            ("없음", "none"),
+            ("빨강", "red"),
+            ("주황", "orange"),
+            ("노랑", "yellow"),
+            ("초록", "green"),
+            ("파랑", "blue"),
+            ("보라", "purple"),
+            ("회색", "gray"),
+        ):
+            action = tag_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked((job.tag_color or "none") == color)
+            action.triggered.connect(
+                lambda _checked=False, selected=color: self.set_job_tag(job.job_id, selected)
+            )
+        menu.addSeparator()
         retry_action = menu.addAction("작품 전체 재검사", self.retry_selected_job)
         retry_action.setEnabled(job.state not in {"대기", "실행 중"})
         stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
@@ -1129,6 +1157,29 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("작품명을 복사했습니다.", 2500)
         return job.title
 
+    def set_job_pin(self, job_id: str, pinned: bool) -> dict[str, Any]:
+        updated = update_job_markers(job_id, pinned=pinned)
+        current = self.jobs.get(job_id)
+        if current:
+            current.pinned = updated.pinned
+            updated = current
+        self.apply_history_filters()
+        self.log(
+            f"작품 고정 {'설정' if pinned else '해제'}: {updated.title}",
+            job_id=job_id,
+        )
+        return updated.to_dict()
+
+    def set_job_tag(self, job_id: str, color: str) -> dict[str, Any]:
+        updated = update_job_markers(job_id, tag_color=color)
+        current = self.jobs.get(job_id)
+        if current:
+            current.tag_color = updated.tag_color
+            updated = current
+        self.task_model.update_job(updated)
+        self.log(f"작품 색상 태그 변경: {color}", job_id=job_id)
+        return updated.to_dict()
+
     def clear_logs(self) -> None:
         clear_log_file()
         self.log_edit.clear()
@@ -1146,17 +1197,15 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if self.active_context_menu and self.active_context_menu.isVisible() and self.screen():
-            frame = self.frameGeometry()
-            screenshot = self.screen().grabWindow(
-                0,
-                frame.x(),
-                frame.y(),
-                frame.width(),
-                frame.height(),
-            )
-        else:
-            screenshot = self.grab()
+        screenshot = self.grab()
+        if self.active_context_menu and self.active_context_menu.isVisible():
+            QApplication.processEvents()
+            menu_image = self.active_context_menu.grab()
+            window_origin = self.mapToGlobal(QPoint(0, 0))
+            menu_position = self.active_context_menu.pos() - window_origin
+            composite = QPainter(screenshot)
+            composite.drawPixmap(menu_position, menu_image)
+            composite.end()
         if not screenshot.save(str(target), "PNG"):
             raise OSError(f"GUI 화면을 저장하지 못했습니다: {target}")
         self.log(f"GUI 화면 캡처: {target}")
@@ -1250,6 +1299,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd download --url URL [--start N --last N --output PATH --show-browser]\n"
             "toki-cli.cmd status [--json]\n"
             "toki-cli.cmd list [--query TEXT --status STATE --sort updated|title|progress --apply-gui --json]\n"
+            "toki-cli.cmd pin --job ID --on|--off\n"
+            "toki-cli.cmd tag --job ID --color COLOR\n"
             "toki-cli.cmd stop\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -1416,6 +1467,14 @@ class MainWindow(QMainWindow):
                 str(request.get("query") or ""),
                 str(request.get("status") or ""),
                 str(request.get("sort") or "updated"),
+            )
+        if action == "pin_job":
+            return self.set_job_pin(
+                str(request.get("jobId") or ""), bool(request.get("pinned"))
+            )
+        if action == "tag_job":
+            return self.set_job_tag(
+                str(request.get("jobId") or ""), str(request.get("color") or "none")
             )
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}

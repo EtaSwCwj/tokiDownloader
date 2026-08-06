@@ -714,6 +714,7 @@ GUI와 작업 엔진은 수십 개뿐 아니라 수백, 수천, 장기적으로 
 | 작품 우클릭 메뉴 표시 | `toki-cli.cmd job-menu --job ID` |
 | 작업·진행 상태 확인 | `toki-cli.cmd status --json` |
 | 작품 검색·상태 필터·정렬 | `toki-cli.cmd list --query TEXT --status STATE --sort title --apply-gui --json` |
+| 작품 고정·색상 태그 | `toki-cli.cmd pin --job ID --on`, `toki-cli.cmd tag --job ID --color blue` |
 | GUI 화면 캡처 | `toki-cli.cmd screenshot --output PATH` |
 | 자체 점검 실행 | `toki-cli.cmd self-test --via-gui --json` |
 | 창 위치·크기 조회/설정 | `toki-cli.cmd window [--x N --y N --width N --height N]` |
