@@ -430,6 +430,36 @@ class CliParserTests(unittest.TestCase):
             }
         )
 
+    def test_performance_audit_supports_local_json_and_gui_dialog(self) -> None:
+        local = build_parser().parse_args(["performance", "audit", "--json"])
+        report = {
+            "ok": True,
+            "jobCount": 10000,
+            "runCount": 12000,
+            "elapsedMs": 4.2,
+            "queries": [{"ok": True}],
+        }
+        with (
+            patch("toki_app.job_database_diagnostics", return_value=report),
+            redirect_stdout(StringIO()) as output,
+        ):
+            local_exit = run_cli(local)
+        self.assertEqual(local_exit, 0)
+        self.assertEqual(json.loads(output.getvalue())["jobCount"], 10000)
+
+        shown = build_parser().parse_args(["performance", "audit", "--show-gui"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"shown": True, "report": report},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            gui_exit = run_cli(shown)
+        self.assertEqual(gui_exit, 0)
+        request.assert_called_once_with({"action": "show_performance_diagnostics"})
+
     def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
         dry_run = build_parser().parse_args(
             ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--json"]

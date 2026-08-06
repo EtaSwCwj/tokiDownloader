@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -57,6 +58,31 @@ SETTING_KEYS = frozenset(
 _LOG_MAX_BYTES = 2 * 1024 * 1024
 _LOG_BACKUP_COUNT = 1
 ACTIVE_JOB_STATES = frozenset({"대기", "실행 중", "일시정지", "재시도 대기"})
+JOB_SORT_ORDERS = {
+    "updated": "pinned DESC, updated_at DESC, job_id DESC",
+    "title": "pinned DESC, title COLLATE NOCASE ASC, updated_at DESC, job_id DESC",
+    "progress": "pinned DESC, progress DESC, updated_at DESC, job_id DESC",
+}
+JOB_QUERY_INDEXES = {
+    "idx_jobs_pinned_updated_job": (
+        "pinned DESC, updated_at DESC, job_id DESC"
+    ),
+    "idx_jobs_state_pinned_updated_job": (
+        "state, pinned DESC, updated_at DESC, job_id DESC"
+    ),
+    "idx_jobs_pinned_title_updated_job": (
+        "pinned DESC, title COLLATE NOCASE ASC, updated_at DESC, job_id DESC"
+    ),
+    "idx_jobs_state_pinned_title_updated_job": (
+        "state, pinned DESC, title COLLATE NOCASE ASC, updated_at DESC, job_id DESC"
+    ),
+    "idx_jobs_pinned_progress_updated_job": (
+        "pinned DESC, progress DESC, updated_at DESC, job_id DESC"
+    ),
+    "idx_jobs_state_pinned_progress_updated_job": (
+        "state, pinned DESC, progress DESC, updated_at DESC, job_id DESC"
+    ),
+}
 ERROR_CATEGORIES = frozenset(
     {
         "authentication_required",
@@ -954,8 +980,9 @@ def build_work_key(url: str) -> str:
     return f"url:{parsed.hostname or ''}{normalized_path}"
 
 
-def _connect_job_db() -> sqlite3.Connection:
-    connection = sqlite3.connect(JOB_DB_PATH, timeout=10)
+def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
+    path = Path(database_path) if database_path is not None else JOB_DB_PATH
+    connection = sqlite3.connect(path, timeout=10)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute(
@@ -990,7 +1017,7 @@ def _connect_job_db() -> sqlite3.Connection:
         )
         """
     )
-    database_key = str(JOB_DB_PATH.resolve())
+    database_key = str(path.resolve())
     if database_key not in _INITIALIZED_JOB_DBS:
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
@@ -1102,13 +1129,17 @@ def _connect_job_db() -> sqlite3.Connection:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_runs_state_updated ON runs(state, updated_at DESC)"
     )
+    for index_name, columns in JOB_QUERY_INDEXES.items():
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS {index_name} ON jobs({columns})"
+        )
     return connection
 
 
 def save_jobs(jobs: list[DownloadJob]) -> None:
     if not jobs:
         return
-    updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    updated_at = datetime.now().astimezone().isoformat(timespec="microseconds")
     rows = [
         (
             job.job_id,
@@ -1156,7 +1187,7 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
 def save_runs(runs: list[DownloadRun]) -> None:
     if not runs:
         return
-    updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    updated_at = datetime.now().astimezone().isoformat(timespec="microseconds")
     rows = [
         (
             run.run_id,
@@ -1319,11 +1350,7 @@ def load_jobs_page(
     sort: str = "updated",
 ) -> list[DownloadJob]:
     field_names = set(DownloadJob.__dataclass_fields__)
-    order_by = {
-        "updated": "pinned DESC, updated_at DESC, rowid DESC",
-        "title": "pinned DESC, title COLLATE NOCASE ASC, updated_at DESC",
-        "progress": "pinned DESC, progress DESC, updated_at DESC",
-    }.get(sort)
+    order_by = JOB_SORT_ORDERS.get(sort)
     if order_by is None:
         raise ValueError(f"지원하지 않는 작업 정렬입니다: {sort}")
     where_sql, parameters = _job_filter_clause(query, state)
@@ -1344,6 +1371,66 @@ def load_jobs_page(
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
     return jobs
+
+
+def job_database_diagnostics(database_path: Path | None = None) -> dict[str, Any]:
+    """Inspect list query plans without loading every stored work into memory."""
+    started = time.perf_counter()
+    path = Path(database_path) if database_path is not None else JOB_DB_PATH
+    connection = _connect_job_db(path)
+    try:
+        indexes = sorted(
+            str(row[1])
+            for row in connection.execute("PRAGMA index_list('jobs')").fetchall()
+        )
+        query_plans: list[dict[str, Any]] = []
+        for state_filtered in (False, True):
+            for sort, order_by in JOB_SORT_ORDERS.items():
+                where_sql = " WHERE state = ?" if state_filtered else ""
+                parameters: list[Any] = ["완료"] if state_filtered else []
+                rows = connection.execute(
+                    "EXPLAIN QUERY PLAN "
+                    f"SELECT payload FROM jobs{where_sql} "
+                    f"ORDER BY {order_by} LIMIT ? OFFSET ?",
+                    [*parameters, 200, 0],
+                ).fetchall()
+                details = [str(row[3]) for row in rows]
+                uses_index = any("USING INDEX" in detail.upper() for detail in details)
+                temporary_sort = any(
+                    "USE TEMP B-TREE FOR ORDER BY" in detail.upper()
+                    for detail in details
+                )
+                query_plans.append(
+                    {
+                        "name": f"{'state-' if state_filtered else ''}{sort}",
+                        "sort": sort,
+                        "stateFiltered": state_filtered,
+                        "usesIndex": uses_index,
+                        "temporarySort": temporary_sort,
+                        "ok": uses_index and not temporary_sort,
+                        "details": details,
+                    }
+                )
+        missing_indexes = sorted(set(JOB_QUERY_INDEXES) - set(indexes))
+        job_count = int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        run_count = int(connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+        journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+    finally:
+        connection.close()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+    return {
+        "ok": not missing_indexes and all(plan["ok"] for plan in query_plans),
+        "databasePath": str(path.resolve()),
+        "databaseBytes": path.stat().st_size if path.exists() else 0,
+        "jobCount": job_count,
+        "runCount": run_count,
+        "journalMode": journal_mode,
+        "elapsedMs": elapsed_ms,
+        "requiredIndexes": sorted(JOB_QUERY_INDEXES),
+        "missingIndexes": missing_indexes,
+        "indexes": indexes,
+        "queries": query_plans,
+    }
 
 
 def recover_interrupted_jobs(

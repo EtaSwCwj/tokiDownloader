@@ -23,6 +23,7 @@ from toki_core import (
     delete_job_record,
     delete_job_records,
     hydrate_job_metadata,
+    job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
     load_job_by_work_key,
@@ -521,6 +522,30 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.job_id, "latest")
         self.assertEqual(loaded.title, "최신 제목")
+
+    def test_database_diagnostics_verify_all_list_query_indexes(self) -> None:
+        save_jobs(
+            [
+                DownloadJob(
+                    job_id=f"diagnostic-{index}",
+                    url=f"https://newtoki1.org/manhwa/{8100 + index}",
+                    output_dir=r"C:\Manga",
+                    title=f"진단 작품 {index}",
+                    state="완료" if index % 2 else "오류",
+                    progress=index * 10,
+                    pinned=index == 2,
+                )
+                for index in range(4)
+            ]
+        )
+        report = job_database_diagnostics()
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["jobCount"], 4)
+        self.assertEqual(report["missingIndexes"], [])
+        self.assertEqual(len(report["queries"]), 6)
+        self.assertTrue(all(plan["usesIndex"] for plan in report["queries"]))
+        self.assertTrue(all(not plan["temporarySort"] for plan in report["queries"]))
 
     def test_restart_recovery_scans_beyond_first_history_page(self) -> None:
         interrupted = DownloadJob(

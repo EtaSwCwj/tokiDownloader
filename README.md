@@ -149,6 +149,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
 .\toki-cli.cmd window --safe
+.\toki-cli.cmd performance audit --json
+.\toki-cli.cmd performance audit --show-gui
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -167,6 +169,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `--safe`는 모니터 분리나 해상도 변경으로 창이 화면 밖에 있을 때 현재 사용 가능한 화면으로
 복구합니다. 다중 모니터의 정상적인 음수 좌표는 그대로 유지합니다. `status --json`의
 `window`에서 현재 모니터 이름, 배율, 화면 안 배치 여부와 전체 모니터 목록을 확인할 수 있습니다.
+
+`performance audit`은 작품 목록의 갱신일·제목·진행률 정렬과 상태 필터 조합 6가지를
+`EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,
+전체 임시 정렬이 발생하는지를 JSON으로 반환합니다. `--show-gui`는 같은 결과를 도구 메뉴의
+`목록 성능 진단...` 창으로 표시하며 `--close`로 닫을 수 있습니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

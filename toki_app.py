@@ -26,6 +26,7 @@ from toki_core import (
     clear_log_file,
     find_node,
     hydrate_job_metadata,
+    job_database_diagnostics,
     keyboard_shortcut_catalog,
     count_jobs,
     count_runs,
@@ -423,6 +424,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="같은 검색·필터·정렬을 실행 중인 GUI 목록에도 적용",
     )
     list_jobs.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    performance = subparsers.add_parser("performance", help="대규모 목록 성능 진단")
+    performance_commands = performance.add_subparsers(
+        dest="performance_command", required=True
+    )
+    performance_audit = performance_commands.add_parser(
+        "audit", help="SQLite 목록 인덱스와 쿼리 계획 검사"
+    )
+    performance_audit.add_argument("--json", action="store_true", help="JSON으로 출력")
+    performance_window = performance_audit.add_mutually_exclusive_group()
+    performance_window.add_argument(
+        "--show-gui", action="store_true", help="GUI 성능 진단창 열기"
+    )
+    performance_window.add_argument(
+        "--close", action="store_true", help="GUI 성능 진단창 닫기"
+    )
 
     list_state = subparsers.add_parser(
         "list-state", help="작품 목록의 빈 화면·로딩·오류 상태 조회 및 GUI 점검"
@@ -954,6 +971,29 @@ def run_cli(args: argparse.Namespace) -> int:
             )
         )
         return 0
+    if command == "performance":
+        if args.close:
+            ensure_gui_running()
+            result = control_request({"action": "close_performance_diagnostics"})
+        elif args.show_gui:
+            ensure_gui_running()
+            result = control_request({"action": "show_performance_diagnostics"})
+        else:
+            result = job_database_diagnostics()
+        if args.json or args.show_gui or args.close:
+            print_json(result)
+        else:
+            queries = list(result.get("queries") or [])
+            passed = sum(1 for query in queries if query.get("ok"))
+            print(
+                f"작품 {int(result.get('jobCount') or 0):,}개 | "
+                f"실행 이력 {int(result.get('runCount') or 0):,}개 | "
+                f"쿼리 계획 {passed}/{len(queries)} 통과 | "
+                f"{float(result.get('elapsedMs') or 0):.1f}ms"
+            )
+        report = result.get("report") if isinstance(result, dict) else None
+        effective = report if isinstance(report, dict) else result
+        return 0 if bool(effective.get("ok", args.close)) else 2
     if command == "status":
         result = control_request({"action": "status"})
         if args.json:

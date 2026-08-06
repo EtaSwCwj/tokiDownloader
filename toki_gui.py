@@ -106,6 +106,7 @@ from toki_core import (
     error_category_label,
     find_node,
     hydrate_job_metadata,
+    job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
     load_config,
@@ -589,6 +590,62 @@ class ShortcutHelpDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+
+class PerformanceDiagnosticsDialog(QDialog):
+    def __init__(self, report: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.report = report
+        self.setWindowTitle("목록 데이터베이스 성능 진단")
+        self.resize(820, 540)
+        layout = QVBoxLayout(self)
+
+        query_plans = list(report.get("queries") or [])
+        passed = sum(1 for plan in query_plans if plan.get("ok"))
+        summary = QLabel(
+            f"작품 {int(report.get('jobCount') or 0):,}개 · 실행 이력 "
+            f"{int(report.get('runCount') or 0):,}개 · 쿼리 계획 {passed}/{len(query_plans)} 통과 · "
+            f"진단 {float(report.get('elapsedMs') or 0):.1f}ms"
+        )
+        summary.setObjectName("mutedLabel")
+        layout.addWidget(summary)
+
+        table = QTableWidget(len(query_plans), 5)
+        table.setHorizontalHeaderLabels(("조회", "상태 필터", "인덱스", "임시 정렬", "결과"))
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        for row, plan in enumerate(query_plans):
+            values = (
+                str(plan.get("sort") or ""),
+                "사용" if plan.get("stateFiltered") else "없음",
+                "사용" if plan.get("usesIndex") else "미사용",
+                "발생" if plan.get("temporarySort") else "없음",
+                "통과" if plan.get("ok") else "점검 필요",
+            )
+            for column, value in enumerate(values):
+                table.setItem(row, column, QTableWidgetItem(value))
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table, 1)
+
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        details.setMaximumHeight(125)
+        details.setPlainText(
+            "\n".join(
+                f"{plan.get('name')}: {' | '.join(plan.get('details') or [])}"
+                for plan in query_plans
+            )
+        )
+        layout.addWidget(details)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
@@ -1453,6 +1510,7 @@ class MainWindow(QMainWindow):
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
+        self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -1567,6 +1625,9 @@ class MainWindow(QMainWindow):
         self.self_test_action = QAction("자체 점검 실행", self)
         self.self_test_action.triggered.connect(self.start_self_test)
 
+        self.performance_action = QAction("목록 성능 진단...", self)
+        self.performance_action.triggered.connect(self.show_performance_diagnostics)
+
         self.refresh_list_action = QAction("작품 목록 새로고침", self)
         self.refresh_list_action.setShortcuts(
             [QKeySequence(key) for key in keyboard_shortcut_keys("list.refresh")]
@@ -1650,6 +1711,7 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction(self.screenshot_action)
         tools_menu.addAction(self.self_test_action)
+        tools_menu.addAction(self.performance_action)
         tools_menu.addAction(self.clear_log_action)
 
         view_menu = self.menuBar().addMenu("보기")
@@ -4213,6 +4275,8 @@ class MainWindow(QMainWindow):
             and self.active_shortcut_help_dialog.isVisible()
         ):
             screenshot = self.active_shortcut_help_dialog.grab()
+        elif self.active_performance_dialog and self.active_performance_dialog.isVisible():
+            screenshot = self.active_performance_dialog.grab()
         elif self.active_settings_dialog and self.active_settings_dialog.isVisible():
             screenshot = self.active_settings_dialog.grab()
         elif (
@@ -4381,6 +4445,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd copy-log [--tail 3000]\n"
             "toki-cli.cmd screenshot [--output PATH]\n"
             "toki-cli.cmd window [--x N --y N --width N --height N --screen NAME --center --safe --maximize|--normal]\n"
+            "toki-cli.cmd performance audit [--json|--show-gui|--close]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
@@ -4413,6 +4478,32 @@ class MainWindow(QMainWindow):
         if not self.active_shortcut_help_dialog:
             return False
         self.active_shortcut_help_dialog.close()
+        return True
+
+    def show_performance_diagnostics(self) -> dict[str, Any]:
+        report = job_database_diagnostics()
+        if self.active_performance_dialog:
+            self.active_performance_dialog.close()
+        dialog = PerformanceDiagnosticsDialog(report, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.active_performance_dialog = dialog
+        selected = dialog
+        dialog.destroyed.connect(
+            lambda: (
+                setattr(self, "active_performance_dialog", None)
+                if self.active_performance_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return report
+
+    def close_performance_diagnostics(self) -> bool:
+        if not self.active_performance_dialog:
+            return False
+        self.active_performance_dialog.close()
         return True
 
     def status_snapshot(self) -> dict[str, Any]:
@@ -4478,6 +4569,10 @@ class MainWindow(QMainWindow):
             "shortcutHelpOpen": bool(
                 self.active_shortcut_help_dialog
                 and self.active_shortcut_help_dialog.isVisible()
+            ),
+            "performanceDiagnosticsOpen": bool(
+                self.active_performance_dialog
+                and self.active_performance_dialog.isVisible()
             ),
             "window": {
                 **self.window_snapshot(),
@@ -4816,6 +4911,12 @@ class MainWindow(QMainWindow):
             return {"shown": self.show_shortcut_help()}
         if action == "close_shortcut_help":
             return {"closed": self.close_shortcut_help()}
+        if action == "performance_diagnostics":
+            return job_database_diagnostics()
+        if action == "show_performance_diagnostics":
+            return {"shown": True, "report": self.show_performance_diagnostics()}
+        if action == "close_performance_diagnostics":
+            return {"closed": self.close_performance_diagnostics()}
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()
