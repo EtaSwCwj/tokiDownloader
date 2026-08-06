@@ -86,6 +86,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd set-note --job 작업ID --text "확인할 내용"
 .\toki-cli.cmd open-source --job 작업ID
 .\toki-cli.cmd open-cover --job 작업ID
+.\toki-cli.cmd refresh-metadata --job 작업ID
 .\toki-cli.cmd pin --job 작업ID --on
 .\toki-cli.cmd tag --job 작업ID --color purple
 .\toki-cli.cmd remove-record --job 작업ID --yes
@@ -130,6 +131,13 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 실행 로그창이 열립니다. GUI의 상세창과 우클릭 메뉴
 버튼은 각각 `open-folder`, `open-source`, `open-cover`, `set-note`, `runs`, `run-logs`, `run-log`,
 `details` 명령으로도 제어하거나 검증할 수 있습니다.
+
+`refresh-metadata --job`은 작품의 기존 저장 폴더를 대상으로 메타데이터와 대표 이미지만
+다시 받습니다. 전체 회차 목록은 최신 `episodeCount` 계산을 위해 확인하지만 각 회차
+페이지에는 들어가지 않고, 이미지·본문·회차 폴더는 생성하거나 변경하지 않습니다.
+새로고침 실행도 `runs`에 `metadata_refresh` 종류로 별도 기록되며 기본적으로 자동화
+브라우저 창을 표시하지 않습니다. 제목이나 작가가 사이트에서 바뀌어도 기존 작품 폴더를
+자동 이동하거나 이름 변경하지 않아 다운로드 결과 경로를 보존합니다.
 
 `remove-record --yes`는 작품을 GUI 목록과 `jobs.db`에서만 제거합니다. 다운로드한 작품
 폴더, 이미지, 표지와 `metadata.json`은 삭제하지 않습니다. 대기 또는 실행 중인 작품은
@@ -176,12 +184,14 @@ npm install
 https://github.com/user-attachments/assets/b3879c59-3381-407b-a3a8-ad8bf8d84cbb
 ## 명령어
 ```bash
-node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"]
+node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-metadata-only] [-content-path "기존 작품 폴더"]
 ```
 - -url은 필수 입력입니다. 반드시 큰따옴표 안에 넣어주세요.
 - -start는 옵션입니다. 받고싶은 회차 시작 번호를 입력하세요. 생략하면 처음부터 받습니다.
 - -last는 옵션입니다. 받고싶은 마지막 회차 번호를 입력하세요. 생략하면 마지막까지 받습니다.
 - -output은 옵션입니다. 저장할 기준 폴더를 지정하며, 생략하면 현재 실행 폴더에 저장합니다.
+- -metadata-only는 회차를 받지 않고 메타데이터와 대표 이미지만 다시 받습니다.
+- -content-path는 메타데이터 전용 실행이 사용할 기존 작품 폴더를 직접 지정합니다.
 - 대괄호(`[]`)는 옵션이라는 뜻이므로 명령어에 직접 입력하지 마세요.
 
 예시

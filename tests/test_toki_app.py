@@ -86,6 +86,8 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(source.job, "job-1")
         cover = build_parser().parse_args(["open-cover", "--job", "job-1"])
         self.assertEqual(cover.job, "job-1")
+        refresh = build_parser().parse_args(["refresh-metadata", "--job", "job-1"])
+        self.assertEqual(refresh.job, "job-1")
         details = build_parser().parse_args(["details", "--job", "job-1"])
         self.assertEqual(details.job, "job-1")
         close_details = build_parser().parse_args(["details", "--close"])

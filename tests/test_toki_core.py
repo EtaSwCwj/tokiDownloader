@@ -58,6 +58,20 @@ class CoreContractTests(unittest.TestCase):
         self.assertIn("-show-browser", args)
         self.assertIn("-json-events", args)
 
+    def test_metadata_refresh_arguments_preserve_existing_work_folder(self) -> None:
+        job = DownloadJob(
+            job_id="metadata",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\마나토끼\[작가][그룹] 제목",
+            metadata_only=True,
+        )
+        args = build_downloader_args(job)
+        self.assertIn("-metadata-only", args)
+        content_path_index = args.index("-content-path")
+        self.assertEqual(args[content_path_index + 1], job.output_path)
+        self.assertEqual(DownloadRun.from_job(job).operation, "metadata_refresh")
+
     def test_retry_contract_resets_previous_range(self) -> None:
         source = DownloadJob(
             job_id="old",

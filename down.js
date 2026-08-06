@@ -14,7 +14,9 @@ let info = {
     contentFolderName: '',
     metadata: null,
     jsonEvents: false,
-    showBrowser: false
+    showBrowser: false,
+    metadataOnly: false,
+    contentPathOverride: ''
 }
 
 function sleep(ms) {
@@ -29,7 +31,7 @@ function consoleGrey(val) {
     console.log(`\x1b[100m${val}\x1b[0m`);
 }
 function help() {
-    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-json-events]`);
+    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
     process.exit();
 }
 function emitEvent(event, data = {}) {
@@ -72,6 +74,15 @@ function analyseArguments() {
         }
         else if (process.argv[i] == '-show-browser') {
             info.showBrowser = true;
+        }
+        else if (process.argv[i] == '-metadata-only') {
+            info.metadataOnly = true;
+        }
+        else if (process.argv[i] == '-content-path') {
+            if ((i + 1) < argL) {
+                info.contentPathOverride = path.resolve(process.argv[i + 1]);
+                i++;
+            }
         }
         else if (process.argv[i] == '-h' || process.argv[i] == '-help') {
             help();
@@ -121,7 +132,7 @@ function buildContentFolderName(metadata) {
     return `[${author}][${group}] ${title}`;
 }
 function getContentPath() {
-    return path.join(info.outputDir, info.siteTitle, info.contentFolderName);
+    return info.contentPathOverride || path.join(info.outputDir, info.siteTitle, info.contentFolderName);
 }
 function saveMetadata(metadata) {
     const contentPath = getContentPath();
@@ -132,14 +143,14 @@ function saveMetadata(metadata) {
         'utf8'
     );
 }
-async function cacheCoverImage(metadata) {
+async function cacheCoverImage(metadata, force = false) {
     if (!metadata.coverUrl)
         return '';
     try {
         const extensionMatch = new URL(metadata.coverUrl).pathname.match(/\.(?:jpe?g|png|webp|gif)$/i);
         const fileName = `cover${extensionMatch?.[0]?.toLowerCase() || '.jpg'}`;
         const coverPath = path.join(getContentPath(), fileName);
-        if (!fs.existsSync(coverPath))
+        if (force || !fs.existsSync(coverPath))
             await saveImage(getContentPath(), fileName, metadata.coverUrl);
         metadata.coverFile = fileName;
         return coverPath;
@@ -294,11 +305,11 @@ async function main() {
         link.reverse();
         const totalEpisodeCount = link.length;
         // info.startIndex와 info.lastIndex필터하기.
-        link = link.filter(item => {
+        link = info.metadataOnly ? [] : link.filter(item => {
             const episodeNumber = parseInt(item.num);
             return info.startIndex <= episodeNumber && episodeNumber <= info.lastIndex;
         });
-        if (link.length === 0)
+        if (!info.metadataOnly && link.length === 0)
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
         info.metadata.episodeCount = totalEpisodeCount;
@@ -308,7 +319,7 @@ async function main() {
             last: info.lastIndex === 99999 ? null : info.lastIndex
         };
         info.metadata.generatedAt = new Date().toISOString();
-        const coverPath = await cacheCoverImage(info.metadata);
+        const coverPath = await cacheCoverImage(info.metadata, info.metadataOnly);
         saveMetadata(info.metadata);
         console.log(`저장 폴더: ${getContentPath()}`);
         emitEvent('work_metadata', {
@@ -320,6 +331,19 @@ async function main() {
             totalEpisodes: totalEpisodeCount,
             selectedEpisodes: link.length
         });
+        if (info.metadataOnly) {
+            console.log('메타데이터와 대표 이미지 새로고침 완료');
+            emitEvent('metadata_refreshed', {
+                outputPath: getContentPath(),
+                coverPath
+            });
+            emitEvent('completed', {
+                outputPath: getContentPath(),
+                selectedEpisodes: 0,
+                metadataOnly: true
+            });
+            return;
+        }
         // 페이지 방문하기
         for (let i = 0; i < link.length; i++) {
             await Promise.all([page.goto(link[i].src), page.waitForNavigation()]);

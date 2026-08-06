@@ -329,6 +329,12 @@ def build_parser() -> argparse.ArgumentParser:
     open_cover = subparsers.add_parser("open-cover", help="저장된 대표 이미지 원본 열기")
     open_cover.add_argument("--job", required=True, help="작업 ID")
 
+    refresh_metadata = subparsers.add_parser(
+        "refresh-metadata",
+        help="회차 파일은 건드리지 않고 메타데이터와 대표 이미지 다시 받기",
+    )
+    refresh_metadata.add_argument("--job", required=True, help="작업 ID")
+
     details = subparsers.add_parser("details", help="GUI 작품 정보 및 실행 이력 창 표시")
     details_target = details.add_mutually_exclusive_group(required=True)
     details_target.add_argument("--job", help="작업 ID")
@@ -642,6 +648,11 @@ def run_cli(args: argparse.Namespace) -> int:
             cover_path = resolve_cover_path(job)
             open_in_explorer(cover_path)
             print(cover_path)
+        return 0
+    if command == "refresh-metadata":
+        ensure_gui_running()
+        result = control_request({"action": "refresh_metadata", "jobId": args.job})
+        print_json({"ok": True, "job": result})
         return 0
     if command == "details":
         ensure_gui_running()

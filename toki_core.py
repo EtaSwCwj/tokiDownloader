@@ -174,6 +174,7 @@ class DownloadJob:
     pinned: bool = False
     tag_color: str = ""
     show_browser: bool = False
+    metadata_only: bool = False
     episode_index: int = 0
     episode_total: int = 0
     episode_number: int = 0
@@ -199,6 +200,7 @@ class DownloadRun:
     work_key: str
     requested_start: int | None = None
     requested_last: int | None = None
+    operation: str = "download"
     state: str = "대기"
     process_pid: int = 0
     discovered_episodes: int = 0
@@ -224,6 +226,7 @@ class DownloadRun:
             work_key=job.work_key,
             requested_start=job.start,
             requested_last=job.last,
+            operation="metadata_refresh" if job.metadata_only else "download",
             state=job.state,
             selected_episodes=job.episode_total,
             processed_episodes=job.episode_index,
@@ -697,6 +700,10 @@ def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[st
         args.extend(["-last", str(job.last)])
     if job.show_browser:
         args.append("-show-browser")
+    if job.metadata_only:
+        args.append("-metadata-only")
+        if job.output_path:
+            args.extend(["-content-path", job.output_path])
     if json_events:
         args.append("-json-events")
     return args

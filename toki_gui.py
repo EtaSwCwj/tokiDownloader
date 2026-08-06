@@ -385,9 +385,14 @@ class WorkDetailDialog(QDialog):
         open_source.clicked.connect(lambda: owner.open_job_source(self.job.job_id))
         open_cover = QPushButton("대표 이미지 원본 열기")
         open_cover.clicked.connect(lambda: owner.open_job_cover(self.job.job_id))
+        refresh_metadata = QPushButton("메타데이터 새로고침")
+        refresh_metadata.clicked.connect(
+            lambda: owner.refresh_selected_metadata(self.job.job_id)
+        )
         action_row.addWidget(open_folder)
         action_row.addWidget(open_source)
         action_row.addWidget(open_cover)
+        action_row.addWidget(refresh_metadata)
         action_row.addStretch(1)
         root.addLayout(action_row)
 
@@ -408,7 +413,7 @@ class WorkDetailDialog(QDialog):
         history_header.addWidget(self.page_label)
         root.addLayout(history_header)
 
-        columns = ("실행 시각", "상태", "요청 범위", "발견", "선택", "처리", "진행률", "PID")
+        columns = ("실행 시각", "종류", "상태", "요청 범위", "발견", "선택", "처리", "진행률", "PID")
         self.run_table = QTableWidget(0, len(columns))
         self.run_table.setHorizontalHeaderLabels(columns)
         self.run_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -481,6 +486,7 @@ class WorkDetailDialog(QDialog):
             requested = f"{run.get('requested_start') or '처음'} ~ {run.get('requested_last') or '끝'}"
             values = (
                 str(run.get("created_at") or "").replace("T", " "),
+                "메타데이터" if run.get("operation") == "metadata_refresh" else "다운로드",
                 str(run.get("state") or ""),
                 requested,
                 str(run.get("discovered_episodes") or 0),
@@ -924,6 +930,7 @@ class MainWindow(QMainWindow):
         last: int | None,
         output_dir: str,
         show_browser: bool = False,
+        metadata_only: bool = False,
     ) -> DownloadJob:
         valid_url = validate_url(url)
         start_value, last_value = normalize_range(start, last)
@@ -957,6 +964,7 @@ class MainWindow(QMainWindow):
             pinned=existing.pinned if existing else False,
             tag_color=existing.tag_color if existing else "",
             show_browser=show_browser,
+            metadata_only=metadata_only,
         )
         run = DownloadRun.from_job(job)
         save_runs([run])
@@ -972,7 +980,11 @@ class MainWindow(QMainWindow):
                 self.history_total += 1
         self.history_loaded = self.task_model.rowCount()
         self._schedule_job_persist(job)
-        action = "작품 작업 갱신" if existing else "작품 작업 추가"
+        action = (
+            "메타데이터 새로고침 예약"
+            if metadata_only
+            else "작품 작업 갱신" if existing else "작품 작업 추가"
+        )
         self.log(f"{action}: {job.url} ({job.work_key})", job_id=job.job_id)
         self._update_summary()
         self._start_next_job()
@@ -1289,6 +1301,10 @@ class MainWindow(QMainWindow):
             source = metadata.get("source") or {}
             job.site = str(source.get("site") or "")
             job.metadata_path = str(Path(job.output_path) / "metadata.json") if job.output_path else ""
+            if job.metadata_only:
+                delegate = self.task_list.itemDelegate()
+                if isinstance(delegate, JobItemDelegate):
+                    delegate.cover_cache.clear()
         elif event_name == "queue_ready":
             job.episode_total = int(event.get("selectedEpisodes") or 0)
         elif event_name == "episode_started":
@@ -1363,6 +1379,12 @@ class MainWindow(QMainWindow):
                 self.active_run.error = job.error
                 self.active_run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 save_runs([self.active_run])
+            if (
+                self.active_detail_dialog
+                and self.active_detail_dialog.job.work_key == job.work_key
+            ):
+                self.active_detail_dialog.job = job
+                self.active_detail_dialog.refresh()
 
         self.process = None
         self.active_job = None
@@ -1411,6 +1433,28 @@ class MainWindow(QMainWindow):
             self.retry_job()
         except (ValueError, OSError, RuntimeError) as error:
             QMessageBox.warning(self, "작업을 재시도할 수 없음", str(error))
+            self.log(str(error), "ERROR")
+
+    def refresh_job_metadata(self, job_id: str | None = None) -> DownloadJob:
+        source = self.selected_job(job_id)
+        if not source:
+            raise ValueError("메타데이터를 새로고칠 작품을 선택해주세요.")
+        if source.state in {"대기", "실행 중"}:
+            raise ValueError("대기 또는 실행 중인 작품은 메타데이터를 새로고칠 수 없습니다.")
+        return self.enqueue_download(
+            source.url,
+            None,
+            None,
+            source.output_dir,
+            False,
+            metadata_only=True,
+        )
+
+    def refresh_selected_metadata(self, job_id: str | None = None) -> None:
+        try:
+            self.refresh_job_metadata(job_id)
+        except (ValueError, OSError, RuntimeError) as error:
+            QMessageBox.warning(self, "메타데이터를 새로고칠 수 없음", str(error))
             self.log(str(error), "ERROR")
 
     def choose_output_folder(self) -> None:
@@ -1536,6 +1580,10 @@ class MainWindow(QMainWindow):
         menu.addAction("다운로드 폴더 열기", lambda: self.open_output_folder(job.job_id))
         menu.addAction("원본 페이지 열기", lambda: self.open_job_source(job.job_id))
         menu.addAction("대표 이미지 원본 열기", lambda: self.open_job_cover(job.job_id))
+        menu.addAction(
+            "메타데이터 새로고침",
+            lambda: self.refresh_selected_metadata(job.job_id),
+        )
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
         menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
@@ -1981,6 +2029,7 @@ class MainWindow(QMainWindow):
                 request.get("last"),
                 str(request.get("output") or self.output_edit.text()),
                 bool(request.get("showBrowser", False)),
+                bool(request.get("metadataOnly", False)),
             )
             return job.to_dict()
         if action == "stop":
@@ -1988,6 +2037,9 @@ class MainWindow(QMainWindow):
         if action == "retry":
             job = self.retry_job(request.get("jobId"))
             return job.to_dict() if job else None
+        if action == "refresh_metadata":
+            job = self.refresh_job_metadata(str(request.get("jobId") or ""))
+            return job.to_dict()
         if action == "set_output":
             return {"outputDir": self.set_output_folder(str(request.get("path") or ""))}
         if action == "open_folder":
