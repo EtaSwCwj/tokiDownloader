@@ -76,6 +76,7 @@ from toki_core import (
     read_log_tail,
     read_run_log,
     retry_job_parameters,
+    resolve_cover_path,
     save_config,
     save_jobs,
     save_runs,
@@ -382,8 +383,11 @@ class WorkDetailDialog(QDialog):
         open_folder.clicked.connect(lambda: owner.open_output_folder(self.job.job_id))
         open_source = QPushButton("원본 페이지 열기")
         open_source.clicked.connect(lambda: owner.open_job_source(self.job.job_id))
+        open_cover = QPushButton("대표 이미지 원본 열기")
+        open_cover.clicked.connect(lambda: owner.open_job_cover(self.job.job_id))
         action_row.addWidget(open_folder)
         action_row.addWidget(open_source)
+        action_row.addWidget(open_cover)
         action_row.addStretch(1)
         root.addLayout(action_row)
 
@@ -1441,6 +1445,15 @@ class MainWindow(QMainWindow):
         self.log(f"원본 페이지 열기: {job.url}", job_id=job.job_id)
         return job.url
 
+    def open_job_cover(self, job_id: str | None = None) -> str:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("대표 이미지를 열 작품을 선택해주세요.")
+        cover_path = resolve_cover_path(job)
+        open_in_explorer(cover_path)
+        self.log(f"대표 이미지 원본 열기: {cover_path}", job_id=job.job_id)
+        return cover_path
+
     def show_job_details(self, job_id: str | None = None) -> bool:
         job = self.selected_job(job_id if isinstance(job_id, str) else None)
         if not job:
@@ -1522,6 +1535,7 @@ class MainWindow(QMainWindow):
         menu.addAction("작품 정보 및 실행 이력", lambda: self.show_job_details(job.job_id))
         menu.addAction("다운로드 폴더 열기", lambda: self.open_output_folder(job.job_id))
         menu.addAction("원본 페이지 열기", lambda: self.open_job_source(job.job_id))
+        menu.addAction("대표 이미지 원본 열기", lambda: self.open_job_cover(job.job_id))
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
         menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
@@ -1980,6 +1994,8 @@ class MainWindow(QMainWindow):
             return {"opened": self.open_output_folder(request.get("jobId"))}
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}
+        if action == "open_cover":
+            return {"opened": self.open_job_cover(request.get("jobId"))}
         if action == "show_details":
             return {"shown": self.show_job_details(request.get("jobId"))}
         if action == "close_details":

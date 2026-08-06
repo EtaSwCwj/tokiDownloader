@@ -175,7 +175,7 @@ refresh-thumbnail --job ID
 - [x] 사용자 메모 추가·수정
 - [x] 실행 이력 페이지 조회와 상세 로그 연결
 - [x] 기본 브라우저에서 원본 작품 페이지 열기
-- [ ] 대표 이미지 원본 열기와 다시 받기
+- [ ] 대표 이미지 원본 열기와 다시 받기 (원본 열기 완료, 다시 받기 남음)
 
 필수 CLI 예시:
 
@@ -187,6 +187,7 @@ run-logs --run ID --tail 500 --json
 run-log --run ID
 set-note --job ID --text TEXT
 open-source --job ID
+open-cover --job ID
 refresh-metadata --job ID
 ```
 

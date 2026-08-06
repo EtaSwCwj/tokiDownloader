@@ -24,6 +24,7 @@ from toki_core import (
     load_runs_page,
     normalize_range,
     read_run_log,
+    resolve_cover_path,
     save_jobs,
     save_runs,
     update_job_note,
@@ -256,6 +257,20 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(job.group, "그룹 B")
         self.assertEqual(job.site, "manatoki")
         self.assertEqual(job.metadata_path, str(metadata_path.resolve()))
+
+    def test_cover_path_resolution_requires_existing_file(self) -> None:
+        cover = Path(self.temp_dir.name) / "cover.jpg"
+        cover.write_bytes(b"cover")
+        job = DownloadJob(
+            job_id="cover",
+            url="https://newtoki1.org/manhwa/7004",
+            output_dir=self.temp_dir.name,
+            cover_path=str(cover),
+        )
+        self.assertEqual(resolve_cover_path(job), str(cover.resolve()))
+        cover.unlink()
+        with self.assertRaises(FileNotFoundError):
+            resolve_cover_path(job)
 
     def test_page_loading_is_bounded(self) -> None:
         jobs = [

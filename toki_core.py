@@ -679,6 +679,16 @@ def hydrate_job_metadata(job: DownloadJob) -> bool:
     return changed
 
 
+def resolve_cover_path(job: DownloadJob) -> str:
+    hydrate_job_metadata(job)
+    if not job.cover_path:
+        raise ValueError("이 작품에 저장된 대표 이미지 경로가 없습니다.")
+    cover_path = Path(job.cover_path).expanduser().resolve()
+    if not cover_path.is_file():
+        raise FileNotFoundError(f"대표 이미지 파일을 찾을 수 없습니다: {cover_path}")
+    return str(cover_path)
+
+
 def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[str]:
     args = [str(DOWNLOADER_PATH), "-url", job.url, "-output", job.output_dir]
     if job.start is not None:

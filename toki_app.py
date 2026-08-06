@@ -38,6 +38,7 @@ from toki_core import (
     open_in_explorer,
     read_log_tail,
     read_run_log,
+    resolve_cover_path,
     save_config,
     save_jobs,
     update_job_note,
@@ -324,6 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     open_source = subparsers.add_parser("open-source", help="작품 원본 페이지 열기")
     open_source.add_argument("--job", required=True, help="작업 ID")
+
+    open_cover = subparsers.add_parser("open-cover", help="저장된 대표 이미지 원본 열기")
+    open_cover.add_argument("--job", required=True, help="작업 ID")
 
     details = subparsers.add_parser("details", help="GUI 작품 정보 및 실행 이력 창 표시")
     details_target = details.add_mutually_exclusive_group(required=True)
@@ -626,6 +630,18 @@ def run_cli(args: argparse.Namespace) -> int:
             if not webbrowser.open(job.url):
                 raise ControlError("기본 브라우저에서 작품 페이지를 열지 못했습니다.")
             print(job.url)
+        return 0
+    if command == "open-cover":
+        if gui_is_running():
+            result = control_request({"action": "open_cover", "jobId": args.job})
+            print(result["opened"])
+        else:
+            job = load_job_by_id(args.job)
+            if job is None:
+                raise ControlError(f"작업 기록을 찾을 수 없습니다: {args.job}")
+            cover_path = resolve_cover_path(job)
+            open_in_explorer(cover_path)
+            print(cover_path)
         return 0
     if command == "details":
         ensure_gui_running()

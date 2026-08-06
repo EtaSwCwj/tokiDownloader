@@ -84,6 +84,8 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(note.text, "확인 필요")
         source = build_parser().parse_args(["open-source", "--job", "job-1"])
         self.assertEqual(source.job, "job-1")
+        cover = build_parser().parse_args(["open-cover", "--job", "job-1"])
+        self.assertEqual(cover.job, "job-1")
         details = build_parser().parse_args(["details", "--job", "job-1"])
         self.assertEqual(details.job, "job-1")
         close_details = build_parser().parse_args(["details", "--close"])

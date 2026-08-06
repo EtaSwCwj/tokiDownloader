@@ -85,6 +85,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd details --close
 .\toki-cli.cmd set-note --job 작업ID --text "확인할 내용"
 .\toki-cli.cmd open-source --job 작업ID
+.\toki-cli.cmd open-cover --job 작업ID
 .\toki-cli.cmd pin --job 작업ID --on
 .\toki-cli.cmd tag --job 작업ID --color purple
 .\toki-cli.cmd remove-record --job 작업ID --yes
@@ -127,7 +128,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 GUI 로그창으로 엽니다. `details --job`은 작품 정보를 대표 이미지와 사용자 메모를 포함한
 GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선택 실행 로그 보기`를 눌러도 해당
 실행 로그창이 열립니다. GUI의 상세창과 우클릭 메뉴
-버튼은 각각 `open-folder`, `open-source`, `set-note`, `runs`, `run-logs`, `run-log`,
+버튼은 각각 `open-folder`, `open-source`, `open-cover`, `set-note`, `runs`, `run-logs`, `run-log`,
 `details` 명령으로도 제어하거나 검증할 수 있습니다.
 
 `remove-record --yes`는 작품을 GUI 목록과 `jobs.db`에서만 제거합니다. 다운로드한 작품
