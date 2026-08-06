@@ -503,7 +503,7 @@ SQLite `integrity_check`, 복구 ID, 임시 DB 제거와 메모리 변화를 JSO
 - [ ] 새 PC 기준 설치·실행 점검
 - [x] 개발자용 재현 가능한 설치 스크립트 정리
 - [ ] PyInstaller GUI 실행 파일과 Node/Puppeteer 런타임 묶음 검토
-- [ ] 업데이트 및 데이터베이스 마이그레이션 절차
+- [x] 업데이트 및 데이터베이스 마이그레이션 절차
 - [ ] 오류 보고용 진단 정보 내보내기
 - [ ] README의 GUI/CLI 명령과 실제 `--help` 일치 확인
 - [ ] 릴리스 체크리스트와 버전 규칙
@@ -520,6 +520,14 @@ PyQt6, psutil, Node.js, npm, Puppeteer 및 Pillow·FFmpeg·yt-dlp·PyInstaller�
 얇은 호환 실행기이며 오류 `pause`를 제거했다. `-CheckOnly`는 다운로드나 재설치 없이 현재
 설치만 검증하고 `-WithImageTools`는 Pillow를 선택 설치한다. 실제 현재 환경의 CheckOnly와
 CMD 전달 경로를 통과했으며 Python 110건을 통과했다.
+
+2026-08-07 버전·마이그레이션: 설정은 `configVersion` v1, 작업 DB는 SQLite
+`user_version` v2와 `schema_migrations` 이력으로 관리한다. 지원 버전보다 새 파일은 쓰기
+전에 거부하고 이전 버전은 기존 파일의 SQLite 온라인 백업 또는 config 복사본을 만든 뒤
+순차 버전을 기록한다. `migrate status|apply --json`으로 같은 경로를 점검·실행하며 doctor
+GUI에도 설정·DB 현재/지원 버전을 표시한다. 실제 설정 v0→v1, DB v0→v2를 적용한 뒤 작품
+2개가 유지되고 `config.json.pre-v1.bak`, `jobs.db.pre-v2.bak`과 이력 1·2를 확인했다.
+레거시 DB·설정 백업과 미래 버전 무변경 거부 테스트를 포함해 Python 113건을 통과했다.
 
 완료 조건:
 

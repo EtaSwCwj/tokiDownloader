@@ -168,6 +168,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd performance stability --records 1000 --cycles 10 --via-gui --json
 .\toki-cli.cmd doctor --json
 .\toki-cli.cmd doctor --show-gui --json
+.\toki-cli.cmd migrate status --json
+.\toki-cli.cmd migrate apply --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -236,6 +238,14 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 환경으로 검사합니다. npm은 설치 도구로, Pillow·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
 분리해 설치 여부·버전·실제 경로를 표시합니다. `--show-gui`와 도구 메뉴의
 `설치 및 선택 기능 진단...`은 같은 보고서를 표로 보여주며 `--close`로 닫을 수 있습니다.
+
+설정은 `configVersion`, 작업 DB는 SQLite `PRAGMA user_version`과 `schema_migrations`로
+버전을 관리합니다. `migrate status`는 변경 없이 현재/지원 버전을 확인하고 `migrate apply`는
+최신 스키마를 적용합니다. 기존 파일을 변경하기 전 `config.json.pre-vN.bak`와
+`jobs.db.pre-vN.bak`을 한 번 생성하며, 평상시 앱 시작에서 자동 마이그레이션되더라도 같은
+DB 백업 절차를 거칩니다. 업데이트 전에는 GUI를 종료하고 두 백업 파일과 다운로드 폴더를
+별도 위치에 보관한 뒤 `setup-gui.cmd`, `migrate apply`, `self-test --core-only` 순서로
+검증하세요.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

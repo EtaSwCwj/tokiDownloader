@@ -31,6 +31,13 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
+CONFIG_SCHEMA_VERSION = 1
+JOB_DB_SCHEMA_VERSION = 2
+JOB_DB_MIGRATIONS = {
+    1: "작품 work_key 정규화와 실행 이력 분리",
+    2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
+}
+_DATABASE_MIGRATION_REPORTS: dict[str, dict[str, Any]] = {}
 TAG_COLORS = {
     "none": "",
     "red": "#d84a4a",
@@ -234,6 +241,7 @@ KEYBOARD_SHORTCUTS = (
 
 def default_config() -> dict[str, Any]:
     return {
+        "configVersion": CONFIG_SCHEMA_VERSION,
         "outputDir": str(ROOT_DIR),
         "window": {
             "x": None,
@@ -301,6 +309,15 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
     normalized = {**source}
+    try:
+        source_version = int(source.get("configVersion") or 0)
+    except (TypeError, ValueError):
+        source_version = 0
+    if source_version > CONFIG_SCHEMA_VERSION:
+        raise ValueError(
+            f"이 프로그램보다 새로운 설정 버전입니다: {source_version}"
+        )
+    normalized["configVersion"] = CONFIG_SCHEMA_VERSION
     output_dir = source.get("outputDir")
     normalized["outputDir"] = (
         str(output_dir).strip()
@@ -394,6 +411,74 @@ def save_config(config: dict[str, Any]) -> None:
     config.clear()
     config.update(normalized)
     _apply_log_policy(normalized)
+
+
+def config_schema_status(config_path: Path | None = None) -> dict[str, Any]:
+    path = Path(config_path) if config_path is not None else CONFIG_PATH
+    if not path.is_file():
+        return {
+            "ok": True,
+            "exists": False,
+            "path": str(path.resolve()),
+            "version": 0,
+            "currentVersion": CONFIG_SCHEMA_VERSION,
+            "needsMigration": False,
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("설정 파일은 JSON 객체여야 합니다.")
+        version = int(payload.get("configVersion") or 0)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        return {
+            "ok": False,
+            "exists": True,
+            "path": str(path.resolve()),
+            "error": str(error),
+            "version": 0,
+            "currentVersion": CONFIG_SCHEMA_VERSION,
+            "needsMigration": False,
+        }
+    return {
+        "ok": version <= CONFIG_SCHEMA_VERSION,
+        "exists": True,
+        "path": str(path.resolve()),
+        "version": version,
+        "currentVersion": CONFIG_SCHEMA_VERSION,
+        "needsMigration": version < CONFIG_SCHEMA_VERSION,
+        "futureVersion": version > CONFIG_SCHEMA_VERSION,
+    }
+
+
+def apply_config_migrations(config_path: Path | None = None) -> dict[str, Any]:
+    path = Path(config_path) if config_path is not None else CONFIG_PATH
+    before = config_schema_status(path)
+    if not before["ok"]:
+        raise ValueError(str(before.get("error") or "지원하지 않는 설정 버전입니다."))
+    if path.is_file():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        payload = default_config()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = ""
+    if before.get("needsMigration") and path.is_file():
+        backup = path.with_suffix(path.suffix + f".pre-v{CONFIG_SCHEMA_VERSION}.bak")
+        if not backup.exists():
+            shutil.copy2(path, backup)
+        backup_path = str(backup.resolve())
+    normalized = normalize_config(payload)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+    return {
+        "ok": True,
+        "before": before,
+        "after": config_schema_status(path),
+        "backupPath": backup_path,
+    }
 
 
 def settings_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -624,8 +709,12 @@ def dependency_diagnostics() -> dict[str, Any]:
     required = [item for item in checks if item["kind"] == "required"]
     missing_required = [item["name"] for item in required if not item["available"]]
     optional = [item for item in checks if item["kind"] == "optional"]
+    schemas = {
+        "config": config_schema_status(),
+        "database": database_schema_status(),
+    }
     return {
-        "ok": not missing_required,
+        "ok": not missing_required and all(item["ok"] for item in schemas.values()),
         "platform": {
             "system": os.name,
             "pythonArchitecture": 64 if sys.maxsize > 2**32 else 32,
@@ -641,6 +730,7 @@ def dependency_diagnostics() -> dict[str, Any]:
             "total": len(optional),
         },
         "checks": checks,
+        "schemas": schemas,
     }
 
 
@@ -1212,9 +1302,27 @@ def build_work_key(url: str) -> str:
 
 def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
     path = Path(database_path) if database_path is not None else JOB_DB_PATH
+    existed_before = path.is_file()
     connection = sqlite3.connect(path, timeout=10)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
+    database_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if database_version > JOB_DB_SCHEMA_VERSION:
+        connection.close()
+        raise RuntimeError(
+            f"이 프로그램보다 새로운 작업 DB 버전입니다: {database_version}"
+        )
+    database_key = str(path.resolve())
+    backup_path = ""
+    if existed_before and database_version < JOB_DB_SCHEMA_VERSION:
+        backup = path.with_suffix(path.suffix + f".pre-v{JOB_DB_SCHEMA_VERSION}.bak")
+        if not backup.exists():
+            backup_connection = sqlite3.connect(backup)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        backup_path = str(backup.resolve())
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS jobs (
@@ -1247,7 +1355,6 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
         )
         """
     )
-    database_key = str(path.resolve())
     if database_key not in _INITIALIZED_JOB_DBS:
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
@@ -1334,7 +1441,6 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
                 ),
             )
         connection.commit()
-        _INITIALIZED_JOB_DBS.add(database_key)
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)"
     )
@@ -1363,7 +1469,95 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
         connection.execute(
             f"CREATE INDEX IF NOT EXISTS {index_name} ON jobs({columns})"
         )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    applied_versions = list(range(database_version + 1, JOB_DB_SCHEMA_VERSION + 1))
+    applied_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    for version in applied_versions:
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (version, JOB_DB_MIGRATIONS[version], applied_at),
+        )
+    connection.execute(f"PRAGMA user_version = {JOB_DB_SCHEMA_VERSION}")
+    connection.commit()
+    _INITIALIZED_JOB_DBS.add(database_key)
+    if applied_versions or database_key not in _DATABASE_MIGRATION_REPORTS:
+        _DATABASE_MIGRATION_REPORTS[database_key] = {
+            "path": database_key,
+            "fromVersion": database_version,
+            "toVersion": JOB_DB_SCHEMA_VERSION,
+            "appliedVersions": applied_versions,
+            "backupPath": backup_path,
+        }
     return connection
+
+
+def database_schema_status(database_path: Path | None = None) -> dict[str, Any]:
+    path = Path(database_path) if database_path is not None else JOB_DB_PATH
+    if not path.is_file():
+        return {
+            "ok": True,
+            "exists": False,
+            "path": str(path.resolve()),
+            "version": 0,
+            "currentVersion": JOB_DB_SCHEMA_VERSION,
+            "needsMigration": False,
+            "migrations": [],
+            "lastMigration": None,
+        }
+    connection = sqlite3.connect(path, timeout=10)
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        has_history = bool(
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+            ).fetchone()
+        )
+        migrations = (
+            [
+                {"version": int(row[0]), "name": str(row[1]), "appliedAt": str(row[2])}
+                for row in connection.execute(
+                    "SELECT version, name, applied_at FROM schema_migrations ORDER BY version"
+                ).fetchall()
+            ]
+            if has_history
+            else []
+        )
+    finally:
+        connection.close()
+    return {
+        "ok": version <= JOB_DB_SCHEMA_VERSION,
+        "exists": True,
+        "path": str(path.resolve()),
+        "version": version,
+        "currentVersion": JOB_DB_SCHEMA_VERSION,
+        "needsMigration": version < JOB_DB_SCHEMA_VERSION,
+        "futureVersion": version > JOB_DB_SCHEMA_VERSION,
+        "migrations": migrations,
+        "lastMigration": _DATABASE_MIGRATION_REPORTS.get(str(path.resolve())),
+    }
+
+
+def apply_database_migrations(database_path: Path | None = None) -> dict[str, Any]:
+    path = Path(database_path) if database_path is not None else JOB_DB_PATH
+    before = database_schema_status(path)
+    _INITIALIZED_JOB_DBS.discard(str(path.resolve()))
+    connection = _connect_job_db(path)
+    connection.close()
+    after = database_schema_status(path)
+    return {
+        "ok": bool(after["ok"] and not after["needsMigration"]),
+        "before": before,
+        "after": after,
+        "migration": _DATABASE_MIGRATION_REPORTS.get(str(path.resolve())),
+    }
 
 
 def save_jobs(jobs: list[DownloadJob]) -> None:

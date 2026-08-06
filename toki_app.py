@@ -17,6 +17,8 @@ from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
 from toki_core import (
+    apply_config_migrations,
+    apply_database_migrations,
     CONTROL_SERVER_NAME,
     ROOT_DIR,
     DownloadJob,
@@ -26,6 +28,7 @@ from toki_core import (
     clear_log_file,
     cleanup_thumbnail_cache,
     cleanup_run_history,
+    config_schema_status,
     find_node,
     hydrate_job_metadata,
     job_database_diagnostics,
@@ -36,6 +39,7 @@ from toki_core import (
     delete_job_record,
     delete_job_records,
     dependency_diagnostics,
+    database_schema_status,
     downloader_event_update_policy,
     error_category_label,
     load_config,
@@ -355,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_window = doctor.add_mutually_exclusive_group()
     doctor_window.add_argument("--show-gui", action="store_true", help="GUI 진단창 열기")
     doctor_window.add_argument("--close", action="store_true", help="GUI 진단창 닫기")
+    migrate = subparsers.add_parser("migrate", help="설정과 작업 DB 스키마 점검·마이그레이션")
+    migrate_commands = migrate.add_subparsers(dest="migrate_command", required=True)
+    migrate_status = migrate_commands.add_parser("status", help="현재 스키마 버전 조회")
+    migrate_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    migrate_apply = migrate_commands.add_parser("apply", help="백업 후 최신 스키마 적용")
+    migrate_apply.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -900,6 +910,28 @@ def run_cli(args: argparse.Namespace) -> int:
                 print("환경 진단창을 닫았습니다.")
         default_success = bool(args.show_gui or args.close)
         return 0 if bool(report.get("ok", default_success)) else 2
+    if command == "migrate":
+        if args.migrate_command == "apply":
+            result = {
+                "config": apply_config_migrations(),
+                "database": apply_database_migrations(),
+            }
+        else:
+            result = {
+                "config": config_schema_status(),
+                "database": database_schema_status(),
+            }
+        result["ok"] = all(item.get("ok", False) for item in result.values())
+        if args.json:
+            print_json(result)
+        else:
+            print(
+                f"설정 v{result['config'].get('after', result['config']).get('version', 0)}/"
+                f"{result['config'].get('after', result['config']).get('currentVersion', 0)} | "
+                f"DB v{result['database'].get('after', result['database']).get('version', 0)}/"
+                f"{result['database'].get('after', result['database']).get('currentVersion', 0)}"
+            )
+        return 0 if result["ok"] else 2
     if command == "shortcuts":
         if args.show_gui or args.close:
             ensure_gui_running()

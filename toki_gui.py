@@ -687,10 +687,17 @@ class DependencyDiagnosticsDialog(QDialog):
         layout = QVBoxLayout(self)
         required = report.get("required") or {}
         optional = report.get("optional") or {}
+        schemas = report.get("schemas") or {}
+        config_schema = schemas.get("config") or {}
+        database_schema = schemas.get("database") or {}
         summary = QLabel(
             f"필수 {int(required.get('passed') or 0)}/{int(required.get('total') or 0)} · "
             f"선택 {int(optional.get('available') or 0)}/{int(optional.get('total') or 0)} · "
-            f"{'실행 준비 완료' if report.get('ok') else '필수 설치 필요'}"
+            f"설정 v{int(config_schema.get('version') or 0)}/"
+            f"{int(config_schema.get('currentVersion') or 0)} · DB v"
+            f"{int(database_schema.get('version') or 0)}/"
+            f"{int(database_schema.get('currentVersion') or 0)} · "
+            f"{'실행 준비 완료' if report.get('ok') else '필수 점검 필요'}"
         )
         summary.setObjectName("mutedLabel")
         layout.addWidget(summary)

@@ -81,6 +81,35 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_config_schema_migration_backs_up_and_preserves_unknown_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.json"
+            config_path.write_text(
+                json.dumps({"futureField": {"enabled": True}}), encoding="utf-8"
+            )
+
+            result = toki_core.apply_config_migrations(config_path)
+            migrated = json.loads(config_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["before"]["version"], 0)
+            self.assertEqual(
+                result["after"]["version"], toki_core.CONFIG_SCHEMA_VERSION
+            )
+            self.assertTrue(Path(result["backupPath"]).is_file())
+            self.assertEqual(migrated["futureField"], {"enabled": True})
+            self.assertEqual(
+                migrated["configVersion"], toki_core.CONFIG_SCHEMA_VERSION
+            )
+            future_path = Path(temporary) / "future.json"
+            future_payload = {"configVersion": toki_core.CONFIG_SCHEMA_VERSION + 1}
+            future_path.write_text(json.dumps(future_payload), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                toki_core.apply_config_migrations(future_path)
+            self.assertEqual(
+                json.loads(future_path.read_text(encoding="utf-8")), future_payload
+            )
+
     def test_windows_setup_script_uses_lockfile_check_mode_and_doctor(self) -> None:
         script = (ROOT_DIR / "setup-gui.ps1").read_text(encoding="utf-8")
 
@@ -655,9 +684,11 @@ class JobRepositoryTests(unittest.TestCase):
         self.path_patch = patch.object(toki_core, "JOB_DB_PATH", self.database_path)
         self.path_patch.start()
         toki_core._INITIALIZED_JOB_DBS.clear()
+        toki_core._DATABASE_MIGRATION_REPORTS.clear()
 
     def tearDown(self) -> None:
         toki_core._INITIALIZED_JOB_DBS.clear()
+        toki_core._DATABASE_MIGRATION_REPORTS.clear()
         self.path_patch.stop()
         self.temp_dir.cleanup()
 
@@ -845,6 +876,41 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(migrated)
         self.assertEqual(migrated.state, "완료")
         self.assertEqual(migrated.progress, 100)
+        schema = toki_core.database_schema_status(self.database_path)
+        self.assertEqual(schema["version"], toki_core.JOB_DB_SCHEMA_VERSION)
+        self.assertEqual(
+            [item["version"] for item in schema["migrations"]], [1, 2]
+        )
+        self.assertTrue(Path(schema["lastMigration"]["backupPath"]).is_file())
+
+    def test_future_database_version_is_rejected_without_rewrite(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+            connection.execute("INSERT INTO sentinel(value) VALUES ('keep')")
+            connection.execute(
+                f"PRAGMA user_version = {toki_core.JOB_DB_SCHEMA_VERSION + 1}"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(RuntimeError):
+            toki_core.apply_database_migrations(self.database_path)
+
+        connection = sqlite3.connect(self.database_path)
+        try:
+            value = connection.execute("SELECT value FROM sentinel").fetchone()[0]
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(value, "keep")
+        self.assertEqual(version, toki_core.JOB_DB_SCHEMA_VERSION + 1)
+        self.assertFalse(
+            self.database_path.with_suffix(
+                self.database_path.suffix + f".pre-v{toki_core.JOB_DB_SCHEMA_VERSION}.bak"
+            ).exists()
+        )
 
     def test_run_updates_do_not_duplicate_and_pages_are_bounded(self) -> None:
         work_key = "manatoki:7001"

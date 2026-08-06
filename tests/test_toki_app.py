@@ -11,6 +11,30 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_migrate_cli_reports_and_applies_shared_schema_services(self) -> None:
+        status_args = build_parser().parse_args(["migrate", "status", "--json"])
+        schema = {"ok": True, "version": 1, "currentVersion": 2}
+        with (
+            patch("toki_app.config_schema_status", return_value=schema) as config_status,
+            patch("toki_app.database_schema_status", return_value=schema) as db_status,
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertTrue(json.loads(output.getvalue())["ok"])
+        config_status.assert_called_once_with()
+        db_status.assert_called_once_with()
+
+        apply_args = build_parser().parse_args(["migrate", "apply", "--json"])
+        applied = {"ok": True, "after": {"version": 2, "currentVersion": 2}}
+        with (
+            patch("toki_app.apply_config_migrations", return_value=applied) as config_apply,
+            patch("toki_app.apply_database_migrations", return_value=applied) as db_apply,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(apply_args), 0)
+        config_apply.assert_called_once_with()
+        db_apply.assert_called_once_with()
+
     def test_doctor_cli_can_open_gui_report(self) -> None:
         args = build_parser().parse_args(["doctor", "--show-gui", "--json"])
         report = {

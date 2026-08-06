@@ -5,6 +5,7 @@ config.json
 jobs.db
 jobs.db-shm
 jobs.db-wal
+*.pre-v*.bak
 logs/
 .cache/
 gui-preview.png
