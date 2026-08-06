@@ -16,7 +16,8 @@ let info = {
     jsonEvents: false,
     showBrowser: false,
     metadataOnly: false,
-    contentPathOverride: ''
+    contentPathOverride: '',
+    imageConcurrency: 5
 }
 
 function sleep(ms) {
@@ -31,7 +32,7 @@ function consoleGrey(val) {
     console.log(`\x1b[100m${val}\x1b[0m`);
 }
 function help() {
-    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
+    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
     process.exit();
 }
 function emitEvent(event, data = {}) {
@@ -84,6 +85,12 @@ function analyseArguments() {
                 i++;
             }
         }
+        else if (process.argv[i] == '-image-concurrency') {
+            if ((i + 1) < argL) {
+                info.imageConcurrency = parseInt(process.argv[i + 1]);
+                i++;
+            }
+        }
         else if (process.argv[i] == '-h' || process.argv[i] == '-help') {
             help();
         }
@@ -102,6 +109,10 @@ function analyseArguments() {
     else if (info.url.match(/^https:\/\/newtoki[0-9]+\.com\/webtoon\/[0-9]+/)) {
         info.site = 'newtoki'; info.siteTitle = '뉴토끼';
         info.protocolDomain = info.url.match(/^https:\/\/newtoki[0-9]+\.com/)[0];
+    }
+    if (!Number.isInteger(info.imageConcurrency) || info.imageConcurrency < 1 || info.imageConcurrency > 16) {
+        consoleGrey('이미지 동시 다운로드 수는 1~16 사이여야 합니다.');
+        process.exit(1);
     }
     // 마나토끼(newtoki*.org 주소)
     else if (info.url.match(/^https:\/\/newtoki[0-9]+\.org\/manhwa\/[0-9]+/)) {
@@ -435,7 +446,7 @@ async function main() {
                         });
                     }
                 }
-                await runDownloadTasks(downloadTasks);
+                await runDownloadTasks(downloadTasks, info.imageConcurrency);
                 emitEvent('episode_completed', {
                     index: i + 1,
                     total: link.length,

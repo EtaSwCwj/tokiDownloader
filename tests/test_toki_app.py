@@ -46,6 +46,12 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertTrue(first.first)
 
+    def test_image_concurrency_arguments(self) -> None:
+        current = build_parser().parse_args(["concurrency", "--json"])
+        self.assertTrue(current.json)
+        update = build_parser().parse_args(["set-concurrency", "--images", "8"])
+        self.assertEqual(update.images, 8)
+
     def test_list_query_arguments(self) -> None:
         args = build_parser().parse_args(
             [

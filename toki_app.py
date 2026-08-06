@@ -34,6 +34,7 @@ from toki_core import (
     load_jobs_page,
     load_run,
     load_runs_page,
+    normalize_image_concurrency,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
@@ -161,6 +162,7 @@ def run_direct_download(args: argparse.Namespace) -> int:
         start=args.start,
         last=args.last,
         show_browser=args.show_browser,
+        image_concurrency=normalize_image_concurrency(config.get("imageConcurrency")),
     )
     command = [find_node(), *build_downloader_args(job, json_events=False)]
     append_log(f"직접 CLI 실행: {command}", job_id="direct")
@@ -287,6 +289,10 @@ def build_parser() -> argparse.ArgumentParser:
     queue_target.add_argument("--before", help="이 작업 ID 바로 앞으로 이동")
     queue_target.add_argument("--first", action="store_true", help="대기열 맨 앞으로 이동")
     queue_target.add_argument("--last", action="store_true", help="대기열 맨 뒤로 이동")
+    concurrency = subparsers.add_parser("concurrency", help="현재 동시성 설정 조회")
+    concurrency.add_argument("--json", action="store_true", help="JSON으로 출력")
+    set_concurrency = subparsers.add_parser("set-concurrency", help="동시성 설정 변경")
+    set_concurrency.add_argument("--images", type=int, required=True, help="이미지 동시 다운로드 수 1~16")
     retry = subparsers.add_parser(
         "retry",
         help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
@@ -505,6 +511,34 @@ def run_cli(args: argparse.Namespace) -> int:
                 "position": position,
             }
         )
+        print_json(result)
+        return 0
+    if command == "concurrency":
+        if gui_is_running():
+            status = control_request({"action": "status"})
+            result = {"imageConcurrency": status["imageConcurrency"]}
+        else:
+            result = {
+                "imageConcurrency": normalize_image_concurrency(
+                    load_config().get("imageConcurrency")
+                )
+            }
+        if args.json:
+            print_json(result)
+        else:
+            print(f"이미지 동시 다운로드: {result['imageConcurrency']}")
+        return 0
+    if command == "set-concurrency":
+        concurrency_value = normalize_image_concurrency(args.images)
+        if gui_is_running():
+            result = control_request(
+                {"action": "set_image_concurrency", "value": concurrency_value}
+            )
+        else:
+            config = load_config()
+            config["imageConcurrency"] = concurrency_value
+            save_config(config)
+            result = {"imageConcurrency": concurrency_value}
         print_json(result)
         return 0
     if command == "retry":

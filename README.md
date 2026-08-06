@@ -100,6 +100,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd queue move --job 대기작업ID --last
 .\toki-cli.cmd pause --job 실행중작업ID
 .\toki-cli.cmd resume --job 일시정지작업ID
+.\toki-cli.cmd concurrency --json
+.\toki-cli.cmd set-concurrency --images 5
 .\toki-cli.cmd retry --job 작업ID
 
 # 저장 폴더와 로그
@@ -190,6 +192,12 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 뒤 전체 재검사를 사용합니다. 프로세스 트리 제어에는 `psutil`을 사용하며 `setup-gui.cmd`가
 자동으로 설치합니다.
 
+`set-concurrency --images N`은 한 회차 안에서 동시에 내려받을 이미지 수를 1~16 범위로
+설정합니다. 기본·권장값은 5이며 너무 큰 값은 사이트와 네트워크에 부담을 주고 실패율을
+높일 수 있어 16을 넘길 수 없습니다. 설정은 `config.json`에 저장되고 새로 시작하는
+작업부터 적용됩니다. GUI의 `이미지 병렬` 입력과 `concurrency` CLI 조회는 같은 값을
+사용합니다.
+
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 
 ```powershell
@@ -209,12 +217,13 @@ npm install
 https://github.com/user-attachments/assets/b3879c59-3381-407b-a3a8-ad8bf8d84cbb
 ## 명령어
 ```bash
-node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-metadata-only] [-content-path "기존 작품 폴더"]
+node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"]
 ```
 - -url은 필수 입력입니다. 반드시 큰따옴표 안에 넣어주세요.
 - -start는 옵션입니다. 받고싶은 회차 시작 번호를 입력하세요. 생략하면 처음부터 받습니다.
 - -last는 옵션입니다. 받고싶은 마지막 회차 번호를 입력하세요. 생략하면 마지막까지 받습니다.
 - -output은 옵션입니다. 저장할 기준 폴더를 지정하며, 생략하면 현재 실행 폴더에 저장합니다.
+- -image-concurrency는 한 회차에서 동시에 받을 이미지 수이며 기본값은 5입니다.
 - -metadata-only는 회차를 받지 않고 메타데이터와 대표 이미지만 다시 받습니다.
 - -content-path는 메타데이터 전용 실행이 사용할 기존 작품 폴더를 직접 지정합니다.
 - 대괄호(`[]`)는 옵션이라는 뜻이므로 명령어에 직접 입력하지 마세요.

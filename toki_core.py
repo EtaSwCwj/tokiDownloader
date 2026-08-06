@@ -48,6 +48,7 @@ def default_config() -> dict[str, Any]:
         },
         "logVisible": True,
         "showBrowser": False,
+        "imageConcurrency": 5,
     }
 
 
@@ -155,6 +156,13 @@ def normalize_range(start: int | None, last: int | None) -> tuple[int | None, in
     return start_value, last_value
 
 
+def normalize_image_concurrency(value: int | None) -> int:
+    concurrency = int(value or 5)
+    if not 1 <= concurrency <= 16:
+        raise ValueError("이미지 동시 다운로드 수는 1~16 사이여야 합니다.")
+    return concurrency
+
+
 @dataclass
 class DownloadJob:
     job_id: str
@@ -178,6 +186,7 @@ class DownloadJob:
     show_browser: bool = False
     metadata_only: bool = False
     queue_position: int = 0
+    image_concurrency: int = 5
     episode_index: int = 0
     episode_total: int = 0
     episode_number: int = 0
@@ -707,6 +716,7 @@ def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[st
         args.append("-metadata-only")
         if job.output_path:
             args.extend(["-content-path", job.output_path])
+    args.extend(["-image-concurrency", str(normalize_image_concurrency(job.image_concurrency))])
     if json_events:
         args.append("-json-events")
     return args

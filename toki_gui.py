@@ -74,6 +74,7 @@ from toki_core import (
     mark_job_cancelled,
     mark_run_cancelled,
     normalize_range,
+    normalize_image_concurrency,
     open_in_explorer,
     read_log_tail,
     read_run_log,
@@ -758,6 +759,15 @@ class MainWindow(QMainWindow):
         )
         self.retry_button.clicked.connect(self.retry_selected_job)
 
+        self.image_concurrency_spin = QSpinBox()
+        self.image_concurrency_spin.setRange(1, 16)
+        self.image_concurrency_spin.setValue(
+            normalize_image_concurrency(self.config.get("imageConcurrency"))
+        )
+        self.image_concurrency_spin.setToolTip(
+            "한 회차 안에서 동시에 받을 이미지 수입니다. 권장값은 5입니다."
+        )
+
         input_layout.addWidget(QLabel("URL"), 0, 0)
         input_layout.addWidget(self.url_edit, 0, 1, 1, 5)
         input_layout.addWidget(self.start_button, 0, 6)
@@ -772,6 +782,9 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.output_edit, 2, 1, 1, 3)
         input_layout.addWidget(self.choose_output_button, 2, 4)
         input_layout.addWidget(self.open_output_button, 2, 5, 1, 2)
+        input_layout.addWidget(QLabel("이미지 병렬"), 3, 0)
+        input_layout.addWidget(self.image_concurrency_spin, 3, 1)
+        input_layout.addWidget(QLabel("1~16 (권장 5)"), 3, 2, 1, 2)
         input_layout.setColumnStretch(1, 1)
 
         queue_header = QHBoxLayout()
@@ -952,6 +965,7 @@ class MainWindow(QMainWindow):
         output_dir: str,
         show_browser: bool = False,
         metadata_only: bool = False,
+        image_concurrency: int | None = None,
     ) -> DownloadJob:
         valid_url = validate_url(url)
         start_value, last_value = normalize_range(start, last)
@@ -986,6 +1000,11 @@ class MainWindow(QMainWindow):
             tag_color=existing.tag_color if existing else "",
             show_browser=show_browser,
             metadata_only=metadata_only,
+            image_concurrency=normalize_image_concurrency(
+                image_concurrency
+                if image_concurrency is not None
+                else self.image_concurrency_spin.value()
+            ),
         )
         run = DownloadRun.from_job(job)
         save_runs([run])
@@ -1619,6 +1638,14 @@ class MainWindow(QMainWindow):
         self.log(f"기본 저장 폴더 변경: {output_path}")
         return str(output_path)
 
+    def set_image_concurrency(self, value: int) -> dict[str, Any]:
+        concurrency = normalize_image_concurrency(value)
+        self.image_concurrency_spin.setValue(concurrency)
+        self.config["imageConcurrency"] = concurrency
+        save_config(self.config)
+        self.log(f"이미지 동시 다운로드 수 변경: {concurrency}")
+        return {"imageConcurrency": concurrency}
+
     def open_output_folder(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         target = job.output_path if job and job.output_path else self.output_edit.text()
@@ -2110,6 +2137,7 @@ class MainWindow(QMainWindow):
             "totalJobCount": self.history_all_total,
             "filteredJobCount": self.history_total,
             "outputDir": self.output_edit.text(),
+            "imageConcurrency": self.image_concurrency_spin.value(),
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
             "screenshotPath": str(LOG_PATH.parent / "gui-screenshot.png"),
@@ -2212,6 +2240,7 @@ class MainWindow(QMainWindow):
                 str(request.get("output") or self.output_edit.text()),
                 bool(request.get("showBrowser", False)),
                 bool(request.get("metadataOnly", False)),
+                request.get("imageConcurrency"),
             )
             return job.to_dict()
         if action == "stop":
@@ -2238,6 +2267,8 @@ class MainWindow(QMainWindow):
             return job.to_dict()
         if action == "set_output":
             return {"outputDir": self.set_output_folder(str(request.get("path") or ""))}
+        if action == "set_image_concurrency":
+            return self.set_image_concurrency(int(request.get("value") or 0))
         if action == "open_folder":
             return {"opened": self.open_output_folder(request.get("jobId"))}
         if action == "open_source":
@@ -2342,6 +2373,7 @@ class MainWindow(QMainWindow):
         self.config["window"] = window_config
         self.config["outputDir"] = self.output_edit.text()
         self.config["showBrowser"] = self.show_browser_check.isChecked()
+        self.config["imageConcurrency"] = self.image_concurrency_spin.value()
         save_config(self.config)
         self.persist_timer.stop()
         self._flush_job_history()

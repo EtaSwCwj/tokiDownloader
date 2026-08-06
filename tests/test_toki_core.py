@@ -25,6 +25,7 @@ from toki_core import (
     mark_job_cancelled,
     mark_run_cancelled,
     normalize_range,
+    normalize_image_concurrency,
     read_run_log,
     resolve_cover_path,
     reorder_pending_jobs,
@@ -62,6 +63,14 @@ class CoreContractTests(unittest.TestCase):
         self.assertIn(job.output_dir, args)
         self.assertIn("-show-browser", args)
         self.assertIn("-json-events", args)
+        concurrency_index = args.index("-image-concurrency")
+        self.assertEqual(args[concurrency_index + 1], "5")
+
+    def test_image_concurrency_has_safe_bounds(self) -> None:
+        self.assertEqual(normalize_image_concurrency(None), 5)
+        self.assertEqual(normalize_image_concurrency(16), 16)
+        with self.assertRaises(ValueError):
+            normalize_image_concurrency(17)
 
     def test_metadata_refresh_arguments_preserve_existing_work_folder(self) -> None:
         job = DownloadJob(
