@@ -108,6 +108,7 @@ class WorkSchedulerTests(unittest.TestCase):
             "retryBackoffSeconds": 6,
             "logMaxMiB": 8,
             "logBackupCount": 3,
+            "rowDensity": "compact",
         }
         harness = type("SettingsHarness", (), {})()
         harness.config = {}
@@ -118,6 +119,13 @@ class WorkSchedulerTests(unittest.TestCase):
         harness.retry_count_spin = _SettingWidgetStub()
         harness.retry_backoff_spin = _SettingWidgetStub()
         harness.log_box = _SettingWidgetStub()
+        harness.task_list = type(
+            "TaskListHarness",
+            (),
+            {
+                "itemDelegate": lambda _self: None,
+            },
+        )()
         harness.log = lambda *_args, **_kwargs: None
         harness._start_next_job = lambda: None
 

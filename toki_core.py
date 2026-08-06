@@ -45,6 +45,7 @@ SETTING_KEYS = frozenset(
         "retryBackoffSeconds",
         "logMaxMiB",
         "logBackupCount",
+        "rowDensity",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -93,6 +94,7 @@ def default_config() -> dict[str, Any]:
         "retryBackoffSeconds": 2,
         "logMaxMiB": 2,
         "logBackupCount": 1,
+        "rowDensity": "comfortable",
     }
 
 
@@ -116,6 +118,13 @@ def normalize_log_backup_count(value: int | None) -> int:
     normalized = 1 if value is None else int(value)
     if not 1 <= normalized <= 10:
         raise ValueError("로그 백업 개수는 1~10개여야 합니다.")
+    return normalized
+
+
+def normalize_row_density(value: str | None) -> str:
+    normalized = str(value or "comfortable").strip().lower()
+    if normalized not in {"compact", "comfortable"}:
+        raise ValueError("작업 행 밀도는 compact 또는 comfortable이어야 합니다.")
     return normalized
 
 
@@ -161,6 +170,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_log_backup_count,
         source.get("logBackupCount"),
         defaults["logBackupCount"],
+    )
+    normalized["rowDensity"] = _safe_normalize(
+        normalize_row_density,
+        source.get("rowDensity"),
+        defaults["rowDensity"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -229,13 +243,14 @@ def update_app_settings(
             if not isinstance(updates[key], bool):
                 raise ValueError(f"{key} 설정은 true 또는 false여야 합니다.")
             current[key] = updates[key]
-    normalizers: dict[str, Callable[[Any], int]] = {
+    normalizers: dict[str, Callable[[Any], Any]] = {
         "workConcurrency": normalize_work_concurrency,
         "imageConcurrency": normalize_image_concurrency,
         "retryCount": normalize_retry_count,
         "retryBackoffSeconds": normalize_retry_backoff,
         "logMaxMiB": normalize_log_max_mib,
         "logBackupCount": normalize_log_backup_count,
+        "rowDensity": normalize_row_density,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

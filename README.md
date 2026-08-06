@@ -108,6 +108,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd settings --show-gui --tab network
 .\toki-cli.cmd set-settings --works 2 --images 8 --retry-count 2 --retry-backoff 2
 .\toki-cli.cmd set-settings --show-browser off --log-visible on --log-max-mib 2 --log-backups 1
+.\toki-cli.cmd set-settings --row-density compact
 .\toki-cli.cmd rescan --job 작업ID --mode new
 .\toki-cli.cmd rescan --job 작업ID --mode full
 .\toki-cli.cmd rescan --job 작업ID --mode range --start 10 --last 25
@@ -158,6 +159,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 설정 파일의 잘못된 타입이나 범위 값은 시작할 때 안전한 기본값으로 정규화되고 저장은
 임시 파일을 거친 원자 교체로 처리됩니다. GUI 로그는 설정한 최대 크기를 넘으면
 `gui.log.1`, `gui.log.2` 순서로 지정 개수만큼 순환 보존합니다.
+디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
+높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density
+compact|comfortable`로 같은 선택을 즉시 적용할 수 있습니다.
 
 작품 목록은 작품당 한 줄만 유지하고, 다운로드·전체 재검사·범위 다운로드를 실행할
 때마다 별도의 실행 ID를 `runs` 이력에 누적합니다. `info`는 작품 메타데이터와 전체 실행

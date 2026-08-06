@@ -77,6 +77,7 @@ class CoreContractTests(unittest.TestCase):
                         "retryBackoffSeconds": 999,
                         "logMaxMiB": 0,
                         "logBackupCount": 99,
+                        "rowDensity": "giant",
                     }
                 ),
                 encoding="utf-8",
@@ -88,6 +89,7 @@ class CoreContractTests(unittest.TestCase):
                 self.assertFalse(loaded["showBrowser"])
                 self.assertEqual(loaded["workConcurrency"], 1)
                 self.assertEqual(loaded["logMaxMiB"], 2)
+                self.assertEqual(loaded["rowDensity"], "comfortable")
 
                 output = root / "새 저장 폴더"
                 updated = update_app_settings(
@@ -101,11 +103,13 @@ class CoreContractTests(unittest.TestCase):
                         "retryBackoffSeconds": 7,
                         "logMaxMiB": 5,
                         "logBackupCount": 3,
+                        "rowDensity": "compact",
                     }
                 )
                 self.assertTrue(output.is_dir())
                 self.assertEqual(updated["workConcurrency"], 3)
                 self.assertEqual(updated["logBackupCount"], 3)
+                self.assertEqual(updated["rowDensity"], "compact")
                 self.assertFalse((root / "config.json.tmp").exists())
                 persisted = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(settings_snapshot(persisted), updated)

@@ -488,7 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     settings.add_argument("--show-gui", action="store_true", help="GUI 설정 창 표시")
     settings.add_argument(
         "--tab",
-        choices=("general", "network", "advanced"),
+        choices=("general", "network", "display", "advanced"),
         default="general",
         help="GUI에서 처음 표시할 설정 탭",
     )
@@ -507,6 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_settings.add_argument("--log-max-mib", type=int, help="로그 파일당 최대 MiB 1~100")
     set_settings.add_argument("--log-backups", type=int, help="보존할 이전 로그 수 1~10")
+    set_settings.add_argument(
+        "--row-density",
+        choices=("compact", "comfortable"),
+        help="작품 목록 행 높이와 정보 밀도",
+    )
     set_settings.add_argument("--defaults", action="store_true", help="일반 설정 기본값 복원")
     set_settings.add_argument("--json", action="store_true", help="JSON으로 출력")
 
@@ -1345,6 +1350,7 @@ def run_cli(args: argparse.Namespace) -> int:
             "retryBackoffSeconds": args.retry_backoff,
             "logMaxMiB": args.log_max_mib,
             "logBackupCount": args.log_backups,
+            "rowDensity": args.row_density,
         }
         updates = {key: value for key, value in mapping.items() if value is not None}
         if args.show_browser is not None:

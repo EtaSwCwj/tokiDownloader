@@ -128,6 +128,7 @@ class CliParserTests(unittest.TestCase):
             "logVisible": True,
             "logMaxMiB": 5,
             "logBackupCount": 2,
+            "rowDensity": "comfortable",
         }
         query = build_parser().parse_args(["settings", "--json"])
         with (
@@ -142,7 +143,8 @@ class CliParserTests(unittest.TestCase):
             [
                 "set-settings", "--works", "3", "--images", "10",
                 "--show-browser", "on", "--log-visible", "off",
-                "--log-max-mib", "8", "--log-backups", "4", "--json",
+                "--log-max-mib", "8", "--log-backups", "4",
+                "--row-density", "compact", "--json",
             ]
         )
         with (
@@ -159,6 +161,7 @@ class CliParserTests(unittest.TestCase):
                     "imageConcurrency": 10,
                     "logMaxMiB": 8,
                     "logBackupCount": 4,
+                    "rowDensity": "compact",
                     "showBrowser": True,
                     "logVisible": False,
                 },

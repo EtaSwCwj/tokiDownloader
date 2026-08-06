@@ -221,13 +221,19 @@ class JobListModel(QAbstractListModel):
 
 
 class JobItemDelegate(QStyledItemDelegate):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, density: str = "comfortable"
+    ) -> None:
         super().__init__(parent)
         self.cover_cache: OrderedDict[str, QPixmap] = OrderedDict()
         self.cache_limit = 128
+        self.density = density
+
+    def set_density(self, density: str) -> None:
+        self.density = density
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
-        return QSize(option.rect.width(), 92)
+        return QSize(option.rect.width(), 66 if self.density == "compact" else 92)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         job = index.data(JobListModel.JobRole)
@@ -244,21 +250,24 @@ class JobItemDelegate(QStyledItemDelegate):
             tag_rect = QRect(card.left(), card.top() + 5, 5, card.height() - 10)
             painter.fillRect(tag_rect, QColor(TAG_COLORS[job.tag_color]))
 
-        cover_rect = card.adjusted(9, 8, 0, -8)
-        cover_rect.setWidth(52)
-        painter.setPen(QPen(QColor("#d8dde5"), 1))
-        painter.setBrush(QColor("#eef1f4"))
-        painter.drawRoundedRect(cover_rect, 4, 4)
-        cover = self._cover(job.cover_path)
-        if cover:
-            x = cover_rect.x() + (cover_rect.width() - cover.width()) // 2
-            y = cover_rect.y() + (cover_rect.height() - cover.height()) // 2
-            painter.drawPixmap(x, y, cover)
+        compact = self.density == "compact"
+        if compact:
+            body_x = card.left() + 10
         else:
-            painter.setPen(QColor("#7b8794"))
-            painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "표지")
-
-        body_x = cover_rect.right() + 11
+            cover_rect = card.adjusted(9, 8, 0, -8)
+            cover_rect.setWidth(52)
+            painter.setPen(QPen(QColor("#d8dde5"), 1))
+            painter.setBrush(QColor("#eef1f4"))
+            painter.drawRoundedRect(cover_rect, 4, 4)
+            cover = self._cover(job.cover_path)
+            if cover:
+                x = cover_rect.x() + (cover_rect.width() - cover.width()) // 2
+                y = cover_rect.y() + (cover_rect.height() - cover.height()) // 2
+                painter.drawPixmap(x, y, cover)
+            else:
+                painter.setPen(QColor("#7b8794"))
+                painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "표지")
+            body_x = cover_rect.right() + 11
         state_rect = card.adjusted(body_x - card.left(), 9, 0, 0)
         state_rect.setWidth(82)
         state_rect.setHeight(23)
@@ -305,6 +314,8 @@ class JobItemDelegate(QStyledItemDelegate):
             details.append(f"분류 {error_category_label(job.error_category)}")
         if job.attempt_count:
             details.append(f"시도 {job.attempt_count}/{job.retry_limit + 1}")
+        if compact:
+            details.append(f"진행 {max(0, min(100, job.progress))}%")
         if not details:
             details.append(job.url)
         detail_text = " · ".join(details)
@@ -317,6 +328,9 @@ class JobItemDelegate(QStyledItemDelegate):
         )
         painter.drawText(detail_rect, Qt.AlignmentFlag.AlignVCenter, detail_text)
 
+        if compact:
+            painter.restore()
+            return
         progress_rect = card.adjusted(body_x - card.left(), 60, -10, -9)
         painter.setPen(QPen(QColor("#cfd6df"), 1))
         painter.setBrush(QColor("#eef1f4"))
@@ -843,6 +857,21 @@ class SettingsDialog(QDialog):
         network_form.addRow("", network_note)
         self.tabs.addTab(network_page, "네트워크")
 
+        display_page = QWidget()
+        display_page.setObjectName("settingsPage")
+        display_form = QFormLayout(display_page)
+        self.row_density_combo = QComboBox()
+        self.row_density_combo.addItem("편안하게 - 표지와 진행률 표시", "comfortable")
+        self.row_density_combo.addItem("간략하게 - 낮은 행으로 많이 표시", "compact")
+        display_form.addRow("작품 목록 밀도", self.row_density_combo)
+        display_note = QLabel(
+            "간략하게 모드는 표지를 생략하고 상태·제목·핵심 정보와 진행률을 한 줄 카드에 표시합니다."
+        )
+        display_note.setObjectName("mutedLabel")
+        display_note.setWordWrap(True)
+        display_form.addRow("", display_note)
+        self.tabs.addTab(display_page, "디스플레이")
+
         advanced_page = QWidget()
         advanced_page.setObjectName("settingsPage")
         advanced_form = QFormLayout(advanced_page)
@@ -890,6 +919,8 @@ class SettingsDialog(QDialog):
         self.retry_backoff_spin.setValue(int(values["retryBackoffSeconds"]))
         self.log_max_spin.setValue(int(values["logMaxMiB"]))
         self.log_backups_spin.setValue(int(values["logBackupCount"]))
+        density_index = self.row_density_combo.findData(str(values["rowDensity"]))
+        self.row_density_combo.setCurrentIndex(max(0, density_index))
 
     def _load_defaults(self) -> None:
         from toki_core import default_config
@@ -915,6 +946,7 @@ class SettingsDialog(QDialog):
             "retryBackoffSeconds": self.retry_backoff_spin.value(),
             "logMaxMiB": self.log_max_spin.value(),
             "logBackupCount": self.log_backups_spin.value(),
+            "rowDensity": str(self.row_density_combo.currentData()),
         }
         try:
             self.owner.apply_settings(updates)
@@ -1518,7 +1550,11 @@ class MainWindow(QMainWindow):
         self.task_model = JobListModel(self)
         self.task_list = QListView()
         self.task_list.setModel(self.task_model)
-        self.task_list.setItemDelegate(JobItemDelegate(self.task_list))
+        self.task_list.setItemDelegate(
+            JobItemDelegate(
+                self.task_list, str(self.config.get("rowDensity") or "comfortable")
+            )
+        )
         self.task_list.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self.task_list.setUniformItemSizes(True)
         self.task_list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
@@ -2497,7 +2533,12 @@ class MainWindow(QMainWindow):
         if self.active_settings_dialog:
             self.active_settings_dialog.close()
         dialog = SettingsDialog(self)
-        tab_index = {"general": 0, "network": 1, "advanced": 2}.get(str(tab), 0)
+        tab_index = {
+            "general": 0,
+            "network": 1,
+            "display": 2,
+            "advanced": 3,
+        }.get(str(tab), 0)
         dialog.tabs.setCurrentIndex(tab_index)
         self.active_settings_dialog = dialog
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -2538,6 +2579,13 @@ class MainWindow(QMainWindow):
             for widget in widgets:
                 widget.blockSignals(False)
         self.log_box.setVisible(bool(result["logVisible"]))
+        delegate = self.task_list.itemDelegate()
+        if isinstance(delegate, JobItemDelegate):
+            delegate.set_density(str(result["rowDensity"]))
+            self.task_list.setUniformItemSizes(False)
+            self.task_list.doItemsLayout()
+            self.task_list.setUniformItemSizes(True)
+            self.task_list.viewport().update()
         self.log(
             "설정 저장: 작품 동시성 "
             f"{result['workConcurrency']}, 이미지 {result['imageConcurrency']}, "
@@ -3649,8 +3697,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-concurrency [--works 1~4] [--images 1~16]\n"
             "toki-cli.cmd retry-policy [--json]\n"
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
-            "toki-cli.cmd settings [--json|--show-gui --tab general|network|advanced]\n"
-            "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off]\n"
+            "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced]\n"
+            "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE]\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
