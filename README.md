@@ -40,7 +40,60 @@ https://github.com/user-attachments/assets/fe974989-5ffb-4831-b2dc-7ea576712f62
 
 # 2. 뉴토끼 마나토끼 북토끼 다운로더
 ## 준비물 
-Nodejs
+Node.js, Python 3
+
+## Windows GUI
+
+처음 한 번 `setup-gui.cmd`를 실행하면 저장소 전용 Python 가상환경과 PyQt6,
+Node.js 의존성을 설치합니다. 이후에는 `start-gui.cmd`를 더블클릭하면 실제 Windows
+창으로 실행됩니다.
+
+GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 있습니다. 작업은 한 번에
+하나씩 실행되고 다음 작업은 대기열에 들어갑니다. 진행률, 현재 회차와 이미지 수,
+오류를 화면 하단 로그에서 확인할 수 있으며 파일 로그는 `logs\gui.log`에 저장됩니다.
+
+```powershell
+.\setup-gui.cmd
+.\start-gui.cmd
+```
+
+### GUI 제어 CLI
+
+GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니다. GUI가 꺼져 있을 때
+`download`를 실행하면 GUI를 자동으로 시작하고 그 대기열에 작업을 추가합니다.
+
+```powershell
+# GUI 실행 또는 앞으로 가져오기
+.\toki-cli.cmd gui
+.\toki-cli.cmd show
+
+# 다운로드 추가
+.\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
+
+# 상태와 작업 제어
+.\toki-cli.cmd status
+.\toki-cli.cmd status --json
+.\toki-cli.cmd stop
+.\toki-cli.cmd retry --job 작업ID
+
+# 저장 폴더와 로그
+.\toki-cli.cmd set-output "D:\Manga"
+.\toki-cli.cmd open-folder --job 작업ID
+.\toki-cli.cmd logs --tail 200
+.\toki-cli.cmd copy-log
+.\toki-cli.cmd screenshot
+.\toki-cli.cmd clear-log
+.\toki-cli.cmd quit --force
+```
+
+GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
+
+```powershell
+.\toki-cli.cmd download --direct --url "https://newtoki1.org/manhwa/34732" --start 1 --last 1 --output "D:\Manga"
+```
+
+자동화 브라우저는 개인 Chrome 계정과 분리된 전용 프로필을 사용합니다.
+
 ## 설치 방법
 ```bash
 git clone https://github.com/crossSiteKikyo/tokiDownloader.git
@@ -50,18 +103,30 @@ npm install
 https://github.com/user-attachments/assets/b3879c59-3381-407b-a3a8-ad8bf8d84cbb
 ## 명령어
 ```bash
-node down -url "URL" [-start STARTINDEX] [-last LASTINDEX]
+node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"]
 ```
 - -url은 필수 입력입니다. 반드시 큰따옴표 안에 넣어주세요.
 - -start는 옵션입니다. 받고싶은 회차 시작 번호를 입력하세요. 생략하면 처음부터 받습니다.
 - -last는 옵션입니다. 받고싶은 마지막 회차 번호를 입력하세요. 생략하면 마지막까지 받습니다.
+- -output은 옵션입니다. 저장할 기준 폴더를 지정하며, 생략하면 현재 실행 폴더에 저장합니다.
+- 대괄호(`[]`)는 옵션이라는 뜻이므로 명령어에 직접 입력하지 마세요.
+
+예시
+```bash
+node down -url "https://newtoki1.org/manhwa/34732"
+node down -url "https://newtoki1.org/manhwa/34732" -start 1 -last 10
+node down -url "https://newtoki1.org/manhwa/34732" -start 1 -last 10 -output "D:\Manga"
+```
+
+`newtoki숫자.org/manhwa/` 주소는 실제 페이지 종류에 맞춰 마나토끼 폴더에 저장됩니다.
 
 https://github.com/user-attachments/assets/86c17334-c96c-48d2-bfdb-31072766030c
 
 ## 폴더(디렉토리) 구조
 ```
 뉴토끼/
-├─ 웹툰이름1/
+├─ [작가][그룹] 웹툰이름1/
+│   ├─ metadata.json
 │   ├─ 0001 어떤웹툰-1화/
 │   │   ├─ 0001 어떤웹툰-1화 image0000.jpg
 │   │   ├─ 0001 어떤웹툰-1화 image0001.jpg
@@ -75,7 +140,8 @@ https://github.com/user-attachments/assets/86c17334-c96c-48d2-bfdb-31072766030c
 └─ 웹툰이름2/
 
 마나토끼/
-├─ 만화이름1/
+├─ [작가][N／A] 만화이름1/
+│   ├─ metadata.json
 │   ├─ 0001 어떤만화-1화/
 │   │   ├─ 0001 어떤만화-1화 image0000.jpg
 │   │   ├─ 0001 어떤만화-1화 image0001.jpg
@@ -89,7 +155,8 @@ https://github.com/user-attachments/assets/86c17334-c96c-48d2-bfdb-31072766030c
 └─ 만화이름2/
 
 북토끼/
-├─ 소설이름1/
+├─ [작가][그룹] 소설이름1/
+│   ├─ metadata.json
 │   ├─ 0001 어떤소설-1화.txt
 │   ├─ 0001 어떤소설-2화.txt
 │   ...

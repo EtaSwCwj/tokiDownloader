@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         tokiDownloader
 // @namespace    https://github.com/crossSiteKikyo/tokiDownloader
-// @version      0.0.3
+// @version      0.0.6
 // @description  북토끼, 뉴토끼, 마나토끼 다운로더
 // @author       hehaho
 // @match        https://*.com/webtoon/*
+// @match        https://*.org/manhwa/*
 // @match        https://*.com/novel/*
 // @match        https://*.net/comic/*
 // @icon         https://github.com/user-attachments/assets/99f5bb36-4ef8-40cc-8ae5-e3bf1c7952ad
@@ -25,8 +26,11 @@
     if (currentURL.match(/^https:\/\/booktoki[0-9]+.com\/novel\/[0-9]+/)) {
         site = "북토끼"; protocolDomain = currentURL.match(/^https:\/\/booktoki[0-9]+.com/)[0];
     }
-    else if (currentURL.match(/^https:\/\/newtoki[0-9]+.com\/webtoon\/[0-9]+/)) {
-        site = "뉴토끼"; protocolDomain = currentURL.match(/^https:\/\/newtoki[0-9]+.com/)[0];
+    else if (currentURL.match(/^https:\/\/newtoki[0-9]+\.com\/webtoon\/[0-9]+/)) {
+        site = "뉴토끼"; protocolDomain = currentURL.match(/^https:\/\/newtoki[0-9]+\.com/)[0];
+    }
+    else if (currentURL.match(/^https:\/\/newtoki[0-9]+\.org\/manhwa\/[0-9]+/)) {
+        site = "마나토끼"; protocolDomain = currentURL.match(/^https:\/\/newtoki[0-9]+\.org/)[0];
     }
     else if (currentURL.match(/^https:\/\/manatoki[0-9]+.net\/comic\/[0-9]+/)) {
         site = "마나토끼"; protocolDomain = currentURL.match(/^https:\/\/manatoki[0-9]+.net/)[0];
@@ -40,6 +44,17 @@
         return new Promise(resolve => {
             setTimeout(() => resolve(), ms);
         })
+    }
+
+    async function waitForImages(doc, timeout = 60000) {
+        const selector = '.view-padding div img, .theme-viewer-images img';
+        const startedAt = Date.now();
+        while (!doc.querySelector(selector)) {
+            if (Date.now() - startedAt >= timeout)
+                throw new Error(`이미지를 ${timeout / 1000}초 안에 찾지 못했습니다.`);
+            await sleep(250);
+        }
+        return selector;
     }
 
     async function tokiDownload(startIndex, lastIndex) {
@@ -133,11 +148,10 @@
                     console.log(`${i + 1}/${list.length} ${folderName} 진행중`);
 
                     await waitIframeLoad(src);
-                    await sleep(1000);
                     const iframeDocument = iframe.contentWindow.document;
+                    const imageSelector = await waitForImages(iframeDocument);
                     // 이미지 추출
-                    // view-padding의 div의 img.
-                    let imgLists = Array.from(iframeDocument.querySelectorAll('.view-padding div img'));
+                    let imgLists = Array.from(iframeDocument.querySelectorAll(imageSelector));
                     // 화면에 보이지 않는 이미지라면 리스트에서 iframe제거
                     for (let j = 0; j < imgLists.length;) {
                         if (imgLists[j].checkVisibility() === false)
@@ -148,15 +162,11 @@
                     console.log(`이미지 ${imgLists.length}개 감지`);
                     let promiseList = [];
                     for (let j = 0; j < imgLists.length; j++) {
-                        // data-l44925d0f9f="src"같이 속성을 부여해놓고 스크롤 해야 src가 바뀌는 방식이다.
-                        // src를 직접 가져오면 loading.gif를 가져온다.
-                        // protocolDomain으로 바꿈으로서 CORS 해결
-                        let src = imgLists[j].outerHTML;
                         try {
-                            // src가 https://가 없을 때도 있어서 \/data[^"]+로 감지해야함.
-                            src = `${protocolDomain}${src.match(/\/data[^"]+/)[0]}`;
-                            // 가끔 확장자가 없는 이미지가 있는데, 해당 이미지는 다운받지 않음.
-                            const extension = src.match(/\.[a-zA-Z]+$/)[0];
+                            const legacyPath = imgLists[j].outerHTML.match(/\/data[^"]+/)?.[0];
+                            const rawSrc = legacyPath || imgLists[j].currentSrc || imgLists[j].getAttribute('src');
+                            const src = new URL(rawSrc, protocolDomain).href;
+                            const extension = new URL(src).pathname.match(/\.[a-zA-Z0-9]+$/)?.[0] || '.jpg';
                             promiseList.push(fetchAndAddToZip(src, num, folderName, j, extension, imgLists.length));
                         } catch(error) {
                             console.log(error);

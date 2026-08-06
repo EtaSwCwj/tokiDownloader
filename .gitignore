@@ -1,4 +1,11 @@
 node_modules/
+.venv/
+__pycache__/
+config.json
+logs/
+gui-preview.png
+build/
+dist/
 북토끼/
 뉴토끼/
 마나토끼/
