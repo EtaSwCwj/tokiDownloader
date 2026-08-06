@@ -27,6 +27,7 @@ from toki_core import (
     normalize_range,
     read_run_log,
     resolve_cover_path,
+    reorder_pending_jobs,
     save_jobs,
     save_runs,
     update_job_note,
@@ -88,6 +89,24 @@ class CoreContractTests(unittest.TestCase):
         self.assertTrue(run.finished_at)
         with self.assertRaises(ValueError):
             mark_job_cancelled(job)
+
+    def test_pending_queue_can_move_before_first_and_last(self) -> None:
+        jobs = [
+            DownloadJob(
+                job_id=job_id,
+                url=f"https://newtoki1.org/manhwa/{8000 + index}",
+                output_dir=r"C:\Manga",
+            )
+            for index, job_id in enumerate(("a", "b", "c"))
+        ]
+        moved = reorder_pending_jobs(jobs, "c", before_job_id="b")
+        self.assertEqual([job.job_id for job in moved], ["a", "c", "b"])
+        moved = reorder_pending_jobs(moved, "b", position="first")
+        self.assertEqual([job.job_id for job in moved], ["b", "a", "c"])
+        moved = reorder_pending_jobs(moved, "b", position="last")
+        self.assertEqual([job.job_id for job in moved], ["a", "c", "b"])
+        with self.assertRaises(ValueError):
+            reorder_pending_jobs(jobs, "a")
 
     def test_retry_contract_resets_previous_range(self) -> None:
         source = DownloadJob(

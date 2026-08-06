@@ -175,6 +175,7 @@ class DownloadJob:
     tag_color: str = ""
     show_browser: bool = False
     metadata_only: bool = False
+    queue_position: int = 0
     episode_index: int = 0
     episode_total: int = 0
     episode_number: int = 0
@@ -735,6 +736,44 @@ def mark_run_cancelled(run: DownloadRun, reason: str = "") -> DownloadRun:
     run.error = str(reason or "사용자가 대기 작업을 취소했습니다.")
     run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
     return run
+
+
+def reorder_pending_jobs(
+    jobs: list[DownloadJob],
+    job_id: str,
+    *,
+    before_job_id: str = "",
+    position: str = "",
+) -> list[DownloadJob]:
+    ordered = list(jobs)
+    clean_job_id = str(job_id or "").strip()
+    source = next((job for job in ordered if job.job_id == clean_job_id), None)
+    if source is None:
+        raise ValueError(f"대기 중인 작업을 찾을 수 없습니다: {clean_job_id}")
+    if source.state != "대기":
+        raise ValueError("대기 중인 작업만 순서를 변경할 수 있습니다.")
+    clean_position = str(position or "").strip().lower()
+    if clean_position not in {"", "first", "last"}:
+        raise ValueError(f"지원하지 않는 대기열 위치입니다: {position}")
+    if not before_job_id and not clean_position:
+        raise ValueError("--before 또는 --first/--last 중 하나를 지정해주세요.")
+    ordered.remove(source)
+    if clean_position == "first":
+        ordered.insert(0, source)
+    elif clean_position == "last":
+        ordered.append(source)
+    else:
+        clean_before = str(before_job_id or "").strip()
+        if clean_before == clean_job_id:
+            return list(jobs)
+        target_index = next(
+            (index for index, job in enumerate(ordered) if job.job_id == clean_before),
+            None,
+        )
+        if target_index is None:
+            raise ValueError(f"기준 대기 작업을 찾을 수 없습니다: {clean_before}")
+        ordered.insert(target_index, source)
+    return ordered
 
 
 def update_job_markers(

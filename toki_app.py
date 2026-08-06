@@ -177,6 +177,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
     try:
         ping = control_request({"action": "ping"})
         status = control_request({"action": "status"})
+        queue_status = control_request({"action": "queue_list"})
         screenshot = control_request({"action": "screenshot", "path": str(screenshot_path)})
         if not screenshot_path.is_file() or screenshot_path.stat().st_size <= 0:
             raise ControlError("GUI 자체 점검 화면 캡처 파일이 생성되지 않았습니다.")
@@ -234,6 +235,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             "wasRunning": was_running,
             "ping": ping,
             "loadedJobCount": status.get("loadedJobCount", 0),
+            "pendingQueueCount": queue_status.get("total", 0),
             "screenshotPath": screenshot.get("path"),
             "workDetails": detail_probe,
         }
@@ -271,6 +273,16 @@ def build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--job", help="현재 실행 중인지 확인할 작업 ID")
     cancel = subparsers.add_parser("cancel", help="작업 ID로 대기 작업 실행 전 취소")
     cancel.add_argument("--job", required=True, help="대기 작업 ID")
+    queue = subparsers.add_parser("queue", help="대기열 조회와 순서 변경")
+    queue_commands = queue.add_subparsers(dest="queue_command", required=True)
+    queue_list = queue_commands.add_parser("list", help="현재 대기열 순서 조회")
+    queue_list.add_argument("--json", action="store_true", help="JSON으로 출력")
+    queue_move = queue_commands.add_parser("move", help="대기 작업 순서 변경")
+    queue_move.add_argument("--job", required=True, help="이동할 대기 작업 ID")
+    queue_target = queue_move.add_mutually_exclusive_group(required=True)
+    queue_target.add_argument("--before", help="이 작업 ID 바로 앞으로 이동")
+    queue_target.add_argument("--first", action="store_true", help="대기열 맨 앞으로 이동")
+    queue_target.add_argument("--last", action="store_true", help="대기열 맨 뒤로 이동")
     retry = subparsers.add_parser(
         "retry",
         help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
@@ -462,6 +474,28 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
     if command == "cancel":
         print_json(control_request({"action": "cancel", "jobId": args.job}))
+        return 0
+    if command == "queue":
+        ensure_gui_running()
+        if args.queue_command == "list":
+            result = control_request({"action": "queue_list"})
+            if args.json:
+                print_json(result)
+            else:
+                for job in result["jobs"]:
+                    print(f"{job['queue_position']} | {job['job_id']} | {job['title']}")
+                print(f"대기 {result['total']}개")
+            return 0
+        position = "first" if args.first else "last" if args.last else ""
+        result = control_request(
+            {
+                "action": "queue_move",
+                "jobId": args.job,
+                "beforeJobId": args.before or "",
+                "position": position,
+            }
+        )
+        print_json(result)
         return 0
     if command == "retry":
         print_json(control_request({"action": "retry", "jobId": args.job}))

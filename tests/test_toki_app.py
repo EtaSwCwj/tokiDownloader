@@ -30,6 +30,19 @@ class CliParserTests(unittest.TestCase):
         cancel = build_parser().parse_args(["cancel", "--job", "queued-1"])
         self.assertEqual(cancel.job, "queued-1")
 
+    def test_queue_list_and_move_arguments(self) -> None:
+        queue_list = build_parser().parse_args(["queue", "list", "--json"])
+        self.assertEqual(queue_list.queue_command, "list")
+        self.assertTrue(queue_list.json)
+        move = build_parser().parse_args(
+            ["queue", "move", "--job", "queued-2", "--before", "queued-1"]
+        )
+        self.assertEqual(move.before, "queued-1")
+        first = build_parser().parse_args(
+            ["queue", "move", "--job", "queued-2", "--first"]
+        )
+        self.assertTrue(first.first)
+
     def test_list_query_arguments(self) -> None:
         args = build_parser().parse_args(
             [

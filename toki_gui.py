@@ -79,6 +79,7 @@ from toki_core import (
     read_run_log,
     retry_job_parameters,
     resolve_cover_path,
+    reorder_pending_jobs,
     save_config,
     save_jobs,
     save_runs,
@@ -240,6 +241,8 @@ class JobItemDelegate(QStyledItemDelegate):
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter, title)
 
         details: list[str] = []
+        if job.state == "대기" and job.queue_position:
+            details.append(f"대기열 {job.queue_position}번")
         if job.episode_total:
             details.append(f"회차 {job.episode_index}/{job.episode_total}")
         if job.episode_number:
@@ -975,6 +978,7 @@ class MainWindow(QMainWindow):
         self.jobs[job.job_id] = job
         self.jobs_by_work[work_key] = job
         self.pending_jobs.append(job)
+        self._refresh_pending_positions()
         self._add_job_card(job)
         if existing is None:
             self.history_all_total += 1
@@ -1221,6 +1225,8 @@ class MainWindow(QMainWindow):
             return
 
         job = self.pending_jobs.popleft()
+        job.queue_position = 0
+        self._refresh_pending_positions()
         self.active_job = job
         self.active_run = load_run(job.job_id) or DownloadRun.from_job(job)
         self.cancel_requested = False
@@ -1430,6 +1436,7 @@ class MainWindow(QMainWindow):
         if not pending:
             raise ValueError(f"대기 중인 작업을 찾을 수 없습니다: {clean_job_id}")
         self.pending_jobs.remove(pending)
+        self._refresh_pending_positions()
         mark_job_cancelled(pending)
         run = load_run(pending.job_id) or DownloadRun.from_job(pending)
         mark_run_cancelled(run)
@@ -1437,6 +1444,39 @@ class MainWindow(QMainWindow):
         self._update_job_card(pending)
         self.log("대기 작업 취소", job_id=pending.job_id)
         return {"cancelled": True, "job": pending.to_dict(), "run": run.to_dict()}
+
+    def _refresh_pending_positions(self) -> None:
+        for index, pending in enumerate(self.pending_jobs, start=1):
+            if pending.queue_position != index:
+                pending.queue_position = index
+                self.task_model.update_job(pending)
+                self._schedule_job_persist(pending)
+
+    def pending_queue_snapshot(self) -> dict[str, Any]:
+        return {
+            "total": len(self.pending_jobs),
+            "jobs": [job.to_dict() for job in self.pending_jobs],
+        }
+
+    def move_queued_job(
+        self,
+        job_id: str,
+        *,
+        before_job_id: str = "",
+        position: str = "",
+    ) -> dict[str, Any]:
+        reordered = reorder_pending_jobs(
+            list(self.pending_jobs),
+            job_id,
+            before_job_id=before_job_id,
+            position=position,
+        )
+        self.pending_jobs = deque(reordered)
+        self._refresh_pending_positions()
+        order = [job.job_id for job in self.pending_jobs]
+        self.log(f"대기열 순서 변경: {' > '.join(order)}", job_id=job_id)
+        self._update_summary()
+        return {"moved": True, "jobId": job_id, "order": order}
 
     def cancel_selected_queued_job(self, job_id: str) -> None:
         try:
@@ -1660,6 +1700,19 @@ class MainWindow(QMainWindow):
             lambda: self.cancel_selected_queued_job(job.job_id),
         )
         cancel_action.setEnabled(any(item.job_id == job.job_id for item in self.pending_jobs))
+        queue_menu = menu.addMenu("대기열 우선순위")
+        first_action = queue_menu.addAction(
+            "맨 앞으로",
+            lambda: self.move_queued_job(job.job_id, position="first"),
+        )
+        last_action = queue_menu.addAction(
+            "맨 뒤로",
+            lambda: self.move_queued_job(job.job_id, position="last"),
+        )
+        is_pending = any(item.job_id == job.job_id for item in self.pending_jobs)
+        queue_menu.setEnabled(is_pending)
+        first_action.setEnabled(is_pending and len(self.pending_jobs) > 1)
+        last_action.setEnabled(is_pending and len(self.pending_jobs) > 1)
         menu.aboutToHide.connect(lambda: setattr(self, "active_context_menu", None))
         self.active_context_menu = menu
         menu.popup(global_position)
@@ -2076,6 +2129,14 @@ class MainWindow(QMainWindow):
             return {"stopped": self.stop_active_job(request.get("jobId"))}
         if action == "cancel":
             return self.cancel_queued_job(str(request.get("jobId") or ""))
+        if action == "queue_list":
+            return self.pending_queue_snapshot()
+        if action == "queue_move":
+            return self.move_queued_job(
+                str(request.get("jobId") or ""),
+                before_job_id=str(request.get("beforeJobId") or ""),
+                position=str(request.get("position") or ""),
+            )
         if action == "retry":
             job = self.retry_job(request.get("jobId"))
             return job.to_dict() if job else None

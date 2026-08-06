@@ -94,6 +94,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd refresh-list
 .\toki-cli.cmd stop --job 실행중작업ID
 .\toki-cli.cmd cancel --job 대기작업ID
+.\toki-cli.cmd queue list --json
+.\toki-cli.cmd queue move --job 대기작업ID --before 기준작업ID
+.\toki-cli.cmd queue move --job 대기작업ID --first
+.\toki-cli.cmd queue move --job 대기작업ID --last
 .\toki-cli.cmd retry --job 작업ID
 
 # 저장 폴더와 로그
@@ -170,6 +174,12 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 `cancel --job`은 아직 시작하지 않은 대기 작업만 큐에서 제거하고 작품·실행 상태를
 `취소됨`으로 기록합니다. 둘 다 다운로드 폴더나 이미 저장된 파일은 삭제하지 않으며,
 작품 우클릭 메뉴의 `현재 작업 중지`와 `대기 작업 취소`도 같은 서비스 경로를 사용합니다.
+
+`queue list`는 실제 실행 대기 순서를 번호와 함께 반환합니다. `queue move`는 작업 ID를
+다른 대기 작업 바로 앞, 맨 앞 또는 맨 뒤로 옮깁니다. GUI 우클릭 메뉴의 `대기열 우선순위`
+에서도 맨 앞·맨 뒤 이동을 실행할 수 있고, 대기 상태인 작품 행에는 현재 대기열 번호가
+표시됩니다. 순서 변경은 대기 작업에만 허용되며 실행 중이거나 완료된 작업에는 적용되지
+않습니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 
