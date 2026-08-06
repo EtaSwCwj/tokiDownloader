@@ -84,6 +84,20 @@ JOB_QUERY_INDEXES = {
         "state, pinned DESC, progress DESC, updated_at DESC, job_id DESC"
     ),
 }
+COALESCED_DOWNLOADER_EVENTS = frozenset({"image_saved"})
+PERSISTED_DOWNLOADER_EVENTS = frozenset(
+    {
+        "work_metadata",
+        "queue_ready",
+        "episode_started",
+        "episode_completed",
+        "completed",
+        "error",
+    }
+)
+KNOWN_DOWNLOADER_EVENTS = PERSISTED_DOWNLOADER_EVENTS | COALESCED_DOWNLOADER_EVENTS | {
+    "images_found"
+}
 ERROR_CATEGORIES = frozenset(
     {
         "authentication_required",
@@ -661,6 +675,20 @@ def build_job_list_view_state(
         "filtered": 0,
         "query": clean_query,
         "status": clean_state,
+    }
+
+
+def downloader_event_update_policy(event_name: str) -> dict[str, Any]:
+    """Return the shared UI/persistence policy for a downloader JSON event."""
+    normalized = str(event_name or "").strip()
+    coalesced = normalized in COALESCED_DOWNLOADER_EVENTS
+    return {
+        "event": normalized,
+        "known": normalized in KNOWN_DOWNLOADER_EVENTS,
+        "uiMode": "coalesced" if coalesced else "immediate",
+        "uiIntervalMs": 100 if coalesced else 0,
+        "persistRun": normalized in PERSISTED_DOWNLOADER_EVENTS,
+        "terminal": normalized in {"completed", "error"},
     }
 
 

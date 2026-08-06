@@ -507,6 +507,17 @@ class CliParserTests(unittest.TestCase):
             }
         )
 
+    def test_performance_event_policy_cli_is_machine_readable(self) -> None:
+        args = build_parser().parse_args(
+            ["performance", "event-policy", "--event", "image_saved", "--json"]
+        )
+        with redirect_stdout(StringIO()) as output:
+            exit_code = run_cli(args)
+        result = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(result["uiMode"], "coalesced")
+        self.assertEqual(result["uiIntervalMs"], 100)
+
     def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
         dry_run = build_parser().parse_args(
             ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--json"]

@@ -33,6 +33,7 @@ from toki_core import (
     convert_job_images,
     delete_job_record,
     delete_job_records,
+    downloader_event_update_policy,
     error_category_label,
     load_config,
     load_job_by_id,
@@ -458,6 +459,15 @@ def build_parser() -> argparse.ArgumentParser:
     performance_benchmark.add_argument("--json", action="store_true", help="JSON으로 출력")
     performance_benchmark.add_argument(
         "--via-gui", action="store_true", help="GUI 진단창을 열고 백그라운드에서 실행"
+    )
+    performance_event_policy = performance_commands.add_parser(
+        "event-policy", help="다운로더 이벤트의 UI 병합·저장 정책 조회"
+    )
+    performance_event_policy.add_argument(
+        "--event", default="image_saved", help="검사할 JSON 이벤트 이름"
+    )
+    performance_event_policy.add_argument(
+        "--json", action="store_true", help="JSON으로 출력"
     )
 
     list_state = subparsers.add_parser(
@@ -1008,6 +1018,8 @@ def run_cli(args: argparse.Namespace) -> int:
                     page_size=args.page_size,
                     report_path=Path(args.output) if args.output else None,
                 )
+        elif args.performance_command == "event-policy":
+            result = {"ok": True, **downloader_event_update_policy(args.event)}
         else:
             if args.close:
                 ensure_gui_running()
@@ -1033,6 +1045,12 @@ def run_cli(args: argparse.Namespace) -> int:
                     f"{'통과' if item.get('passed') else '실패'}"
                 )
             print(f"보고서: {result.get('reportPath')}")
+        elif args.performance_command == "event-policy":
+            print(
+                f"{result['event']} | UI {result['uiMode']} "
+                f"{int(result['uiIntervalMs'])}ms | 실행 이력 저장 "
+                f"{'예' if result['persistRun'] else '아니오'}"
+            )
         else:
             queries = list(result.get("queries") or [])
             passed = sum(1 for query in queries if query.get("ok"))

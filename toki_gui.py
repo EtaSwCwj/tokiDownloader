@@ -103,6 +103,7 @@ from toki_core import (
     count_runs,
     delete_job_record,
     delete_job_records,
+    downloader_event_update_policy,
     error_category_label,
     find_node,
     hydrate_job_metadata,
@@ -1550,6 +1551,21 @@ class MainWindow(QMainWindow):
         self.persist_timer.setSingleShot(True)
         self.persist_timer.setInterval(600)
         self.persist_timer.timeout.connect(self._flush_job_history)
+        self.pending_job_ui_updates: set[str] = set()
+        self.job_ui_update_timer = QTimer(self)
+        self.job_ui_update_timer.setSingleShot(True)
+        self.job_ui_update_timer.setInterval(
+            int(downloader_event_update_policy("image_saved")["uiIntervalMs"])
+        )
+        self.job_ui_update_timer.timeout.connect(self._flush_job_card_updates)
+        self.event_update_metrics = {
+            "receivedEvents": 0,
+            "immediateUpdates": 0,
+            "queuedEvents": 0,
+            "mergedEvents": 0,
+            "flushes": 0,
+            "renderedUpdates": 0,
+        }
 
         self.setWindowTitle("tokiDownloader")
         window_config = self.config.get("window", {})
@@ -2641,6 +2657,43 @@ class MainWindow(QMainWindow):
         self._schedule_job_persist(job)
         self._update_summary()
 
+    def _schedule_job_card_update(self, job: DownloadJob, event_name: str) -> None:
+        policy = downloader_event_update_policy(event_name)
+        self.event_update_metrics["receivedEvents"] += 1
+        if policy["uiMode"] == "coalesced":
+            self.event_update_metrics["queuedEvents"] += 1
+            if job.job_id in self.pending_job_ui_updates:
+                self.event_update_metrics["mergedEvents"] += 1
+            self.pending_job_ui_updates.add(job.job_id)
+            if not self.job_ui_update_timer.isActive():
+                self.job_ui_update_timer.start()
+            return
+        self.pending_job_ui_updates.discard(job.job_id)
+        self.event_update_metrics["immediateUpdates"] += 1
+        self.event_update_metrics["renderedUpdates"] += 1
+        self._update_job_card(job)
+
+    def _flush_job_card_updates(self) -> None:
+        if not self.pending_job_ui_updates:
+            return
+        job_ids = tuple(self.pending_job_ui_updates)
+        self.pending_job_ui_updates.clear()
+        self.event_update_metrics["flushes"] += 1
+        for job_id in job_ids:
+            job = self.jobs.get(job_id)
+            if job is None:
+                continue
+            self.event_update_metrics["renderedUpdates"] += 1
+            self._update_job_card(job)
+
+    def event_update_snapshot(self) -> dict[str, Any]:
+        return {
+            **self.event_update_metrics,
+            "pendingJobs": len(self.pending_job_ui_updates),
+            "intervalMs": self.job_ui_update_timer.interval(),
+            "imageSavedPolicy": downloader_event_update_policy("image_saved"),
+        }
+
     def _start_next_job(self) -> None:
         concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
         while self.pending_jobs and available_work_slots(
@@ -2833,12 +2886,10 @@ class MainWindow(QMainWindow):
         elif event_name in {"episode_started", "episode_completed"}:
             run.processed_episodes = int(event.get("index") or run.processed_episodes)
             run.last_episode_number = int(event.get("number") or job.episode_number)
-        if event_name in {
-            "work_metadata", "queue_ready", "episode_started",
-            "episode_completed", "completed", "error",
-        }:
+        policy = downloader_event_update_policy(str(event_name or ""))
+        if policy["persistRun"]:
             save_runs([run])
-        self._update_job_card(job)
+        self._schedule_job_card_update(job, str(event_name or ""))
 
     def _process_finished(
         self,
@@ -2855,6 +2906,7 @@ class MainWindow(QMainWindow):
             self._handle_process_line(job_id, context.stderr_buffer, True)
         context.stdout_buffer = ""
         context.stderr_buffer = ""
+        self.pending_job_ui_updates.discard(job_id)
         job = context.job
         if should_auto_retry(
             exit_code=exit_code,
@@ -4697,6 +4749,7 @@ class MainWindow(QMainWindow):
                 and self.self_test_process.state() != QProcess.ProcessState.NotRunning
             ),
             "performanceBenchmark": self.performance_benchmark_snapshot(),
+            "eventUpdates": self.event_update_snapshot(),
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
@@ -5138,6 +5191,8 @@ class MainWindow(QMainWindow):
         self.config["retryCount"] = self.retry_count_spin.value()
         self.config["retryBackoffSeconds"] = self.retry_backoff_spin.value()
         save_config(self.config)
+        self.job_ui_update_timer.stop()
+        self._flush_job_card_updates()
         self.persist_timer.stop()
         self._flush_job_history()
         self.control_server.close()

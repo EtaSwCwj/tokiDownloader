@@ -104,6 +104,53 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_image_progress_events_merge_into_one_card_render(self) -> None:
+        class TimerStub:
+            def __init__(self) -> None:
+                self.active = False
+                self.starts = 0
+
+            def isActive(self) -> bool:
+                return self.active
+
+            def start(self) -> None:
+                self.active = True
+                self.starts += 1
+
+            def interval(self) -> int:
+                return 100
+
+        job = DownloadJob(
+            job_id="progress-job",
+            url="https://newtoki1.org/manhwa/9200",
+            output_dir=r"C:\Manga",
+        )
+        rendered = []
+        harness = type("EventUpdateHarness", (), {})()
+        harness.pending_job_ui_updates = set()
+        harness.job_ui_update_timer = TimerStub()
+        harness.event_update_metrics = {
+            "receivedEvents": 0,
+            "immediateUpdates": 0,
+            "queuedEvents": 0,
+            "mergedEvents": 0,
+            "flushes": 0,
+            "renderedUpdates": 0,
+        }
+        harness.jobs = {job.job_id: job}
+        harness._update_job_card = rendered.append
+
+        for _index in range(100):
+            MainWindow._schedule_job_card_update(harness, job, "image_saved")
+        self.assertEqual(rendered, [])
+        self.assertEqual(harness.job_ui_update_timer.starts, 1)
+        self.assertEqual(harness.event_update_metrics["mergedEvents"], 99)
+
+        MainWindow._flush_job_card_updates(harness)
+        self.assertEqual(rendered, [job])
+        MainWindow._schedule_job_card_update(harness, job, "completed")
+        self.assertEqual(rendered, [job, job])
+
     def test_performance_benchmark_button_uses_background_cli_contract(self) -> None:
         status = type("StatusHarness", (), {"showMessage": lambda _self, *_args: None})()
         label = type("LabelHarness", (), {"setText": lambda _self, *_args: None})()
@@ -479,6 +526,7 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness = type("RetryHarness", (), {})()
         harness.active_contexts = {job.job_id: context}
+        harness.pending_job_ui_updates = {job.job_id}
         harness.active_detail_dialog = None
         harness._handle_process_line = lambda *_args: None
         harness._update_job_card = lambda _job: None
@@ -532,6 +580,7 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness = type("AuthenticationHarness", (), {})()
         harness.active_contexts = {job.job_id: context}
+        harness.pending_job_ui_updates = {job.job_id}
         harness.active_detail_dialog = None
         harness._handle_process_line = lambda *_args: None
         harness._update_job_card = lambda _job: None

@@ -153,6 +153,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd performance audit --show-gui
 .\toki-cli.cmd performance benchmark --json
 .\toki-cli.cmd performance benchmark --sizes 100 1000 10000 100000 --via-gui --json
+.\toki-cli.cmd performance event-policy --event image_saved --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -182,6 +183,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 원자적으로 저장합니다. 기본 크기는 100, 1,000, 10,000, 100,000개이며 임시 DB는 실행 후
 자동 제거됩니다. `--via-gui`는 진단창을 열고 숨겨진 백그라운드 프로세스로 같은 벤치마크를
 실행합니다. 진행·완료 상태는 `status --json`의 `performanceBenchmark`에서도 확인합니다.
+
+이미지 한 장 저장 이벤트는 100ms 동안 작품별 최신 상태로 병합해 카드 렌더와 DB 저장 예약을
+제한합니다. 회차 시작·완료, 작품 메타데이터, 오류와 최종 완료는 즉시 반영됩니다.
+`performance event-policy --event EVENT --json`으로 공용 정책을 확인하고, 실행 중 누적된
+수신·병합·렌더 횟수는 `status --json`의 `eventUpdates`에서 확인할 수 있습니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

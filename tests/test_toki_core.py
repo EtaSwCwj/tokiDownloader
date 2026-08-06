@@ -22,6 +22,7 @@ from toki_core import (
     default_config,
     delete_job_record,
     delete_job_records,
+    downloader_event_update_policy,
     hydrate_job_metadata,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
@@ -68,6 +69,19 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_downloader_event_policy_coalesces_only_high_frequency_progress(self) -> None:
+        image = downloader_event_update_policy("image_saved")
+        completed = downloader_event_update_policy("completed")
+        metadata = downloader_event_update_policy("work_metadata")
+
+        self.assertEqual(image["uiMode"], "coalesced")
+        self.assertEqual(image["uiIntervalMs"], 100)
+        self.assertFalse(image["persistRun"])
+        self.assertEqual(completed["uiMode"], "immediate")
+        self.assertTrue(completed["persistRun"])
+        self.assertTrue(completed["terminal"])
+        self.assertTrue(metadata["persistRun"])
+
     def test_window_geometry_preserves_valid_monitor_and_recovers_missing_screen(self) -> None:
         screens = [
             {
