@@ -12,6 +12,7 @@ from toki_core import (
     build_work_key,
     count_jobs,
     delete_job_record,
+    delete_job_records,
     load_job_by_work_key,
     load_jobs_page,
     normalize_range,
@@ -173,6 +174,34 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(deleted.job_id, job.job_id)
         self.assertEqual(count_jobs(), 0)
         self.assertTrue(image.is_file())
+
+    def test_bulk_cleanup_only_removes_selected_states(self) -> None:
+        jobs = [
+            DownloadJob(
+                job_id="completed",
+                url="https://newtoki1.org/manhwa/5001",
+                output_dir=self.temp_dir.name,
+                state="완료",
+            ),
+            DownloadJob(
+                job_id="error",
+                url="https://newtoki1.org/manhwa/5002",
+                output_dir=self.temp_dir.name,
+                state="오류",
+            ),
+            DownloadJob(
+                job_id="waiting",
+                url="https://newtoki1.org/manhwa/5003",
+                output_dir=self.temp_dir.name,
+                state="대기",
+            ),
+        ]
+        save_jobs(jobs)
+        removed = delete_job_records(["완료", "오류"])
+        self.assertEqual({job.job_id for job in removed}, {"completed", "error"})
+        self.assertEqual(count_jobs(), 1)
+        with self.assertRaises(ValueError):
+            delete_job_records(["대기"])
 
 
 if __name__ == "__main__":

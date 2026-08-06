@@ -25,6 +25,7 @@ from toki_core import (
     find_node,
     count_jobs,
     delete_job_record,
+    delete_job_records,
     load_config,
     load_jobs_page,
     update_job_markers,
@@ -260,6 +261,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="기록 제거 확인(다운로드 파일은 삭제하지 않음)",
     )
 
+    cleanup_records = subparsers.add_parser(
+        "cleanup-records",
+        help="다운로드 파일은 보존하고 선택 상태의 기록만 일괄 정리",
+    )
+    cleanup_records.add_argument(
+        "--status",
+        action="append",
+        required=True,
+        choices=("completed", "error", "stopped"),
+        help="정리할 상태(여러 번 지정 가능)",
+    )
+    cleanup_records.add_argument("--yes", action="store_true", help="일괄 기록 정리 확인")
+    subparsers.add_parser("refresh-list", help="GUI 작품 목록과 썸네일 캐시 새로고침")
+
     set_output = subparsers.add_parser("set-output", help="기본 저장 폴더 설정")
     set_output.add_argument("path", help="저장 폴더 경로")
 
@@ -432,6 +447,26 @@ def run_cli(args: argparse.Namespace) -> int:
                 "filesDeleted": False,
             }
         print_json({"ok": True, **result})
+        return 0
+    if command == "cleanup-records":
+        if not args.yes:
+            raise ControlError("일괄 기록 정리에는 --yes가 필요합니다. 파일은 삭제되지 않습니다.")
+        state_map = {"completed": "완료", "error": "오류", "stopped": "중지됨"}
+        states = [state_map[state] for state in args.status]
+        if gui_is_running():
+            result = control_request({"action": "cleanup_records", "states": states})
+        else:
+            removed = delete_job_records(states)
+            result = {
+                "removedCount": len(removed),
+                "jobIds": [job.job_id for job in removed],
+                "filesDeleted": False,
+            }
+        print_json({"ok": True, **result})
+        return 0
+    if command == "refresh-list":
+        ensure_gui_running()
+        print_json({"ok": True, **control_request({"action": "refresh_list"})})
         return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())

@@ -491,6 +491,35 @@ def delete_job_record(job_id: str) -> DownloadJob:
     return job
 
 
+def delete_job_records(states: list[str]) -> list[DownloadJob]:
+    clean_states = sorted({str(state).strip() for state in states if str(state).strip()})
+    if not clean_states:
+        raise ValueError("정리할 작업 상태를 하나 이상 지정해주세요.")
+    if any(state in {"대기", "실행 중"} for state in clean_states):
+        raise ValueError("대기 또는 실행 중인 작품 기록은 일괄 제거할 수 없습니다.")
+    placeholders = ",".join("?" for _ in clean_states)
+    field_names = set(DownloadJob.__dataclass_fields__)
+    connection = _connect_job_db()
+    try:
+        rows = connection.execute(
+            f"SELECT payload FROM jobs WHERE state IN ({placeholders})",
+            clean_states,
+        ).fetchall()
+        jobs: list[DownloadJob] = []
+        for (payload,) in rows:
+            data = json.loads(payload)
+            filtered = {key: value for key, value in data.items() if key in field_names}
+            jobs.append(DownloadJob(**filtered))
+        with connection:
+            connection.execute(
+                f"DELETE FROM jobs WHERE state IN ({placeholders})",
+                clean_states,
+            )
+        return jobs
+    finally:
+        connection.close()
+
+
 def open_in_explorer(target: str | os.PathLike[str]) -> None:
     resolved = str(Path(target).expanduser().resolve())
     if os.name != "nt":

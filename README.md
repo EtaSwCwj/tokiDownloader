@@ -78,6 +78,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd pin --job 작업ID --on
 .\toki-cli.cmd tag --job 작업ID --color purple
 .\toki-cli.cmd remove-record --job 작업ID --yes
+.\toki-cli.cmd cleanup-records --status completed --status error --yes
+.\toki-cli.cmd refresh-list
 .\toki-cli.cmd stop
 .\toki-cli.cmd retry --job 작업ID
 
@@ -110,6 +112,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `remove-record --yes`는 작품을 GUI 목록과 `jobs.db`에서만 제거합니다. 다운로드한 작품
 폴더, 이미지, 표지와 `metadata.json`은 삭제하지 않습니다. 대기 또는 실행 중인 작품은
 기록 제거가 거부되며, CLI에서는 실수 방지를 위해 `--yes`가 반드시 필요합니다.
+`cleanup-records`도 같은 파일 보존 규칙을 사용하며 `completed`, `error`, `stopped` 상태를
+여러 번 지정할 수 있습니다. `refresh-list`는 SQLite에서 현재 페이지를 다시 읽고 목록용
+썸네일 메모리 캐시를 비웁니다.
 
 `self-test --json`은 Python/Node 구문, 필수 파일, 단위 테스트와 GUI IPC 및 화면 캡처를
 한 번에 검사합니다. GUI가 꺼져 있으면 점검용으로 시작했다가 자동 종료하며, 이미 실행

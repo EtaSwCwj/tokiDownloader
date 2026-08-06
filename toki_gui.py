@@ -55,6 +55,7 @@ from toki_core import (
     clear_log_file,
     count_jobs,
     delete_job_record,
+    delete_job_records,
     find_node,
     load_config,
     load_job_by_id,
@@ -383,6 +384,13 @@ class MainWindow(QMainWindow):
         self.self_test_action = QAction("자체 점검 실행", self)
         self.self_test_action.triggered.connect(self.start_self_test)
 
+        self.refresh_list_action = QAction("작품 목록 새로고침", self)
+        self.refresh_list_action.setShortcut("F5")
+        self.refresh_list_action.triggered.connect(self.refresh_job_list)
+
+        self.cleanup_records_action = QAction("완료·오류 기록 정리...", self)
+        self.cleanup_records_action.triggered.connect(self.confirm_cleanup_records)
+
         self.exit_action = QAction("종료", self)
         self.exit_action.triggered.connect(self.close)
 
@@ -396,6 +404,9 @@ class MainWindow(QMainWindow):
 
         tools_menu = self.menuBar().addMenu("도구")
         tools_menu.addAction(self.open_folder_action)
+        tools_menu.addAction(self.refresh_list_action)
+        tools_menu.addAction(self.cleanup_records_action)
+        tools_menu.addSeparator()
         tools_menu.addAction(self.screenshot_action)
         tools_menu.addAction(self.self_test_action)
         tools_menu.addAction(self.clear_log_action)
@@ -508,9 +519,12 @@ class MainWindow(QMainWindow):
         self.sort_combo.currentIndexChanged.connect(self.apply_history_filters)
         reset_filter_button = QPushButton("초기화")
         reset_filter_button.clicked.connect(self.reset_history_filters)
+        refresh_list_button = QPushButton("새로고침")
+        refresh_list_button.clicked.connect(self.refresh_job_list)
         filter_bar.addWidget(self.search_edit, 1)
         filter_bar.addWidget(self.state_filter_combo)
         filter_bar.addWidget(self.sort_combo)
+        filter_bar.addWidget(refresh_list_button)
         filter_bar.addWidget(reset_filter_button)
 
         self.task_model = JobListModel(self)
@@ -765,6 +779,21 @@ class MainWindow(QMainWindow):
         self.state_filter_combo.setCurrentIndex(0)
         self.sort_combo.setCurrentIndex(0)
         self.apply_history_filters()
+
+    def refresh_job_list(self) -> dict[str, Any]:
+        delegate = self.task_list.itemDelegate()
+        if isinstance(delegate, JobItemDelegate):
+            delegate.cover_cache.clear()
+        self.apply_history_filters()
+        self.task_list.viewport().update()
+        result = {
+            "refreshed": True,
+            "loaded": self.task_model.rowCount(),
+            "total": self.history_total,
+            "thumbnailCacheCleared": True,
+        }
+        self.log("작품 목록과 썸네일 캐시 새로고침")
+        return result
 
     def set_history_filters(self, query: str, state: str, sort: str) -> dict[str, Any]:
         state_index = self.state_filter_combo.findData(state)
@@ -1229,6 +1258,35 @@ class MainWindow(QMainWindow):
             "filesDeleted": False,
         }
 
+    def confirm_cleanup_records(self) -> None:
+        states = ["완료", "오류", "중지됨"]
+        count = sum(count_jobs(state=state) for state in states)
+        if count <= 0:
+            QMessageBox.information(self, "기록 정리", "정리할 완료·오류·중단 기록이 없습니다.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "완료·오류 기록 정리",
+            f"완료·오류·중단 기록 {count}개를 목록에서 제거할까요?\n\n"
+            "다운로드한 폴더와 이미지 파일은 삭제하지 않습니다.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.cleanup_job_records(states)
+
+    def cleanup_job_records(self, states: list[str]) -> dict[str, Any]:
+        removed = delete_job_records(states)
+        for job in removed:
+            self.jobs.pop(job.job_id, None)
+            self.jobs_by_work.pop(job.work_key, None)
+            self.dirty_job_ids.discard(job.job_id)
+        self.apply_history_filters()
+        self.log(f"작품 기록 일괄 정리(파일 보존): {len(removed)}개")
+        return {
+            "removedCount": len(removed),
+            "jobIds": [job.job_id for job in removed],
+            "filesDeleted": False,
+        }
+
     def clear_logs(self) -> None:
         clear_log_file()
         self.log_edit.clear()
@@ -1351,6 +1409,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd pin --job ID --on|--off\n"
             "toki-cli.cmd tag --job ID --color COLOR\n"
             "toki-cli.cmd remove-record --job ID --yes\n"
+            "toki-cli.cmd cleanup-records --status completed|error|stopped --yes\n"
+            "toki-cli.cmd refresh-list\n"
             "toki-cli.cmd stop\n"
             "toki-cli.cmd retry [--job ID]\n"
             "toki-cli.cmd set-output PATH\n"
@@ -1528,6 +1588,11 @@ class MainWindow(QMainWindow):
             )
         if action == "remove_record":
             return self.remove_job_record(str(request.get("jobId") or ""))
+        if action == "cleanup_records":
+            states = [str(state) for state in request.get("states") or []]
+            return self.cleanup_job_records(states)
+        if action == "refresh_list":
+            return self.refresh_job_list()
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}
         if action == "window":
