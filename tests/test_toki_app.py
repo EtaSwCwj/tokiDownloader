@@ -14,6 +14,77 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_jobs_snapshot_cli_previews_and_requires_confirmation(self) -> None:
+        export_args = build_parser().parse_args(
+            ["jobs", "export", "--output", "jobs.json", "--json"]
+        )
+        with (
+            patch(
+                "toki_app.export_jobs_snapshot",
+                return_value={"ok": True, "jobCount": 2, "runCount": 3},
+            ) as exporter,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(export_args), 0)
+        exporter.assert_called_once_with(Path("jobs.json"))
+
+        preview_args = build_parser().parse_args(
+            ["jobs", "import", "--input", "jobs.json", "--dry-run", "--json"]
+        )
+        with (
+            patch(
+                "toki_app.import_jobs_snapshot",
+                return_value={"ok": True, "pendingJobs": 2, "pendingRuns": 3},
+            ) as importer,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(preview_args), 0)
+        importer.assert_called_once_with(Path("jobs.json"), execute=False)
+
+        unsafe_args = build_parser().parse_args(
+            ["jobs", "import", "--input", "jobs.json", "--execute", "--json"]
+        )
+        with self.assertRaises(ValueError):
+            run_cli(unsafe_args)
+
+        gui_args = build_parser().parse_args(
+            [
+                "jobs", "import", "--input", "jobs.json", "--execute", "--yes",
+                "--via-gui", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"ok": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(gui_args), 0)
+        request.assert_called_once_with(
+            {"action": "import_jobs_snapshot", "input": "jobs.json", "execute": True}
+        )
+
+        show_args = build_parser().parse_args(
+            ["jobs", "import", "--input", "jobs.json", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_args), 0)
+        request.assert_called_once_with(
+            {"action": "show_jobs_snapshot_import", "input": "jobs.json"}
+        )
+
+        close_args = build_parser().parse_args(["jobs", "import", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_args), 0)
+        request.assert_called_once_with({"action": "close_jobs_snapshot_import"})
+
     def test_config_cli_routes_get_set_export_import_and_reset(self) -> None:
         get_args = build_parser().parse_args(
             ["config", "get", "--key", "theme", "--json"]

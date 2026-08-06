@@ -32,7 +32,9 @@ from toki_core import (
     delete_job_records,
     downloader_event_update_policy,
     export_diagnostics,
+    export_jobs_snapshot,
     hydrate_job_metadata,
+    import_jobs_snapshot,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
@@ -717,6 +719,59 @@ class CoreContractTests(unittest.TestCase):
 
 
 class JobRepositoryTests(unittest.TestCase):
+    def test_job_snapshot_export_preview_and_additive_import_preserve_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_db = root / "source.db"
+            target_db = root / "target.db"
+            snapshot_path = root / "jobs.json"
+            work_folder = root / "downloaded-work"
+            work_folder.mkdir()
+            marker = work_folder / "keep.txt"
+            marker.write_text("preserve", encoding="utf-8")
+            source_job = DownloadJob(
+                job_id="job-source",
+                url="https://newtoki1.org/manhwa/12345",
+                output_dir=str(root),
+                output_path=str(work_folder),
+                state="실행 중",
+                title="스냅샷 작품",
+            )
+            source_run = DownloadRun(
+                run_id="run-source",
+                work_key=source_job.work_key,
+                state="실행 중",
+                process_pid=1234,
+            )
+            save_jobs([source_job], database_path=source_db)
+            save_runs([source_run], database_path=source_db)
+
+            exported = export_jobs_snapshot(snapshot_path, database_path=source_db)
+            self.assertEqual(exported["jobCount"], 1)
+            self.assertEqual(exported["runCount"], 1)
+
+            preview = import_jobs_snapshot(snapshot_path, database_path=target_db)
+            self.assertFalse(preview["executed"])
+            self.assertEqual(preview["pendingJobs"], 1)
+            self.assertEqual(load_jobs_page(database_path=target_db), [])
+
+            imported = import_jobs_snapshot(
+                snapshot_path, execute=True, database_path=target_db
+            )
+            restored_jobs = load_jobs_page(database_path=target_db)
+            self.assertEqual(imported["importedJobs"], 1)
+            self.assertEqual(imported["importedRuns"], 1)
+            self.assertEqual(restored_jobs[0].state, "중지됨")
+            self.assertEqual(marker.read_text(encoding="utf-8"), "preserve")
+            self.assertFalse(imported["downloadFilesChanged"])
+
+            duplicate = import_jobs_snapshot(
+                snapshot_path, execute=True, database_path=target_db
+            )
+            self.assertEqual(duplicate["importedJobs"], 0)
+            self.assertEqual(duplicate["importedRuns"], 0)
+            self.assertEqual(duplicate["skippedExistingWorks"], 1)
+
     def test_run_retention_preserves_latest_and_active_records(self) -> None:
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         runs = [

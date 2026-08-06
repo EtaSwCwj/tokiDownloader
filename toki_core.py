@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -1653,7 +1654,9 @@ def apply_database_migrations(database_path: Path | None = None) -> dict[str, An
     }
 
 
-def save_jobs(jobs: list[DownloadJob]) -> None:
+def save_jobs(
+    jobs: list[DownloadJob], *, database_path: Path | None = None
+) -> None:
     if not jobs:
         return
     updated_at = datetime.now().astimezone().isoformat(timespec="microseconds")
@@ -1673,7 +1676,7 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
         )
         for job in jobs
     ]
-    connection = _connect_job_db()
+    connection = _connect_job_db(database_path)
     try:
         with connection:
             connection.executemany(
@@ -1701,7 +1704,9 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
         connection.close()
 
 
-def save_runs(runs: list[DownloadRun]) -> None:
+def save_runs(
+    runs: list[DownloadRun], *, database_path: Path | None = None
+) -> None:
     if not runs:
         return
     updated_at = datetime.now().astimezone().isoformat(timespec="microseconds")
@@ -1719,7 +1724,7 @@ def save_runs(runs: list[DownloadRun]) -> None:
         )
         for run in runs
     ]
-    connection = _connect_job_db()
+    connection = _connect_job_db(database_path)
     try:
         with connection:
             connection.executemany(
@@ -2024,6 +2029,185 @@ def load_jobs_page(
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
     return jobs
+
+
+def export_jobs_snapshot(
+    output_path: Path, *, database_path: Path | None = None
+) -> dict[str, Any]:
+    """Export work records and run history without reading download files."""
+    target = Path(output_path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    connection = _connect_job_db(database_path)
+    try:
+        job_payloads = connection.execute(
+            "SELECT payload FROM jobs ORDER BY updated_at ASC, job_id ASC"
+        ).fetchall()
+        run_payloads = connection.execute(
+            "SELECT payload FROM runs ORDER BY created_at ASC, run_id ASC"
+        ).fetchall()
+    finally:
+        connection.close()
+    jobs = [
+        job.to_dict()
+        for (payload,) in job_payloads
+        if (job := _decode_job_payload(payload)) is not None
+    ]
+    runs = [
+        run.to_dict()
+        for (payload,) in run_payloads
+        if (run := _decode_run(payload)) is not None
+    ]
+    payload = {
+        "format": "tokiDownloader-jobs",
+        "formatVersion": 1,
+        "appVersion": APP_VERSION,
+        "exportedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "jobs": jobs,
+        "runs": runs,
+    }
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, target)
+    return {
+        "ok": True,
+        "path": str(target),
+        "bytes": target.stat().st_size,
+        "jobCount": len(jobs),
+        "runCount": len(runs),
+    }
+
+
+def _decode_job_payload(payload: str | dict[str, Any]) -> DownloadJob | None:
+    try:
+        data = json.loads(payload) if isinstance(payload, str) else payload
+        if not isinstance(data, dict):
+            return None
+        fields = set(DownloadJob.__dataclass_fields__)
+        return DownloadJob(**{key: value for key, value in data.items() if key in fields})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def import_jobs_snapshot(
+    input_path: Path,
+    *,
+    execute: bool = False,
+    database_path: Path | None = None,
+) -> dict[str, Any]:
+    """Preview or add missing work/run records; existing records are never overwritten."""
+    source = Path(input_path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"작업 스냅샷 파일이 없습니다: {source}")
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("format") != "tokiDownloader-jobs":
+        raise ValueError("tokiDownloader 작업 스냅샷 JSON이 아닙니다.")
+    if int(payload.get("formatVersion") or 0) != 1:
+        raise ValueError("지원하지 않는 작업 스냅샷 버전입니다.")
+    raw_jobs = payload.get("jobs")
+    raw_runs = payload.get("runs")
+    if not isinstance(raw_jobs, list) or not isinstance(raw_runs, list):
+        raise ValueError("작업 스냅샷의 jobs와 runs는 배열이어야 합니다.")
+
+    connection = _connect_job_db(database_path)
+    try:
+        existing_rows = connection.execute("SELECT job_id, work_key FROM jobs").fetchall()
+        existing_job_ids = {str(row[0]) for row in existing_rows}
+        existing_work_keys = {str(row[1]) for row in existing_rows}
+        existing_run_ids = {
+            str(row[0]) for row in connection.execute("SELECT run_id FROM runs").fetchall()
+        }
+    finally:
+        connection.close()
+
+    jobs: list[DownloadJob] = []
+    incoming_work_keys: set[str] = set()
+    skipped_existing_works = 0
+    invalid_jobs = 0
+    remapped_job_ids = 0
+    for raw_job in raw_jobs:
+        job = _decode_job_payload(raw_job)
+        if not job or not job.job_id or not job.work_key:
+            invalid_jobs += 1
+            continue
+        if job.work_key in existing_work_keys or job.work_key in incoming_work_keys:
+            skipped_existing_works += 1
+            continue
+        if job.job_id in existing_job_ids:
+            job.job_id = uuid.uuid4().hex[:10]
+            remapped_job_ids += 1
+        if job.state in ACTIVE_JOB_STATES:
+            job.state = "중지됨"
+            job.error = "스냅샷에서 복원된 미완료 작업"
+            job.error_category = "cancelled"
+            job.retryable_error = False
+        job.queue_position = 0
+        jobs.append(job)
+        incoming_work_keys.add(job.work_key)
+        existing_job_ids.add(job.job_id)
+
+    available_work_keys = existing_work_keys | incoming_work_keys
+    runs: list[DownloadRun] = []
+    incoming_run_ids: set[str] = set()
+    skipped_existing_runs = 0
+    orphan_runs = 0
+    invalid_runs = 0
+    restored_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    for raw_run in raw_runs:
+        if not isinstance(raw_run, dict):
+            invalid_runs += 1
+            continue
+        try:
+            fields = set(DownloadRun.__dataclass_fields__)
+            run = DownloadRun(
+                **{key: value for key, value in raw_run.items() if key in fields}
+            )
+        except (TypeError, ValueError):
+            invalid_runs += 1
+            continue
+        if not run.run_id or not run.work_key:
+            invalid_runs += 1
+            continue
+        if run.work_key not in available_work_keys:
+            orphan_runs += 1
+            continue
+        if run.run_id in existing_run_ids or run.run_id in incoming_run_ids:
+            skipped_existing_runs += 1
+            continue
+        if run.state in ACTIVE_JOB_STATES:
+            run.state = "중지됨"
+            run.process_pid = 0
+            run.finished_at = restored_at
+            run.error = "스냅샷에서 복원된 미완료 실행"
+            run.error_category = "cancelled"
+            run.retryable_error = False
+        runs.append(run)
+        incoming_run_ids.add(run.run_id)
+
+    if invalid_jobs or invalid_runs:
+        raise ValueError(
+            f"손상된 스냅샷 항목이 있습니다: jobs {invalid_jobs}, runs {invalid_runs}"
+        )
+    if execute:
+        save_jobs(jobs, database_path=database_path)
+        save_runs(runs, database_path=database_path)
+    return {
+        "ok": True,
+        "executed": bool(execute),
+        "path": str(source),
+        "sourceJobCount": len(raw_jobs),
+        "sourceRunCount": len(raw_runs),
+        "pendingJobs": len(jobs),
+        "pendingRuns": len(runs),
+        "importedJobs": len(jobs) if execute else 0,
+        "importedRuns": len(runs) if execute else 0,
+        "skippedExistingWorks": skipped_existing_works,
+        "skippedExistingRuns": skipped_existing_runs,
+        "orphanRuns": orphan_runs,
+        "remappedJobIds": remapped_job_ids,
+        "downloadFilesChanged": False,
+    }
 
 
 def job_database_diagnostics(database_path: Path | None = None) -> dict[str, Any]:

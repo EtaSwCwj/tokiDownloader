@@ -112,9 +112,11 @@ from toki_core import (
     downloader_event_update_policy,
     error_category_label,
     export_diagnostics,
+    export_jobs_snapshot,
     find_node,
     hydrate_job_metadata,
     import_app_settings,
+    import_jobs_snapshot,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
@@ -1262,6 +1264,81 @@ class ImagePreviewDialog(QDialog):
             open_in_explorer(self.current_path)
 
 
+class JobsSnapshotImportDialog(QDialog):
+    def __init__(
+        self, owner: "MainWindow", source_path: str, result: dict[str, Any]
+    ) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.source_path = source_path
+        self.result = result
+        self.setWindowTitle("작업 스냅샷 가져오기")
+        self.resize(620, 390)
+        layout = QVBoxLayout(self)
+        self.heading = QLabel("작업 스냅샷 미리보기")
+        self.heading.setObjectName("sectionTitle")
+        layout.addWidget(self.heading)
+        source_label = QLabel(f"파일: {source_path}")
+        source_label.setWordWrap(True)
+        layout.addWidget(source_label)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        layout.addWidget(self.details, 1)
+        note = QLabel(
+            "기존 작품과 실행 기록은 덮어쓰지 않습니다. 다운로드 폴더와 파일은 변경하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.import_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.import_button.setText("가져오기")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        self.buttons.accepted.connect(self._execute)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self.update_result(result)
+
+    def update_result(self, result: dict[str, Any]) -> None:
+        self.result = result
+        executed = bool(result.get("executed"))
+        self.heading.setText("작업 스냅샷 가져오기 완료" if executed else "작업 스냅샷 미리보기")
+        self.summary.setText(
+            f"작품 {result.get('pendingJobs', 0)}개 · 실행 기록 {result.get('pendingRuns', 0)}개 "
+            f"{'추가 완료' if executed else '추가 예정'}"
+        )
+        self.details.setPlainText(
+            "\n".join(
+                [
+                    f"원본 작품: {result.get('sourceJobCount', 0)}",
+                    f"원본 실행 기록: {result.get('sourceRunCount', 0)}",
+                    f"기존 작품 건너뜀: {result.get('skippedExistingWorks', 0)}",
+                    f"기존 실행 기록 건너뜀: {result.get('skippedExistingRuns', 0)}",
+                    f"연결할 작품이 없는 실행 기록: {result.get('orphanRuns', 0)}",
+                    f"충돌로 새 ID를 부여할 작품: {result.get('remappedJobIds', 0)}",
+                    "다운로드 파일 변경: 없음",
+                ]
+            )
+        )
+        if executed:
+            self.import_button.setEnabled(False)
+            self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("닫기")
+
+    def _execute(self) -> None:
+        try:
+            result = self.owner.execute_jobs_snapshot_import(self.source_path)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "작업 스냅샷을 가져올 수 없음", str(error))
+            return
+        self.update_result(result)
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
@@ -1848,6 +1925,7 @@ class MainWindow(QMainWindow):
             ImageConversionProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
+        self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -1952,6 +2030,11 @@ class MainWindow(QMainWindow):
         self.range_scan_action.triggered.connect(
             lambda: self.rescan_selected_job("range")
         )
+
+        self.export_jobs_action = QAction("작업 스냅샷 내보내기...", self)
+        self.export_jobs_action.triggered.connect(self.choose_jobs_snapshot_export)
+        self.import_jobs_action = QAction("작업 스냅샷 가져오기...", self)
+        self.import_jobs_action.triggered.connect(self.choose_jobs_snapshot_import)
 
         self.open_folder_action = QAction("저장 폴더 열기", self)
         self.open_folder_action.setShortcuts(
@@ -2075,6 +2158,9 @@ class MainWindow(QMainWindow):
         work_menu.addAction(self.retry_action)
         work_menu.addAction(self.new_scan_action)
         work_menu.addAction(self.range_scan_action)
+        work_menu.addSeparator()
+        work_menu.addAction(self.export_jobs_action)
+        work_menu.addAction(self.import_jobs_action)
         work_menu.addSeparator()
         work_menu.addAction(self.exit_action)
 
@@ -3722,6 +3808,69 @@ class MainWindow(QMainWindow):
         self.log("설정 창 표시")
         return True
 
+    def export_jobs_snapshot_now(self, output_path: str) -> dict[str, Any]:
+        result = export_jobs_snapshot(Path(output_path))
+        message = (
+            f"작업 스냅샷 내보내기: 작품 {result['jobCount']}개, "
+            f"실행 {result['runCount']}개"
+        )
+        self.log(message)
+        self.statusBar().showMessage(message, 5000)
+        return result
+
+    def choose_jobs_snapshot_export(self) -> dict[str, Any] | None:
+        default_path = str(
+            LOG_PATH.parent
+            / f"toki-jobs-{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}.json"
+        )
+        selected, _filter = QFileDialog.getSaveFileName(
+            self, "작업 스냅샷 내보내기", default_path, "JSON 파일 (*.json)"
+        )
+        return self.export_jobs_snapshot_now(selected) if selected else None
+
+    def choose_jobs_snapshot_import(self) -> bool:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self, "작업 스냅샷 가져오기", str(LOG_PATH.parent), "JSON 파일 (*.json)"
+        )
+        return self.show_jobs_snapshot_import(selected) if selected else False
+
+    def show_jobs_snapshot_import(self, input_path: str) -> bool:
+        result = import_jobs_snapshot(Path(input_path), execute=False)
+        if self.active_jobs_snapshot_dialog:
+            self.active_jobs_snapshot_dialog.close()
+        dialog = JobsSnapshotImportDialog(self, str(Path(input_path).resolve()), result)
+        self.active_jobs_snapshot_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_jobs_snapshot_dialog", None)
+                if self.active_jobs_snapshot_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log("작업 스냅샷 가져오기 미리보기 표시")
+        return True
+
+    def execute_jobs_snapshot_import(self, input_path: str) -> dict[str, Any]:
+        result = import_jobs_snapshot(Path(input_path), execute=True)
+        self.refresh_job_list()
+        message = (
+            f"작업 스냅샷 가져오기: 작품 {result['importedJobs']}개, "
+            f"실행 {result['importedRuns']}개"
+        )
+        self.log(message)
+        self.statusBar().showMessage(message, 5000)
+        return result
+
+    def close_jobs_snapshot_dialog(self) -> bool:
+        if not self.active_jobs_snapshot_dialog:
+            return False
+        self.active_jobs_snapshot_dialog.close()
+        return True
+
     def close_settings_dialog(self) -> bool:
         if not self.active_settings_dialog:
             return False
@@ -4926,6 +5075,11 @@ class MainWindow(QMainWindow):
         elif self.active_settings_dialog and self.active_settings_dialog.isVisible():
             screenshot = self.active_settings_dialog.grab()
         elif (
+            self.active_jobs_snapshot_dialog
+            and self.active_jobs_snapshot_dialog.isVisible()
+        ):
+            screenshot = self.active_jobs_snapshot_dialog.grab()
+        elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
         ):
@@ -5351,6 +5505,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced|provider --search TEXT|--close]\n"
             "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
+            "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
+            "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
@@ -5556,6 +5712,10 @@ class MainWindow(QMainWindow):
                 self.active_settings_dialog.state_snapshot()
                 if self.active_settings_dialog
                 else {"open": False, "tab": "", "search": "", "visibleTabs": []}
+            ),
+            "jobsSnapshotDialogOpen": bool(
+                self.active_jobs_snapshot_dialog
+                and self.active_jobs_snapshot_dialog.isVisible()
             ),
             "window": {
                 **self.window_snapshot(),
@@ -5791,6 +5951,17 @@ class MainWindow(QMainWindow):
             }
         if action == "close_settings":
             return {"closed": self.close_settings_dialog()}
+        if action == "export_jobs_snapshot":
+            return self.export_jobs_snapshot_now(str(request.get("output") or ""))
+        if action == "import_jobs_snapshot":
+            input_path = str(request.get("input") or "")
+            if request.get("execute"):
+                return self.execute_jobs_snapshot_import(input_path)
+            return import_jobs_snapshot(Path(input_path), execute=False)
+        if action == "show_jobs_snapshot_import":
+            return {"shown": self.show_jobs_snapshot_import(str(request.get("input") or ""))}
+        if action == "close_jobs_snapshot_import":
+            return {"closed": self.close_jobs_snapshot_dialog()}
         if action == "tray":
             return self.handle_tray_command(
                 str(request.get("command") or "status"),

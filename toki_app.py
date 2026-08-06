@@ -46,8 +46,10 @@ from toki_core import (
     error_category_label,
     export_diagnostics,
     export_app_settings,
+    export_jobs_snapshot,
     load_config,
     import_app_settings,
+    import_jobs_snapshot,
     load_job_by_id,
     load_jobs_page,
     log_retention_status,
@@ -407,6 +409,30 @@ def build_parser() -> argparse.ArgumentParser:
     config_reset.add_argument("--execute", action="store_true", help="실제로 초기화")
     config_reset.add_argument("--yes", action="store_true", help="초기화 확인")
     config_reset.add_argument("--json", action="store_true", help="JSON으로 출력")
+    jobs_parser = subparsers.add_parser(
+        "jobs", help="작업 기록 스냅샷 내보내기·가져오기"
+    )
+    jobs_commands = jobs_parser.add_subparsers(dest="jobs_command", required=True)
+    jobs_export = jobs_commands.add_parser("export", help="작품과 실행 기록을 JSON으로 내보내기")
+    jobs_export.add_argument("--output", required=True, help="저장할 JSON 경로")
+    jobs_export.add_argument("--json", action="store_true", help="JSON으로 출력")
+    jobs_export.add_argument(
+        "--via-gui", action="store_true", help="실행 중인 GUI의 공용 서비스로 내보내기"
+    )
+    jobs_import = jobs_commands.add_parser("import", help="작업 스냅샷 미리보기 또는 추가")
+    jobs_import.add_argument("--input", help="가져올 JSON 경로")
+    jobs_import_mode = jobs_import.add_mutually_exclusive_group()
+    jobs_import_mode.add_argument("--dry-run", action="store_true", help="변경 예정만 확인")
+    jobs_import_mode.add_argument("--execute", action="store_true", help="실제로 기록 추가")
+    jobs_import_mode.add_argument(
+        "--show-gui", action="store_true", help="GUI에서 가져오기 미리보기 표시"
+    )
+    jobs_import_mode.add_argument("--close", action="store_true", help="GUI 미리보기 창 닫기")
+    jobs_import.add_argument("--yes", action="store_true", help="가져오기 확인")
+    jobs_import.add_argument("--json", action="store_true", help="JSON으로 출력")
+    jobs_import.add_argument(
+        "--via-gui", action="store_true", help="실행 중인 GUI의 공용 서비스로 가져오기"
+    )
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -1045,6 +1071,58 @@ def run_cli(args: argparse.Namespace) -> int:
             print(result["value"])
         else:
             print_json(result)
+        return 0 if result.get("ok") else 2
+    if command == "jobs":
+        if args.jobs_command == "export":
+            if args.via_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {"action": "export_jobs_snapshot", "output": args.output}
+                )
+            else:
+                result = export_jobs_snapshot(Path(args.output))
+        else:
+            if args.close:
+                ensure_gui_running()
+                result = control_request({"action": "close_jobs_snapshot_import"})
+                print_json(result)
+                return 0
+            if not args.input:
+                raise ValueError("작업 스냅샷 JSON 경로를 --input으로 지정하세요.")
+            if args.show_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {"action": "show_jobs_snapshot_import", "input": args.input}
+                )
+                print_json(result)
+                return 0
+            if args.execute and not args.yes:
+                raise ValueError("작업 기록을 가져오려면 --execute --yes를 함께 지정하세요.")
+            if args.via_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {
+                        "action": "import_jobs_snapshot",
+                        "input": args.input,
+                        "execute": bool(args.execute),
+                    }
+                )
+            else:
+                result = import_jobs_snapshot(
+                    Path(args.input), execute=bool(args.execute)
+                )
+        if args.json or args.via_gui:
+            print_json(result)
+        elif args.jobs_command == "export":
+            print(
+                f"작업 스냅샷: {result['path']} · 작품 {result['jobCount']} · "
+                f"실행 {result['runCount']}"
+            )
+        else:
+            print(
+                f"작품 추가 {result['pendingJobs']} · 실행 기록 추가 {result['pendingRuns']} · "
+                f"기존 작품 건너뜀 {result['skippedExistingWorks']}"
+            )
         return 0 if result.get("ok") else 2
     if command == "shortcuts":
         if args.show_gui or args.close:

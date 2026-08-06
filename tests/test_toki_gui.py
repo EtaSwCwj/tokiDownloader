@@ -107,6 +107,57 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_jobs_snapshot_ipc_routes_export_preview_execute_show_and_close(self) -> None:
+        calls = []
+        harness = type("JobsSnapshotHarness", (), {})()
+        harness.export_jobs_snapshot_now = (
+            lambda output: calls.append(("export", output)) or {"ok": True}
+        )
+        harness.execute_jobs_snapshot_import = (
+            lambda input_path: calls.append(("execute", input_path)) or {"ok": True}
+        )
+        harness.show_jobs_snapshot_import = (
+            lambda input_path: calls.append(("show", input_path)) or True
+        )
+        harness.close_jobs_snapshot_dialog = lambda: calls.append(("close",)) or True
+
+        with patch(
+            "toki_gui.import_jobs_snapshot", return_value={"ok": True, "executed": False}
+        ) as preview:
+            exported = MainWindow._handle_control_action(
+                harness, {"action": "export_jobs_snapshot", "output": "jobs.json"}
+            )
+            previewed = MainWindow._handle_control_action(
+                harness,
+                {"action": "import_jobs_snapshot", "input": "jobs.json", "execute": False},
+            )
+            executed = MainWindow._handle_control_action(
+                harness,
+                {"action": "import_jobs_snapshot", "input": "jobs.json", "execute": True},
+            )
+            shown = MainWindow._handle_control_action(
+                harness, {"action": "show_jobs_snapshot_import", "input": "jobs.json"}
+            )
+            closed = MainWindow._handle_control_action(
+                harness, {"action": "close_jobs_snapshot_import"}
+            )
+
+        preview.assert_called_once_with(Path("jobs.json"), execute=False)
+        self.assertTrue(exported["ok"])
+        self.assertFalse(previewed["executed"])
+        self.assertTrue(executed["ok"])
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(
+            calls,
+            [
+                ("export", "jobs.json"),
+                ("execute", "jobs.json"),
+                ("show", "jobs.json"),
+                ("close",),
+            ],
+        )
+
     def test_settings_search_catalog_matches_pages_without_opening_gui(self) -> None:
         self.assertEqual(SettingsDialog.matching_tab_indexes("테마"), [2])
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])

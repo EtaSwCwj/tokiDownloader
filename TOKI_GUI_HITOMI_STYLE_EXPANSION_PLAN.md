@@ -183,7 +183,7 @@ GUI가 실행 중이면 CLI 변경도 IPC를 통해 즉시 반영한다. `settin
 
 ### 단계 B. 작업·도구 메뉴
 
-- [ ] 작업 저장 스냅샷과 JSON 내보내기·가져오기
+- [x] 작업 저장 스냅샷과 JSON 내보내기·가져오기
 - [ ] 작품 그룹 생성·이름 변경·이동·해제
 - [x] 로컬 작품 폴더 검사 작업
 - [ ] 로컬 압축 파일 검사 작업
@@ -203,6 +203,13 @@ local inspect --path PATH --json
 duplicates works --json
 duplicates images --job ID --algorithm phash --json
 ```
+
+구현 메모: 작품 단위 기록과 실행 이력을 버전 JSON으로 원자 내보내기한다. 가져오기는 기본
+미리보기이며 기존 작품/실행은 덮어쓰지 않고 누락분만 추가한다. 미완료 상태는 `중지됨`으로
+복원하고 다운로드 폴더·파일은 변경하지 않는다. 작업 메뉴와 `jobs export/import`,
+`--show-gui`, `--via-gui`, `--close`가 같은 서비스를 사용한다. 실제 DB 2작품·3실행 기록을
+내보낸 뒤 무변경 GUI 미리보기와 `logs/jobs-snapshot-import-gui.png` 캡처를 확인했으며
+Python 127건과 Node 7건을 통과했다.
 
 ### 단계 C. 보기·빠른 실행·트레이
 

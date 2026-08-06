@@ -85,6 +85,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd config import --input "D:\Backup\toki-settings.json" --execute --yes --json
 .\toki-cli.cmd config reset --json
 .\toki-cli.cmd config reset --execute --yes --json
+.\toki-cli.cmd jobs export --output "D:\Backup\toki-jobs.json" --json
+.\toki-cli.cmd jobs import --input "D:\Backup\toki-jobs.json" --dry-run --json
+.\toki-cli.cmd jobs import --input "D:\Backup\toki-jobs.json" --show-gui
+.\toki-cli.cmd jobs import --input "D:\Backup\toki-jobs.json" --execute --yes --json
+.\toki-cli.cmd jobs import --close
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
@@ -289,6 +294,14 @@ DB 백업 절차를 거칩니다. 업데이트 전에는 GUI를 종료하고 두
 `config import`와 `config reset`은 기본적으로 변경 예정만 보여줍니다. 실제 반영에는
 `--execute --yes`가 모두 필요하며, 가져오기 전 기존 설정은 타임스탬프 백업으로 보존됩니다.
 GUI 실행 중 CLI로 설정을 바꾸거나 가져오면 현재 창에도 즉시 반영됩니다.
+
+`jobs export`는 작품 단위 기록과 실행 이력을 한 JSON에 저장합니다. 이 파일에는 원본 URL과
+로컬 저장 경로가 포함되므로 개인 백업으로 취급해야 합니다. `jobs import`는 기본적으로
+미리보기이며 실제 추가에는 `--execute --yes`가 필요합니다. 가져오기는 현재 기록을 덮어쓰지
+않고 누락된 작품·실행만 추가하며, 미완료 상태는 실행 프로세스 없이 `중지됨`으로 복원합니다.
+다운로드 폴더와 파일은 읽거나 변경하지 않습니다. 작업 메뉴의 내보내기·가져오기와
+`--show-gui`, `--via-gui`도 같은 서비스를 사용합니다.
+
 디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
 높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density
 compact|comfortable`로 같은 선택을 즉시 적용할 수 있습니다.
