@@ -4,6 +4,7 @@ import json
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from toki_app import build_parser, run_cli, run_direct_download
@@ -459,6 +460,52 @@ class CliParserTests(unittest.TestCase):
             gui_exit = run_cli(shown)
         self.assertEqual(gui_exit, 0)
         request.assert_called_once_with({"action": "show_performance_diagnostics"})
+
+    def test_performance_benchmark_cli_passes_sizes_page_and_output(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "performance", "benchmark", "--sizes", "100", "1000",
+                "--page-size", "50", "--output", r"C:\보고서\성능.json", "--json",
+            ]
+        )
+        result = {
+            "ok": True,
+            "sizes": [100, 1000],
+            "results": [],
+            "reportPath": r"C:\보고서\성능.json",
+        }
+        with (
+            patch("toki_app.run_job_database_benchmark", return_value=result) as benchmark,
+            redirect_stdout(StringIO()) as output,
+        ):
+            exit_code = run_cli(args)
+        self.assertEqual(exit_code, 0)
+        benchmark.assert_called_once_with(
+            [100, 1000], page_size=50, report_path=Path(r"C:\보고서\성능.json")
+        )
+        self.assertTrue(json.loads(output.getvalue())["ok"])
+
+        via_gui = build_parser().parse_args(
+            ["performance", "benchmark", "--via-gui", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"started": True, "running": True, "last": None},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            gui_exit = run_cli(via_gui)
+        self.assertEqual(gui_exit, 0)
+        request.assert_called_once_with(
+            {
+                "action": "start_performance_benchmark",
+                "sizes": [100, 1000, 10000, 100000],
+                "pageSize": 200,
+                "output": "",
+            }
+        )
 
     def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
         dry_run = build_parser().parse_args(

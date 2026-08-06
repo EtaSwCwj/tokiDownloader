@@ -647,10 +647,40 @@ class PerformanceDiagnosticsDialog(QDialog):
         )
         layout.addWidget(details)
 
+        benchmark_row = QHBoxLayout()
+        self.benchmark_status_label = QLabel("합성 벤치마크: 실행 전")
+        self.benchmark_status_label.setObjectName("mutedLabel")
+        benchmark_row.addWidget(self.benchmark_status_label, 1)
+        self.benchmark_button = QPushButton("100~100,000개 벤치마크 실행")
+        benchmark_row.addWidget(self.benchmark_button)
+        layout.addLayout(benchmark_row)
+        if parent is not None and hasattr(parent, "start_performance_benchmark"):
+            self.benchmark_button.clicked.connect(
+                lambda: parent.start_performance_benchmark()
+            )
+            self.update_benchmark_status(parent.performance_benchmark_snapshot())
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
         buttons.rejected.connect(self.close)
         layout.addWidget(buttons)
+
+    def update_benchmark_status(self, snapshot: dict[str, Any]) -> None:
+        running = bool(snapshot.get("running"))
+        last = snapshot.get("last") if isinstance(snapshot.get("last"), dict) else None
+        self.benchmark_button.setEnabled(not running)
+        if running:
+            self.benchmark_status_label.setText("합성 벤치마크: 실행 중...")
+        elif last:
+            results = list(last.get("results") or [])
+            largest = results[-1] if results else {}
+            self.benchmark_status_label.setText(
+                f"최근 결과: {'통과' if last.get('ok') else '실패'} · "
+                f"{int(largest.get('size') or 0):,}개 첫 화면 "
+                f"{float(largest.get('firstPageMs') or 0):.1f}ms"
+            )
+        else:
+            self.benchmark_status_label.setText("합성 벤치마크: 실행 전")
 
 
 class WorkDetailDialog(QDialog):
@@ -1479,6 +1509,7 @@ class MainWindow(QMainWindow):
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_contexts: dict[str, ProcessContext] = {}
         self.self_test_process: QProcess | None = None
+        self.performance_benchmark_process: QProcess | HiddenProcess | None = None
         self.file_verify_processes: dict[str, QProcess] = {}
         self.image_preview_processes: dict[str, QProcess] = {}
         self.image_conversion_processes: dict[str, ImageConversionProcessContext] = {}
@@ -1487,6 +1518,9 @@ class MainWindow(QMainWindow):
         self.self_test_stdout = ""
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
+        self.performance_benchmark_stdout = ""
+        self.performance_benchmark_stderr = ""
+        self.last_performance_benchmark: dict[str, Any] | None = None
         self.startup_recovery: dict[str, Any] = {
             "jobCount": 0,
             "runCount": 0,
@@ -4399,6 +4433,115 @@ class MainWindow(QMainWindow):
         self.self_test_action.setEnabled(True)
         self.self_test_process = None
 
+    def performance_benchmark_snapshot(self) -> dict[str, Any]:
+        running = bool(
+            self.performance_benchmark_process
+            and self.performance_benchmark_process.state()
+            != QProcess.ProcessState.NotRunning
+        )
+        return {"running": running, "last": self.last_performance_benchmark}
+
+    def _update_performance_benchmark_dialog(self) -> None:
+        if self.active_performance_dialog:
+            self.active_performance_dialog.update_benchmark_status(
+                self.performance_benchmark_snapshot()
+            )
+
+    def start_performance_benchmark(
+        self,
+        sizes: list[int] | None = None,
+        page_size: int = 200,
+        output: str = "",
+    ) -> bool:
+        if self.performance_benchmark_snapshot()["running"]:
+            self.statusBar().showMessage("목록 벤치마크가 이미 실행 중입니다.", 2500)
+            return False
+        process = create_background_process(self)
+        self.performance_benchmark_process = process
+        self.performance_benchmark_stdout = ""
+        self.performance_benchmark_stderr = ""
+        self.last_performance_benchmark = None
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(sys.executable)
+        normalized_sizes = [int(size) for size in (sizes or [100, 1_000, 10_000, 100_000])]
+        if not normalized_sizes or any(size < 1 or size > 100_000 for size in normalized_sizes):
+            raise ValueError("벤치마크 크기는 각각 1~100,000개여야 합니다.")
+        arguments = [
+            str(ROOT_DIR / "toki_app.py"),
+            "performance",
+            "benchmark",
+            "--sizes",
+            *(str(size) for size in normalized_sizes),
+            "--page-size",
+            str(max(1, min(1_000, int(page_size)))),
+            "--json",
+        ]
+        if output:
+            arguments.extend(("--output", str(output)))
+        process.setArguments(arguments)
+        process.readyReadStandardOutput.connect(self._read_performance_benchmark_stdout)
+        process.readyReadStandardError.connect(self._read_performance_benchmark_stderr)
+        process.errorOccurred.connect(self._performance_benchmark_process_error)
+        process.finished.connect(self._performance_benchmark_finished)
+        self.status_label.setText("목록 벤치마크 실행 중")
+        self.log("100~100,000개 합성 목록 벤치마크 시작", job_id="performance")
+        process.start()
+        self._update_performance_benchmark_dialog()
+        return True
+
+    def _read_performance_benchmark_stdout(self) -> None:
+        if self.performance_benchmark_process:
+            self.performance_benchmark_stdout += bytes(
+                self.performance_benchmark_process.readAllStandardOutput()
+            ).decode("utf-8", errors="replace")
+
+    def _read_performance_benchmark_stderr(self) -> None:
+        if self.performance_benchmark_process:
+            self.performance_benchmark_stderr += bytes(
+                self.performance_benchmark_process.readAllStandardError()
+            ).decode("utf-8", errors="replace")
+
+    def _performance_benchmark_process_error(
+        self, _error: QProcess.ProcessError
+    ) -> None:
+        if not self.performance_benchmark_process:
+            return
+        message = (
+            "목록 벤치마크 프로세스 오류: "
+            f"{self.performance_benchmark_process.errorString()}"
+        )
+        self.log(message, "ERROR", job_id="performance")
+        self.status_label.setText("목록 벤치마크 실행 오류")
+
+    def _performance_benchmark_finished(
+        self, exit_code: int, _exit_status: QProcess.ExitStatus
+    ) -> None:
+        self._read_performance_benchmark_stdout()
+        self._read_performance_benchmark_stderr()
+        try:
+            result = json.loads(self.performance_benchmark_stdout.strip())
+            if not isinstance(result, dict):
+                raise ValueError("벤치마크 결과가 JSON 객체가 아닙니다.")
+        except (json.JSONDecodeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "error": str(error),
+                "stderr": self.performance_benchmark_stderr.strip(),
+                "results": [],
+            }
+        result["ok"] = bool(result.get("ok")) and exit_code == 0
+        self.last_performance_benchmark = result
+        message = f"목록 벤치마크 {'통과' if result['ok'] else '실패'}"
+        self.log(message, "INFO" if result["ok"] else "ERROR", job_id="performance")
+        if self.performance_benchmark_stderr.strip() and not result["ok"]:
+            self.log(
+                self.performance_benchmark_stderr.strip(), "ERROR", job_id="performance"
+            )
+        self.status_label.setText(message)
+        self.statusBar().showMessage(message, 5000)
+        self.performance_benchmark_process = None
+        self._update_performance_benchmark_dialog()
+
     def show_cli_help(self) -> None:
         QMessageBox.information(
             self,
@@ -4446,6 +4589,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd screenshot [--output PATH]\n"
             "toki-cli.cmd window [--x N --y N --width N --height N --screen NAME --center --safe --maximize|--normal]\n"
             "toki-cli.cmd performance audit [--json|--show-gui|--close]\n"
+            "toki-cli.cmd performance benchmark [--sizes N...] [--page-size N --json|--via-gui]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
@@ -4552,6 +4696,7 @@ class MainWindow(QMainWindow):
                 self.self_test_process
                 and self.self_test_process.state() != QProcess.ProcessState.NotRunning
             ),
+            "performanceBenchmark": self.performance_benchmark_snapshot(),
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
@@ -4917,6 +5062,14 @@ class MainWindow(QMainWindow):
             return {"shown": True, "report": self.show_performance_diagnostics()}
         if action == "close_performance_diagnostics":
             return {"closed": self.close_performance_diagnostics()}
+        if action == "start_performance_benchmark":
+            self.show_performance_diagnostics()
+            started = self.start_performance_benchmark(
+                [int(size) for size in request.get("sizes") or []],
+                int(request.get("pageSize") or 200),
+                str(request.get("output") or ""),
+            )
+            return {"started": started, **self.performance_benchmark_snapshot()}
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()

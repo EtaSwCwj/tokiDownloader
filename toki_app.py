@@ -56,6 +56,7 @@ from toki_core import (
     rebuild_job_metadata,
     resolve_cover_path,
     retry_backoff_seconds,
+    run_job_database_benchmark,
     save_config,
     save_jobs,
     settings_snapshot,
@@ -439,6 +440,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     performance_window.add_argument(
         "--close", action="store_true", help="GUI 성능 진단창 닫기"
+    )
+    performance_benchmark = performance_commands.add_parser(
+        "benchmark", help="격리된 합성 DB에서 100~100,000개 목록 성능 측정"
+    )
+    performance_benchmark.add_argument(
+        "--sizes",
+        nargs="+",
+        type=int,
+        default=[100, 1_000, 10_000, 100_000],
+        help="측정할 누적 작품 수(각 1~100000)",
+    )
+    performance_benchmark.add_argument(
+        "--page-size", type=int, default=200, help="첫 화면 조회 수(최대 1000)"
+    )
+    performance_benchmark.add_argument("--output", help="JSON 보고서 저장 경로")
+    performance_benchmark.add_argument("--json", action="store_true", help="JSON으로 출력")
+    performance_benchmark.add_argument(
+        "--via-gui", action="store_true", help="GUI 진단창을 열고 백그라운드에서 실행"
     )
 
     list_state = subparsers.add_parser(
@@ -972,16 +991,48 @@ def run_cli(args: argparse.Namespace) -> int:
         )
         return 0
     if command == "performance":
-        if args.close:
-            ensure_gui_running()
-            result = control_request({"action": "close_performance_diagnostics"})
-        elif args.show_gui:
-            ensure_gui_running()
-            result = control_request({"action": "show_performance_diagnostics"})
+        if args.performance_command == "benchmark":
+            if args.via_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {
+                        "action": "start_performance_benchmark",
+                        "sizes": args.sizes,
+                        "pageSize": args.page_size,
+                        "output": args.output or "",
+                    }
+                )
+            else:
+                result = run_job_database_benchmark(
+                    args.sizes,
+                    page_size=args.page_size,
+                    report_path=Path(args.output) if args.output else None,
+                )
         else:
-            result = job_database_diagnostics()
-        if args.json or args.show_gui or args.close:
+            if args.close:
+                ensure_gui_running()
+                result = control_request({"action": "close_performance_diagnostics"})
+            elif args.show_gui:
+                ensure_gui_running()
+                result = control_request({"action": "show_performance_diagnostics"})
+            else:
+                result = job_database_diagnostics()
+        show_machine_result = bool(
+            args.json
+            or getattr(args, "via_gui", False)
+            or getattr(args, "show_gui", False)
+            or getattr(args, "close", False)
+        )
+        if show_machine_result:
             print_json(result)
+        elif args.performance_command == "benchmark":
+            for item in result.get("results") or []:
+                print(
+                    f"{int(item['size']):,}개 | 첫 화면 {float(item['firstPageMs']):.1f}ms | "
+                    f"최대 조회 {float(item['maxQueryMs']):.1f}ms | "
+                    f"{'통과' if item.get('passed') else '실패'}"
+                )
+            print(f"보고서: {result.get('reportPath')}")
         else:
             queries = list(result.get("queries") or [])
             passed = sum(1 for query in queries if query.get("ok"))
@@ -993,7 +1044,10 @@ def run_cli(args: argparse.Namespace) -> int:
             )
         report = result.get("report") if isinstance(result, dict) else None
         effective = report if isinstance(report, dict) else result
-        return 0 if bool(effective.get("ok", args.close)) else 2
+        default_success = bool(
+            getattr(args, "close", False) or getattr(args, "via_gui", False)
+        )
+        return 0 if bool(effective.get("ok", default_success)) else 2
     if command == "status":
         result = control_request({"action": "status"})
         if args.json:

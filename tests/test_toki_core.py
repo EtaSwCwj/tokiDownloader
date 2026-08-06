@@ -53,6 +53,7 @@ from toki_core import (
     retry_backoff_seconds,
     resolve_cover_path,
     reorder_pending_jobs,
+    run_job_database_benchmark,
     save_jobs,
     save_runs,
     set_job_pause_state,
@@ -546,6 +547,20 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(len(report["queries"]), 6)
         self.assertTrue(all(plan["usesIndex"] for plan in report["queries"]))
         self.assertTrue(all(not plan["temporarySort"] for plan in report["queries"]))
+
+    def test_synthetic_database_benchmark_is_isolated_and_writes_report(self) -> None:
+        report_path = Path(self.temp_dir.name) / "한글 경로" / "benchmark.json"
+        report = run_job_database_benchmark(
+            [100, 1_000], page_size=50, report_path=report_path
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["sizes"], [100, 1_000])
+        self.assertTrue(report["temporaryDatabaseRemoved"])
+        self.assertTrue(report_path.is_file())
+        self.assertEqual([item["count"] for item in report["results"]], [100, 1_000])
+        self.assertTrue(all(item["firstPageMs"] <= 2_000 for item in report["results"]))
+        self.assertEqual(count_jobs(), 0)
 
     def test_restart_recovery_scans_beyond_first_history_page(self) -> None:
         interrupted = DownloadJob(

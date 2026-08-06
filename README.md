@@ -151,6 +151,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd window --safe
 .\toki-cli.cmd performance audit --json
 .\toki-cli.cmd performance audit --show-gui
+.\toki-cli.cmd performance benchmark --json
+.\toki-cli.cmd performance benchmark --sizes 100 1000 10000 100000 --via-gui --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -174,6 +176,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,
 전체 임시 정렬이 발생하는지를 JSON으로 반환합니다. `--show-gui`는 같은 결과를 도구 메뉴의
 `목록 성능 진단...` 창으로 표시하며 `--close`로 닫을 수 있습니다.
+
+`performance benchmark`는 사용자 DB와 분리된 임시 SQLite 파일에 합성 작품을 누적해
+첫 200개 로딩과 정렬·상태 필터 시간을 측정하고 `logs/performance-benchmark.json`에
+원자적으로 저장합니다. 기본 크기는 100, 1,000, 10,000, 100,000개이며 임시 DB는 실행 후
+자동 제거됩니다. `--via-gui`는 진단창을 열고 숨겨진 백그라운드 프로세스로 같은 벤치마크를
+실행합니다. 진행·완료 상태는 `status --json`의 `performanceBenchmark`에서도 확인합니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

@@ -104,6 +104,36 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_performance_benchmark_button_uses_background_cli_contract(self) -> None:
+        status = type("StatusHarness", (), {"showMessage": lambda _self, *_args: None})()
+        label = type("LabelHarness", (), {"setText": lambda _self, *_args: None})()
+        harness = type("PerformanceHarness", (), {})()
+        harness.performance_benchmark_process = None
+        harness.performance_benchmark_stdout = ""
+        harness.performance_benchmark_stderr = ""
+        harness.last_performance_benchmark = None
+        harness.active_performance_dialog = None
+        harness.performance_benchmark_snapshot = lambda: {"running": False, "last": None}
+        harness._read_performance_benchmark_stdout = lambda: None
+        harness._read_performance_benchmark_stderr = lambda: None
+        harness._performance_benchmark_process_error = lambda _error: None
+        harness._performance_benchmark_finished = lambda _code, _status: None
+        harness._update_performance_benchmark_dialog = lambda: None
+        harness.statusBar = lambda: status
+        harness.status_label = label
+        harness.log = lambda *_args, **_kwargs: None
+        _ProcessStub.instances = []
+
+        with patch("toki_gui.create_background_process", _ProcessStub):
+            started = MainWindow.start_performance_benchmark(harness)
+
+        process = _ProcessStub.instances[0]
+        self.assertTrue(started)
+        self.assertTrue(process.started_called)
+        self.assertIn("performance", process.arguments)
+        self.assertIn("benchmark", process.arguments)
+        self.assertIn("--json", process.arguments)
+
     def test_keyboard_selection_moves_and_wraps_visible_jobs(self) -> None:
         jobs = [
             DownloadJob(

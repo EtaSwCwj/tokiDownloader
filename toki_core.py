@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+import tempfile
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -1348,13 +1349,15 @@ def load_jobs_page(
     query: str = "",
     state: str = "",
     sort: str = "updated",
+    *,
+    database_path: Path | None = None,
 ) -> list[DownloadJob]:
     field_names = set(DownloadJob.__dataclass_fields__)
     order_by = JOB_SORT_ORDERS.get(sort)
     if order_by is None:
         raise ValueError(f"지원하지 않는 작업 정렬입니다: {sort}")
     where_sql, parameters = _job_filter_clause(query, state)
-    connection = _connect_job_db()
+    connection = _connect_job_db(database_path)
     try:
         rows = connection.execute(
             f"SELECT payload FROM jobs{where_sql} ORDER BY {order_by} LIMIT ? OFFSET ?",
@@ -1431,6 +1434,181 @@ def job_database_diagnostics(database_path: Path | None = None) -> dict[str, Any
         "indexes": indexes,
         "queries": query_plans,
     }
+
+
+def run_job_database_benchmark(
+    sizes: list[int] | tuple[int, ...] | None = None,
+    *,
+    page_size: int = 200,
+    report_path: Path | None = None,
+) -> dict[str, Any]:
+    """Benchmark bounded list queries against an isolated synthetic SQLite database."""
+    requested_sizes = sizes or [100, 1_000, 10_000, 100_000]
+    normalized_sizes = sorted({int(size) for size in requested_sizes})
+    if not normalized_sizes or normalized_sizes[0] < 1:
+        raise ValueError("벤치마크 크기는 1개 이상이어야 합니다.")
+    if normalized_sizes[-1] > 100_000:
+        raise ValueError("벤치마크 크기는 최대 100,000개입니다.")
+    safe_page_size = max(1, min(1_000, int(page_size)))
+    target = Path(report_path) if report_path is not None else LOG_DIR / "performance-benchmark.json"
+    target = target.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now().astimezone()
+    process = psutil.Process()
+    memory_before = int(process.memory_info().rss)
+    results: list[dict[str, Any]] = []
+
+    with tempfile.TemporaryDirectory(prefix="toki-performance-") as temporary_folder:
+        database_path = Path(temporary_folder) / "synthetic-jobs.db"
+        connection = _connect_job_db(database_path)
+        inserted = 0
+
+        def storage_bytes() -> int:
+            return sum(
+                candidate.stat().st_size
+                for candidate in (
+                    database_path,
+                    Path(str(database_path) + "-wal"),
+                    Path(str(database_path) + "-shm"),
+                )
+                if candidate.exists()
+            )
+
+        try:
+            for size in normalized_sizes:
+                insert_started = time.perf_counter()
+                while inserted < size:
+                    batch_end = min(size, inserted + 5_000)
+                    rows: list[tuple[Any, ...]] = []
+                    for index in range(inserted, batch_end):
+                        job_id = f"benchmark-{index:06d}"
+                        work_key = f"benchmark:{index:06d}"
+                        state = ("완료", "오류", "대기", "중지됨")[index % 4]
+                        title = f"합성 작품 {index:06d}"
+                        progress = index % 101
+                        pinned = int(index % 997 == 0)
+                        timestamp = f"2026-01-01T{index:012d}+09:00"
+                        payload = json.dumps(
+                            {
+                                "job_id": job_id,
+                                "url": f"https://benchmark.invalid/manhwa/{index}",
+                                "output_dir": r"C:\toki-benchmark",
+                                "work_key": work_key,
+                                "title": title,
+                                "state": state,
+                                "progress": progress,
+                                "pinned": bool(pinned),
+                                "created_at": timestamp,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        rows.append(
+                            (
+                                job_id,
+                                work_key,
+                                title,
+                                state,
+                                progress,
+                                f"https://benchmark.invalid/manhwa/{index}",
+                                pinned,
+                                "",
+                                timestamp,
+                                timestamp,
+                                payload,
+                            )
+                        )
+                    connection.executemany(
+                        """
+                        INSERT INTO jobs(
+                            job_id, work_key, title, state, progress, url, pinned,
+                            tag_color, created_at, updated_at, payload
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+                    inserted = batch_end
+                connection.commit()
+                insert_ms = round((time.perf_counter() - insert_started) * 1000, 3)
+
+                count_started = time.perf_counter()
+                counted = int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+                count_ms = round((time.perf_counter() - count_started) * 1000, 3)
+                query_times: dict[str, float] = {}
+                returned: dict[str, int] = {}
+                for sort in JOB_SORT_ORDERS:
+                    query_started = time.perf_counter()
+                    jobs = load_jobs_page(
+                        safe_page_size,
+                        0,
+                        sort=sort,
+                        database_path=database_path,
+                    )
+                    query_times[sort] = round(
+                        (time.perf_counter() - query_started) * 1000, 3
+                    )
+                    returned[sort] = len(jobs)
+                state_started = time.perf_counter()
+                filtered_jobs = load_jobs_page(
+                    safe_page_size,
+                    0,
+                    state="완료",
+                    sort="updated",
+                    database_path=database_path,
+                )
+                query_times["stateUpdated"] = round(
+                    (time.perf_counter() - state_started) * 1000, 3
+                )
+                returned["stateUpdated"] = len(filtered_jobs)
+                first_page_ms = query_times["updated"]
+                results.append(
+                    {
+                        "size": size,
+                        "insertMs": insert_ms,
+                        "count": counted,
+                        "countMs": count_ms,
+                        "pageSize": safe_page_size,
+                        "returned": returned,
+                        "queryMs": query_times,
+                        "firstPageMs": first_page_ms,
+                        "maxQueryMs": max(query_times.values()),
+                        "targetFirstPageMs": 2_000,
+                        "passed": counted == size and first_page_ms <= 2_000,
+                        "databaseBytes": storage_bytes(),
+                    }
+                )
+        finally:
+            connection.close()
+
+    finished_at = datetime.now().astimezone()
+    memory_after = int(process.memory_info().rss)
+    result = {
+        "ok": all(item["passed"] for item in results),
+        "startedAt": started_at.isoformat(timespec="seconds"),
+        "finishedAt": finished_at.isoformat(timespec="seconds"),
+        "durationMs": round((finished_at - started_at).total_seconds() * 1000, 3),
+        "pageSize": safe_page_size,
+        "sizes": normalized_sizes,
+        "temporaryDatabaseRemoved": True,
+        "memory": {
+            "beforeBytes": memory_before,
+            "afterBytes": memory_after,
+            "deltaBytes": memory_after - memory_before,
+        },
+        "environment": {
+            "sqliteVersion": sqlite3.sqlite_version,
+            "cpuCount": os.cpu_count() or 1,
+        },
+        "results": results,
+        "reportPath": str(target),
+    }
+    temporary_report = target.with_suffix(target.suffix + ".tmp")
+    temporary_report.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_report.replace(target)
+    return result
 
 
 def recover_interrupted_jobs(
