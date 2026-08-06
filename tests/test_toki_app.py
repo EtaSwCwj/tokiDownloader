@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -397,6 +398,62 @@ class CliParserTests(unittest.TestCase):
                 "format": "webp",
                 "quality": 80,
             }
+        )
+
+        progress = build_parser().parse_args(
+            [
+                "convert-images", "--job", "job-1", "--format", "webp",
+                "--execute", "--yes", "--progress-json",
+            ]
+        )
+        executed = {
+            **result,
+            "executed": True,
+            "convertedCount": 3,
+            "skippedExistingCount": 0,
+            "failedCount": 0,
+            "cancelled": False,
+            "success": True,
+        }
+
+        def convert_with_progress(*_args, **kwargs):
+            kwargs["progress_callback"](
+                {
+                    "current": 1,
+                    "total": 3,
+                    "converted": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "status": "converted",
+                }
+            )
+            return executed
+
+        output = StringIO()
+        with (
+            patch("toki_app.convert_job_images", side_effect=convert_with_progress),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(run_cli(progress), 0)
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(lines[0]["event"], "progress")
+        self.assertEqual(lines[1]["event"], "result")
+        self.assertTrue(lines[1]["result"]["ok"])
+
+        cancel = build_parser().parse_args(
+            ["cancel-conversion", "--job", "job-1"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"cancelled": True, "jobId": "job-1"},
+            ) as cancel_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(cancel), 0)
+        cancel_request.assert_called_once_with(
+            {"action": "cancel_image_conversion", "jobId": "job-1"}
         )
 
     def test_work_and_run_detail_arguments(self) -> None:

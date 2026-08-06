@@ -554,7 +554,18 @@ def build_parser() -> argparse.ArgumentParser:
     convert_images.add_argument("--yes", action="store_true", help="대량 새 파일 생성 확인")
     convert_images.add_argument("--show-gui", action="store_true", help="GUI 확인/변환 창 표시")
     convert_images.add_argument("--json", action="store_true", help="JSON으로 출력")
+    convert_images.add_argument(
+        "--progress-json",
+        action="store_true",
+        help="진행 이벤트와 최종 결과를 줄 단위 JSON으로 출력",
+    )
     convert_images.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
+
+    cancel_conversion = subparsers.add_parser(
+        "cancel-conversion",
+        help="GUI에서 실행 중인 이미지 변환 중지",
+    )
+    cancel_conversion.add_argument("--job", required=True, help="작업 ID")
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
@@ -1208,12 +1219,36 @@ def run_cli(args: argparse.Namespace) -> int:
         execute = bool(args.execute)
         if execute and not args.yes:
             raise ControlError("실제 이미지 변환에는 --execute --yes가 모두 필요합니다.")
+        progress_callback = None
+        if args.progress_json:
+            def emit_progress(event: dict[str, Any]) -> None:
+                print(
+                    json.dumps(
+                        {"event": "progress", **event}, ensure_ascii=True
+                    ),
+                    flush=True,
+                )
+
+            progress_callback = emit_progress
         result = (
-            convert_job_images(args.job, args.format, quality=args.quality)
+            convert_job_images(
+                args.job,
+                args.format,
+                quality=args.quality,
+                progress_callback=progress_callback,
+            )
             if execute
             else plan_image_conversion(args.job, args.format, quality=args.quality)
         )
-        if args.json:
+        if args.progress_json:
+            print(
+                json.dumps(
+                    {"event": "result", "result": {"ok": bool(result.get("success", True)), **result}},
+                    ensure_ascii=True,
+                ),
+                flush=True,
+            )
+        elif args.json:
             payload = {"ok": bool(result.get("success", True)), **result}
             if args.ascii_json:
                 print(json.dumps(payload, ensure_ascii=True, indent=2))
@@ -1230,7 +1265,16 @@ def run_cli(args: argparse.Namespace) -> int:
                     f"완료 {result['convertedCount']} · 건너뜀 "
                     f"{result['skippedExistingCount']} · 실패 {result['failedCount']}"
                 )
+        if result.get("cancelled"):
+            return 3
         return 0 if result.get("success", True) else 2
+    if command == "cancel-conversion":
+        ensure_gui_running()
+        result = control_request(
+            {"action": "cancel_image_conversion", "jobId": args.job}
+        )
+        print_json(result)
+        return 0 if result.get("cancelled") else 2
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())
         Path(resolved).mkdir(parents=True, exist_ok=True)

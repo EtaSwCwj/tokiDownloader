@@ -901,6 +901,70 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(repeated["convertedCount"], 0)
         self.assertEqual(repeated["skippedExistingCount"], 2)
 
+        webp_plan = plan_image_conversion(job.job_id, "webp", quality=80)
+        stale_temporary = Path(webp_plan["sample"][0]["target"] + ".tmp")
+        stale_temporary.parent.mkdir(parents=True, exist_ok=True)
+        stale_temporary.write_bytes(b"partial")
+        checks = 0
+        events = []
+
+        def cancel_after_first() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks > 1
+
+        cancelled = convert_job_images(
+            job.job_id,
+            "webp",
+            quality=80,
+            progress_callback=events.append,
+            cancel_check=cancel_after_first,
+        )
+        self.assertTrue(cancelled["cancelled"])
+        self.assertEqual(cancelled["processedCount"], 1)
+        self.assertEqual(cancelled["remainingCount"], 1)
+        self.assertEqual(cancelled["recoveredTemporaryFiles"], 1)
+        self.assertEqual(len(events), 1)
+        self.assertFalse(stale_temporary.exists())
+
+        recovered = convert_job_images(job.job_id, "webp", quality=80)
+        self.assertTrue(recovered["success"])
+        self.assertEqual(recovered["convertedCount"], 1)
+        self.assertEqual(recovered["skippedExistingCount"], 1)
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow optional dependency")
+    def test_image_conversion_failure_removes_partial_target_and_reports_progress(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 손상 이미지 작품"
+        episode = output / "0001 첫 회차"
+        episode.mkdir(parents=True)
+        corrupt = episode / "image1.jpg"
+        corrupt.write_bytes(b"not-an-image")
+        job = DownloadJob(
+            job_id="convert-corrupt-image",
+            url="https://newtoki1.org/manhwa/6401",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+        events = []
+
+        result = convert_job_images(
+            job.job_id,
+            "webp",
+            progress_callback=events.append,
+        )
+
+        target = Path(result["targetRoot"]) / episode.name / "image1.webp"
+        self.assertFalse(result["success"])
+        self.assertEqual(result["failedCount"], 1)
+        self.assertEqual(result["processedCount"], 1)
+        self.assertEqual(result["remainingCount"], 0)
+        self.assertEqual(events[0]["status"], "failed")
+        self.assertFalse(target.exists())
+        self.assertFalse(Path(str(target) + ".tmp").exists())
+
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:
         jobs = [
             DownloadJob(

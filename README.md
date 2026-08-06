@@ -121,8 +121,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd preview --job 작업ID --episode 1 --json
 .\toki-cli.cmd preview --job 작업ID --episode 1 --show-gui
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --dry-run --json
-.\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --json
+.\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --progress-json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --show-gui
+.\toki-cli.cmd cancel-conversion --job 작업ID
 .\toki-cli.cmd copy-link --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
@@ -281,8 +282,13 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 `_converted\형식\기존 회차 폴더`에 생성합니다. 원본은 덮어쓰거나 삭제하지 않고, 같은
 결과 파일이 있으면 건너뛰므로 중단 후 다시 실행할 수 있습니다. 기본 동작은 `dry-run`이고
 실제 대량 파일 생성에는 `--execute --yes`가 모두 필요합니다. GUI도 먼저 대상 수·기존
-결과·출력 경로를 보여준 뒤 `변환 실행...`에서 다시 확인합니다. 투명 이미지를 JPEG로
-변환할 때는 흰 배경 RGB로 합성합니다. 선택 기능이므로 다음 명령으로 Pillow를 설치합니다.
+결과·출력 경로를 보여준 뒤 `변환 실행...`에서 다시 확인합니다. 실행 중에는 처리 수와
+완료·건너뜀·실패 수가 갱신되며 `변환 중지` 버튼 또는 `cancel-conversion` CLI로 중지할
+수 있습니다. 각 이미지는 `.tmp` 파일을 완성한 뒤 원자적으로 교체하므로 중지해도 원본은
+그대로이고, 다음 실행은 남은 임시 파일을 정리한 뒤 기존 완성 결과를 건너뜁니다.
+`--progress-json`은 진행 이벤트와 최종 결과를 한 줄씩 JSON으로 출력하며 사용자 중지는
+종료 코드 3을 사용합니다. 투명 이미지를 JPEG로 변환할 때는 흰 배경 RGB로 합성합니다.
+선택 기능이므로 다음 명령으로 Pillow를 설치합니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-image-tools.txt

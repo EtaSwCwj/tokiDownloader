@@ -5,7 +5,7 @@ from collections import deque
 from unittest.mock import patch
 
 from toki_core import DownloadJob, DownloadRun
-from toki_gui import MainWindow, ProcessContext
+from toki_gui import ImageConversionProcessContext, MainWindow, ProcessContext
 
 
 class _ValueStub:
@@ -36,6 +36,7 @@ class _ProcessStub:
         self.arguments = []
         self.started_called = False
         self.deleted = False
+        self.killed = False
         self.__class__.instances.append(self)
 
     def setWorkingDirectory(self, _path: str) -> None:
@@ -53,6 +54,26 @@ class _ProcessStub:
     def deleteLater(self) -> None:
         self.deleted = True
 
+    def kill(self) -> None:
+        self.killed = True
+
+
+class _DialogStub:
+    def __init__(self, *_args) -> None:
+        self.destroyed = _SignalStub()
+
+    def setAttribute(self, *_args) -> None:
+        pass
+
+    def show(self) -> None:
+        pass
+
+    def raise_(self) -> None:
+        pass
+
+    def activateWindow(self) -> None:
+        pass
+
 
 class WorkSchedulerTests(unittest.TestCase):
     def test_image_conversion_gui_execution_uses_confirmed_cli_contract(self) -> None:
@@ -65,11 +86,16 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness = type("ConversionHarness", (), {})()
         harness.image_conversion_processes = {}
+        harness.active_image_conversion_dialog = None
+        harness.active_image_conversion_progress_dialog = None
         harness.selected_job = lambda _job_id=None: job
         harness.log = lambda *_args, **_kwargs: None
         _ProcessStub.instances = []
 
-        with patch("toki_gui.QProcess", _ProcessStub):
+        with (
+            patch("toki_gui.QProcess", _ProcessStub),
+            patch("toki_gui.ImageConversionProgressDialog", _DialogStub),
+        ):
             result = MainWindow.start_image_conversion(
                 harness,
                 job.job_id,
@@ -83,9 +109,61 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertTrue(process.started_called)
         self.assertIn("--execute", process.arguments)
         self.assertIn("--yes", process.arguments)
+        self.assertIn("--progress-json", process.arguments)
+        self.assertNotIn("--json", process.arguments)
         self.assertEqual(
             process.arguments[process.arguments.index("--quality") + 1], "82"
         )
+
+    def test_image_conversion_cancel_is_cli_callable_and_idempotent(self) -> None:
+        process = _ProcessStub()
+        context = ImageConversionProcessContext(process=process, execute=True)
+        harness = type("ConversionCancelHarness", (), {})()
+        harness.image_conversion_processes = {"convert-job": context}
+        harness.active_image_conversion_progress_dialog = None
+        harness.log = lambda *_args, **_kwargs: None
+
+        first = MainWindow.cancel_image_conversion(harness, "convert-job")
+        second = MainWindow.cancel_image_conversion(harness, "convert-job")
+
+        self.assertTrue(first["cancelled"])
+        self.assertTrue(second["cancelled"])
+        self.assertTrue(process.killed)
+        self.assertTrue(context.cancel_requested)
+
+    def test_image_conversion_progress_event_updates_dialog_and_final_result(self) -> None:
+        process = _ProcessStub()
+        context = ImageConversionProcessContext(process=process, execute=True)
+        received = []
+        dialog = type(
+            "ProgressDialogHarness",
+            (),
+            {
+                "job_id": "convert-job",
+                "update_progress": lambda _self, event: received.append(event),
+            },
+        )()
+        status = type(
+            "StatusHarness", (), {"showMessage": lambda _self, *_args: None}
+        )()
+        harness = type("ConversionProgressHarness", (), {})()
+        harness.image_conversion_processes = {"convert-job": context}
+        harness.active_image_conversion_progress_dialog = dialog
+        harness.statusBar = lambda: status
+
+        MainWindow._handle_image_conversion_output_line(
+            harness,
+            "convert-job",
+            '{"event":"progress","current":1,"total":2,"converted":1,"failed":0}',
+        )
+        MainWindow._handle_image_conversion_output_line(
+            harness,
+            "convert-job",
+            '{"event":"result","result":{"success":true,"convertedCount":2}}',
+        )
+
+        self.assertEqual(received[0]["current"], 1)
+        self.assertTrue(context.result["success"])
 
     def test_scheduler_starts_distinct_process_contexts_up_to_work_limit(self) -> None:
         jobs = [

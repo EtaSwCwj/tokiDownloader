@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import psutil
@@ -1674,6 +1674,8 @@ def convert_job_images(
     image_format: str,
     *,
     quality: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     plan = plan_image_conversion(job_id, image_format, quality=quality, sample_limit=1)
     if not plan["dependency"]["available"]:
@@ -1693,7 +1695,14 @@ def convert_job_images(
     converted = 0
     skipped_existing = 0
     failures: list[dict[str, str]] = []
-    for source in sources:
+    failure_count = 0
+    cancelled = False
+    recovered_temporary_files = 0
+    total = len(sources)
+    for index, source in enumerate(sources, start=1):
+        if cancel_check and cancel_check():
+            cancelled = True
+            break
         relative_parent = source.parent.relative_to(output_path)
         target = target_root / relative_parent / f"{source.stem}{extension}"
         target_key = os.path.normcase(str(target))
@@ -1708,11 +1717,27 @@ def convert_job_images(
                 )
                 suffix += 1
         used_targets.add(os.path.normcase(str(target)))
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        if temporary.exists():
+            temporary.unlink()
+            recovered_temporary_files += 1
         if target.exists():
             skipped_existing += 1
+            if progress_callback:
+                progress_callback(
+                    {
+                        "current": index,
+                        "total": total,
+                        "converted": converted,
+                        "skipped": skipped_existing,
+                        "failed": failure_count,
+                        "source": str(source),
+                        "target": str(target),
+                        "status": "skipped",
+                    }
+                )
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + ".tmp")
         try:
             with Image.open(source) as opened:
                 image = ImageOps.exif_transpose(opened)
@@ -1736,22 +1761,43 @@ def convert_job_images(
                 image.save(temporary, format=pillow_format, **save_options)
             os.replace(temporary, target)
             converted += 1
+            status = "converted"
         except Exception as error:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+            failure_count += 1
             if len(failures) < 100:
                 failures.append({"source": str(source), "error": str(error)})
+            status = "failed"
+        if progress_callback:
+            progress_callback(
+                {
+                    "current": index,
+                    "total": total,
+                    "converted": converted,
+                    "skipped": skipped_existing,
+                    "failed": failure_count,
+                    "source": str(source),
+                    "target": str(target),
+                    "status": status,
+                }
+            )
+    processed = converted + skipped_existing + failure_count
     return {
         **plan,
         "executed": True,
         "convertedCount": converted,
         "skippedExistingCount": skipped_existing,
-        "failedCount": len(sources) - converted - skipped_existing,
+        "failedCount": failure_count,
         "failures": failures,
-        "failuresTruncated": (len(sources) - converted - skipped_existing) > len(failures),
-        "success": converted + skipped_existing == len(sources),
+        "failuresTruncated": failure_count > len(failures),
+        "processedCount": processed,
+        "cancelled": cancelled,
+        "remainingCount": total - processed,
+        "recoveredTemporaryFiles": recovered_temporary_files,
+        "success": not cancelled and processed == total and failure_count == 0,
     }
 
 

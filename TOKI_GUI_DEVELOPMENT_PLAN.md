@@ -278,7 +278,7 @@ set-concurrency --works N --images N
 - [x] 보유 회차와 누락/손상 파일 검사
 - [x] 이미지 미리보기
 - [x] 지원 이미지 형식 변환 기능 검토 및 구현
-- [ ] 파일 작업 진행률, 취소와 실패 복구
+- [x] 파일 작업 진행률, 취소와 실패 복구
 
 필수 CLI 예시:
 
@@ -288,6 +288,8 @@ rebuild-metadata --job ID --json
 verify-files --job ID --json
 preview --job ID --episode EPISODE
 convert-images --job ID --format FORMAT --dry-run --json
+convert-images --job ID --format FORMAT --execute --yes --progress-json
+cancel-conversion --job ID
 ```
 
 완료 조건:
@@ -328,6 +330,14 @@ GUI는 동일 CLI를 별도 프로세스로 실행해 메인 스레드의 대량
 이름의 서로 다른 원본 확장자는 충돌 없는 대상명을 만든다. 투명 PNG→JPEG, 한글 경로,
 원본 바이트 보존과 재실행 건너뛰기를 임시 작품에서 자동 검증했다. 실제 사용자 작품은
 336장 WebP 변환 계획만 확인했고 출력 폴더를 생성하지 않았다.
+
+2026-08-07 파일 작업 진행률·취소·복구: 이미지 변환 CLI가 장별 진행 이벤트와 최종
+결과를 JSON Lines로 출력하고 GUI는 별도 프로세스 출력을 실시간 반영한다. GUI 중지 버튼과
+`cancel-conversion` CLI는 동일한 제어 경로를 사용한다. 대상 이미지는 `.tmp`에 완전히 쓴
+뒤 원자 교체하며, 중단으로 남은 임시 파일은 다음 실행에서 제거하고 이미 완성된 결과는
+건너뛴다. 서비스 취소 후 재실행, 손상 이미지 실패와 부분 파일 제거, CLI 이벤트 순서,
+GUI 실행 인자와 취소의 멱등성을 자동 테스트했다. 실제 사용자 작품에는 변환을 실행하지
+않았다.
 
 ### 단계 5. 설정과 사용자 경험
 

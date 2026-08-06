@@ -831,6 +831,7 @@ class ImageConversionDialog(QDialog):
                     f"변환 완료: {result.get('convertedCount', 0)}",
                     f"기존 결과 건너뜀: {result.get('skippedExistingCount', 0)}",
                     f"실패: {result.get('failedCount', 0)}",
+                    f"복구한 임시 파일: {result.get('recoveredTemporaryFiles', 0)}",
                     "",
                 ]
             )
@@ -919,6 +920,65 @@ class ImageConversionDialog(QDialog):
         open_in_explorer(target if target.exists() else Path(self.result["outputPath"]))
 
 
+class ImageConversionProgressDialog(QDialog):
+    def __init__(self, owner: "MainWindow", job_id: str) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.job_id = job_id
+        self.setWindowTitle("이미지 변환 진행률")
+        self.setMinimumWidth(580)
+        layout = QVBoxLayout(self)
+        self.heading_label = QLabel("이미지 변환을 준비하고 있습니다.")
+        self.heading_label.setObjectName("sectionTitle")
+        layout.addWidget(self.heading_label)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        layout.addWidget(self.progress)
+        self.summary_label = QLabel("완료 0 · 건너뜀 0 · 실패 0")
+        layout.addWidget(self.summary_label)
+        self.detail_label = QLabel("변환 대상 확인 중…")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.cancel_button = QPushButton("변환 중지")
+        self.cancel_button.clicked.connect(
+            lambda: self.owner.cancel_image_conversion(self.job_id)
+        )
+        buttons.addWidget(self.cancel_button)
+        layout.addLayout(buttons)
+
+    def update_progress(self, event: dict[str, Any]) -> None:
+        total = max(0, int(event.get("total") or 0))
+        current = max(0, int(event.get("current") or 0))
+        self.heading_label.setText("이미지 변환 중")
+        self.progress.setRange(0, max(1, total))
+        self.progress.setValue(min(current, max(1, total)))
+        self.progress.setFormat(f"{current} / {total} (%p%)")
+        self.summary_label.setText(
+            f"완료 {event.get('converted', 0)} · "
+            f"건너뜀 {event.get('skipped', 0)} · 실패 {event.get('failed', 0)}"
+        )
+        source = Path(str(event.get("source") or ""))
+        status_labels = {
+            "converted": "변환 완료",
+            "skipped": "기존 결과 건너뜀",
+            "failed": "변환 실패",
+        }
+        self.detail_label.setText(
+            f"{status_labels.get(str(event.get('status')), '처리 중')}: "
+            f"{source.parent.name} / {source.name}"
+        )
+
+    def mark_cancelling(self) -> None:
+        self.heading_label.setText("이미지 변환 중지 중")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("중지 중…")
+        self.detail_label.setText(
+            "현재 변환 프로세스를 중지하고 있습니다. 원본 파일은 변경되지 않습니다."
+        )
+
+
 @dataclass
 class ProcessContext:
     job: DownloadJob
@@ -930,6 +990,16 @@ class ProcessContext:
     paused: bool = False
     attempt_count: int = 0
     retry_generation: int = 0
+
+
+@dataclass
+class ImageConversionProcessContext:
+    process: QProcess
+    execute: bool
+    stdout_buffer: str = ""
+    stderr_buffer: str = ""
+    result: dict[str, Any] | None = None
+    cancel_requested: bool = False
 
 
 class MainWindow(QMainWindow):
@@ -955,7 +1025,7 @@ class MainWindow(QMainWindow):
         self.self_test_process: QProcess | None = None
         self.file_verify_processes: dict[str, QProcess] = {}
         self.image_preview_processes: dict[str, QProcess] = {}
-        self.image_conversion_processes: dict[str, tuple[QProcess, bool]] = {}
+        self.image_conversion_processes: dict[str, ImageConversionProcessContext] = {}
         self.image_thread_pool = QThreadPool(self)
         self.image_thread_pool.setMaxThreadCount(2)
         self.self_test_stdout = ""
@@ -975,6 +1045,9 @@ class MainWindow(QMainWindow):
         self.active_file_verify_dialog: FileVerificationDialog | None = None
         self.active_image_preview_dialog: ImagePreviewDialog | None = None
         self.active_image_conversion_dialog: ImageConversionDialog | None = None
+        self.active_image_conversion_progress_dialog: (
+            ImageConversionProgressDialog | None
+        ) = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -2627,10 +2700,12 @@ class MainWindow(QMainWindow):
             str(image_format),
             "--quality",
             str(int(quality)),
-            "--json",
-            "--ascii-json",
         ]
-        arguments.extend(["--execute", "--yes"] if execute else ["--dry-run"])
+        arguments.extend(
+            ["--execute", "--yes", "--progress-json"]
+            if execute
+            else ["--dry-run", "--json", "--ascii-json"]
+        )
         process = QProcess(self)
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(str(python if python.is_file() else Path(sys.executable)))
@@ -2640,7 +2715,32 @@ class MainWindow(QMainWindow):
                 selected, exit_code
             )
         )
-        self.image_conversion_processes[job.job_id] = (process, execute)
+        context = ImageConversionProcessContext(process=process, execute=execute)
+        self.image_conversion_processes[job.job_id] = context
+        if execute:
+            process.readyReadStandardOutput.connect(
+                lambda selected=job.job_id: self._read_image_conversion_stdout(selected)
+            )
+            process.readyReadStandardError.connect(
+                lambda selected=job.job_id: self._read_image_conversion_stderr(selected)
+            )
+            if self.active_image_conversion_dialog:
+                self.active_image_conversion_dialog.close()
+            if self.active_image_conversion_progress_dialog:
+                self.active_image_conversion_progress_dialog.close()
+            progress_dialog = ImageConversionProgressDialog(self, job.job_id)
+            self.active_image_conversion_progress_dialog = progress_dialog
+            progress_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            progress_dialog.destroyed.connect(
+                lambda _object=None, selected=progress_dialog: (
+                    setattr(self, "active_image_conversion_progress_dialog", None)
+                    if self.active_image_conversion_progress_dialog is selected
+                    else None
+                )
+            )
+            progress_dialog.show()
+            progress_dialog.raise_()
+            progress_dialog.activateWindow()
         process.start()
         self.log(
             "이미지 변환 시작(별도 프로세스)"
@@ -2656,18 +2756,107 @@ class MainWindow(QMainWindow):
             "execute": execute,
         }
 
-    def _image_conversion_finished(self, job_id: str, exit_code: int) -> None:
-        context = self.image_conversion_processes.pop(job_id, None)
+    def _read_image_conversion_stdout(self, job_id: str) -> None:
+        context = self.image_conversion_processes.get(job_id)
         if context is None:
             return
-        process, execute = context
-        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
-        process.deleteLater()
+        context.stdout_buffer += bytes(context.process.readAllStandardOutput()).decode(
+            "utf-8", errors="replace"
+        )
+        while "\n" in context.stdout_buffer:
+            line, context.stdout_buffer = context.stdout_buffer.split("\n", 1)
+            self._handle_image_conversion_output_line(job_id, line)
+
+    def _read_image_conversion_stderr(self, job_id: str) -> None:
+        context = self.image_conversion_processes.get(job_id)
+        if context is None:
+            return
+        context.stderr_buffer += bytes(context.process.readAllStandardError()).decode(
+            "utf-8", errors="replace"
+        )
+
+    def _handle_image_conversion_output_line(self, job_id: str, line: str) -> None:
+        context = self.image_conversion_processes.get(job_id)
+        if context is None or not line.strip():
+            return
         try:
-            result = json.loads(stdout.strip())
+            event = json.loads(line)
         except json.JSONDecodeError:
-            message = stderr.strip() or stdout.strip() or f"종료 코드 {exit_code}"
+            context.stderr_buffer += f"\n잘못된 진행 출력: {line}"
+            return
+        if event.get("event") == "result":
+            result = event.get("result")
+            if isinstance(result, dict):
+                context.result = result
+            return
+        if event.get("event") != "progress":
+            return
+        dialog = self.active_image_conversion_progress_dialog
+        if dialog and dialog.job_id == job_id:
+            dialog.update_progress(event)
+        current = int(event.get("current") or 0)
+        total = int(event.get("total") or 0)
+        if current == 1 or current == total or current % 100 == 0:
+            self.statusBar().showMessage(
+                f"이미지 변환 {current}/{total} · 실패 {event.get('failed', 0)}"
+            )
+
+    def cancel_image_conversion(self, job_id: str) -> dict[str, Any]:
+        context = self.image_conversion_processes.get(job_id)
+        if context is None or not context.execute:
+            return {"cancelled": False, "jobId": job_id, "running": False}
+        if not context.cancel_requested:
+            context.cancel_requested = True
+            dialog = self.active_image_conversion_progress_dialog
+            if dialog and dialog.job_id == job_id:
+                dialog.mark_cancelling()
+            context.process.kill()
+            self.log(
+                "이미지 변환 중지 요청: 원본 보존, 다음 실행에서 임시 파일 복구",
+                "WARNING",
+                job_id,
+            )
+        return {"cancelled": True, "jobId": job_id, "running": True}
+
+    def _image_conversion_finished(self, job_id: str, exit_code: int) -> None:
+        context = self.image_conversion_processes.get(job_id)
+        if context is None:
+            return
+        process = context.process
+        execute = context.execute
+        if execute:
+            self._read_image_conversion_stdout(job_id)
+            self._read_image_conversion_stderr(job_id)
+            if context.stdout_buffer.strip():
+                self._handle_image_conversion_output_line(
+                    job_id, context.stdout_buffer.strip()
+                )
+        else:
+            context.stdout_buffer += bytes(process.readAllStandardOutput()).decode(
+                "utf-8", errors="replace"
+            )
+            context.stderr_buffer += bytes(process.readAllStandardError()).decode(
+                "utf-8", errors="replace"
+            )
+            try:
+                context.result = json.loads(context.stdout_buffer.strip())
+            except json.JSONDecodeError:
+                pass
+        self.image_conversion_processes.pop(job_id, None)
+        process.deleteLater()
+        if self.active_image_conversion_progress_dialog:
+            self.active_image_conversion_progress_dialog.close()
+        if context.cancel_requested:
+            self.log("이미지 변환이 사용자 요청으로 중지되었습니다.", "WARNING", job_id)
+            self.statusBar().showMessage("이미지 변환을 중지했습니다.", 4000)
+            return
+        result = context.result
+        if result is None:
+            message = (
+                context.stderr_buffer.strip()
+                or context.stdout_buffer.strip()
+                or f"종료 코드 {exit_code}"
+            )
             self.log(f"이미지 변환 실패: {message}", "ERROR", job_id)
             QMessageBox.critical(self, "이미지 변환 실패", message)
             return
@@ -3093,6 +3282,11 @@ class MainWindow(QMainWindow):
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         if (
+            self.active_image_conversion_progress_dialog
+            and self.active_image_conversion_progress_dialog.isVisible()
+        ):
+            screenshot = self.active_image_conversion_progress_dialog.grab()
+        elif (
             self.active_image_conversion_dialog
             and self.active_image_conversion_dialog.isVisible()
         ):
@@ -3477,6 +3671,8 @@ class MainWindow(QMainWindow):
                 int(request.get("quality") or 90),
                 execute=False,
             )
+        if action == "cancel_image_conversion":
+            return self.cancel_image_conversion(str(request.get("jobId") or ""))
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}
         if action == "open_cover":
@@ -3556,25 +3752,28 @@ class MainWindow(QMainWindow):
             if self.force_close:
                 for job_id in list(self.active_contexts):
                     self.stop_active_job(job_id)
+                for context in list(self.image_conversion_processes.values()):
+                    context.process.kill()
             QTimer.singleShot(100, self.close)
             return {"quitting": True}
         raise ValueError(f"지원하지 않는 CLI 동작입니다: {action}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if (
-            not self.force_close
-            and self.active_contexts
+        if not self.force_close and (
+            self.active_contexts or self.image_conversion_processes
         ):
             answer = QMessageBox.question(
                 self,
                 "실행 중인 작업",
-                "다운로드가 진행 중입니다. 작업을 중지하고 종료할까요?",
+                "다운로드 또는 이미지 변환이 진행 중입니다. 작업을 중지하고 종료할까요?",
             )
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
             for job_id in list(self.active_contexts):
                 self.stop_active_job(job_id)
+            for context in list(self.image_conversion_processes.values()):
+                context.process.kill()
         window_config = self.window_snapshot()
         window_config["qtGeometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self.config["window"] = window_config
