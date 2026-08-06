@@ -26,6 +26,42 @@ class CliParserTests(unittest.TestCase):
             ["download", "--url", "https://newtoki1.org/manhwa/34360"]
         )
         self.assertFalse(args.show_browser)
+        self.assertEqual(args.mode, "new")
+
+    def test_rescan_modes_and_range_arguments(self) -> None:
+        new = build_parser().parse_args(
+            ["rescan", "--job", "work-1", "--mode", "new"]
+        )
+        self.assertEqual(new.mode, "new")
+        ranged = build_parser().parse_args(
+            [
+                "rescan", "--job", "work-1", "--mode", "range",
+                "--start", "12", "--last", "24",
+            ]
+        )
+        self.assertEqual((ranged.start, ranged.last), (12, 24))
+
+    def test_rescan_cli_sends_exact_job_mode_and_range(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "rescan", "--job", "work-1", "--mode", "range",
+                "--start", "12", "--last", "24",
+            ]
+        )
+        with (
+            patch("toki_app.control_request", return_value={"job_id": "new-run"}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "rescan",
+                "jobId": "work-1",
+                "mode": "range",
+                "start": 12,
+                "last": 24,
+            }
+        )
 
     def test_stop_and_cancel_accept_job_ids(self) -> None:
         stop = build_parser().parse_args(["stop", "--job", "active-1"])

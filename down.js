@@ -1,6 +1,7 @@
 import { connect } from "puppeteer-real-browser";
 import fs from 'node:fs';
 import path from 'node:path';
+import { selectEpisodeLinks } from './downloader_policy.js';
 
 let info = {
     url: '',
@@ -17,7 +18,8 @@ let info = {
     showBrowser: false,
     metadataOnly: false,
     contentPathOverride: '',
-    imageConcurrency: 5
+    imageConcurrency: 5,
+    scanMode: ''
 }
 
 function sleep(ms) {
@@ -32,7 +34,7 @@ function consoleGrey(val) {
     console.log(`\x1b[100m${val}\x1b[0m`);
 }
 function help() {
-    console.log(`사용법: node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
+    console.log(`사용법: node down -url "URL" [-scan-mode new|full|range] [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
     process.exit();
 }
 function emitEvent(event, data = {}) {
@@ -91,6 +93,12 @@ function analyseArguments() {
                 i++;
             }
         }
+        else if (process.argv[i] == '-scan-mode') {
+            if ((i + 1) < argL) {
+                info.scanMode = String(process.argv[i + 1]).toLowerCase();
+                i++;
+            }
+        }
         else if (process.argv[i] == '-h' || process.argv[i] == '-help') {
             help();
         }
@@ -101,18 +109,14 @@ function analyseArguments() {
     }
     // check url
     // 북토끼
-    if (info.url.match(/^https:\/\/booktoki[0-9]+.com\/novel\/[0-9]+/)) {
+    if (info.url.match(/^https:\/\/booktoki[0-9]+\.com\/novel\/[0-9]+/)) {
         info.site = 'booktoki'; info.siteTitle = '북토끼';
-        info.protocolDomain = info.url.match(/^https:\/\/booktoki[0-9]+.com/)[0];
+        info.protocolDomain = info.url.match(/^https:\/\/booktoki[0-9]+\.com/)[0];
     }
     // 뉴토끼
     else if (info.url.match(/^https:\/\/newtoki[0-9]+\.com\/webtoon\/[0-9]+/)) {
         info.site = 'newtoki'; info.siteTitle = '뉴토끼';
         info.protocolDomain = info.url.match(/^https:\/\/newtoki[0-9]+\.com/)[0];
-    }
-    if (!Number.isInteger(info.imageConcurrency) || info.imageConcurrency < 1 || info.imageConcurrency > 16) {
-        consoleGrey('이미지 동시 다운로드 수는 1~16 사이여야 합니다.');
-        process.exit(1);
     }
     // 마나토끼(newtoki*.org 주소)
     else if (info.url.match(/^https:\/\/newtoki[0-9]+\.org\/manhwa\/[0-9]+/)) {
@@ -120,13 +124,36 @@ function analyseArguments() {
         info.protocolDomain = info.url.match(/^https:\/\/newtoki[0-9]+\.org/)[0];
     }
     // 마나토끼
-    else if (info.url.match(/^https:\/\/manatoki[0-9]+.net\/comic\/[0-9]+/)) {
+    else if (info.url.match(/^https:\/\/manatoki[0-9]+\.net\/comic\/[0-9]+/)) {
         info.site = 'manatoki'; info.siteTitle = '마나토끼';
-        info.protocolDomain = info.url.match(/^https:\/\/manatoki[0-9]+.net/)[0];
+        info.protocolDomain = info.url.match(/^https:\/\/manatoki[0-9]+\.net/)[0];
     }
     else {
         consoleGrey('회차 목록 페이지 url을 입력해야합니다. url을 확인해주세요.');
         process.exit(1);
+    }
+    if (!Number.isInteger(info.imageConcurrency) || info.imageConcurrency < 1 || info.imageConcurrency > 16) {
+        consoleGrey('이미지 동시 다운로드 수는 1~16 사이여야 합니다.');
+        process.exit(1);
+    }
+    if (!info.scanMode)
+        info.scanMode = (info.startIndex !== 0 || info.lastIndex !== 99999) ? 'range' : 'full';
+    if (!['new', 'full', 'range'].includes(info.scanMode)) {
+        consoleGrey('검사 방식은 new, full, range 중 하나여야 합니다.');
+        process.exit(1);
+    }
+    if (!Number.isInteger(info.startIndex) || !Number.isInteger(info.lastIndex)
+        || info.startIndex < 0 || info.lastIndex < 1 || info.startIndex > info.lastIndex) {
+        consoleGrey('회차 범위를 확인해주세요.');
+        process.exit(1);
+    }
+    if (info.scanMode === 'range' && info.startIndex === 0 && info.lastIndex === 99999) {
+        consoleGrey('지정 범위 검사는 -start 또는 -last가 필요합니다.');
+        process.exit(1);
+    }
+    if (info.scanMode !== 'range') {
+        info.startIndex = 0;
+        info.lastIndex = 99999;
     }
 }
 function sanitizePathSegment(value, fallback = 'N／A') {
@@ -144,6 +171,46 @@ function buildContentFolderName(metadata) {
 }
 function getContentPath() {
     return info.contentPathOverride || path.join(info.outputDir, info.siteTitle, info.contentFolderName);
+}
+function completionStatePath() {
+    return path.join(getContentPath(), '.toki-state.json');
+}
+function physicalEpisodeNumbers() {
+    const contentPath = getContentPath();
+    if (!fs.existsSync(contentPath))
+        return new Set();
+    const episodes = new Set();
+    for (const entry of fs.readdirSync(contentPath, { withFileTypes: true })) {
+        const matched = entry.name.match(/^0*(\d+)(?:\s|$)/);
+        if (matched)
+            episodes.add(parseInt(matched[1]));
+    }
+    return episodes;
+}
+function loadCompletedEpisodeNumbers() {
+    const physical = physicalEpisodeNumbers();
+    const statePath = completionStatePath();
+    if (!fs.existsSync(statePath))
+        return physical;
+    try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        return new Set((state.completedEpisodes || [])
+            .map(Number)
+            .filter(number => Number.isInteger(number) && physical.has(number)));
+    }
+    catch (error) {
+        console.log(`회차 완료 상태 읽기 실패, 기존 파일로 복구: ${error.message || error}`);
+        return physical;
+    }
+}
+function saveCompletedEpisodeNumbers(completedEpisodes) {
+    const contentPath = getContentPath();
+    fs.mkdirSync(contentPath, { recursive: true });
+    fs.writeFileSync(completionStatePath(), `${JSON.stringify({
+        version: 1,
+        completedEpisodes: [...completedEpisodes].sort((a, b) => a - b),
+        updatedAt: new Date().toISOString()
+    }, null, 2)}\n`, 'utf8');
 }
 function saveMetadata(metadata) {
     const contentPath = getContentPath();
@@ -315,12 +382,24 @@ async function main() {
         // 1화부터 받을것이기 때문에 리버스 해준다.
         link.reverse();
         const totalEpisodeCount = link.length;
-        // info.startIndex와 info.lastIndex필터하기.
-        link = info.metadataOnly ? [] : link.filter(item => {
-            const episodeNumber = parseInt(item.num);
-            return info.startIndex <= episodeNumber && episodeNumber <= info.lastIndex;
+        let completedEpisodes = new Set();
+        let skippedExistingEpisodes = 0;
+        if (!info.metadataOnly) {
+            completedEpisodes = loadCompletedEpisodeNumbers();
+        }
+        const selection = selectEpisodeLinks(link, {
+            metadataOnly: info.metadataOnly,
+            scanMode: info.scanMode,
+            startIndex: info.startIndex,
+            lastIndex: info.lastIndex,
+            completedEpisodes
         });
-        if (!info.metadataOnly && link.length === 0)
+        link = selection.links;
+        skippedExistingEpisodes = selection.skippedExistingEpisodes;
+        if (!info.metadataOnly && info.scanMode === 'new') {
+            saveCompletedEpisodeNumbers(completedEpisodes);
+        }
+        if (!info.metadataOnly && info.scanMode !== 'new' && link.length === 0)
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
         info.metadata.episodeCount = totalEpisodeCount;
@@ -329,6 +408,7 @@ async function main() {
             start: info.startIndex === 0 ? null : info.startIndex,
             last: info.lastIndex === 99999 ? null : info.lastIndex
         };
+        info.metadata.scanMode = info.metadataOnly ? 'metadata' : info.scanMode;
         info.metadata.generatedAt = new Date().toISOString();
         const coverPath = await cacheCoverImage(info.metadata, info.metadataOnly);
         saveMetadata(info.metadata);
@@ -340,7 +420,9 @@ async function main() {
         });
         emitEvent('queue_ready', {
             totalEpisodes: totalEpisodeCount,
-            selectedEpisodes: link.length
+            selectedEpisodes: link.length,
+            skippedExistingEpisodes,
+            scanMode: info.metadataOnly ? 'metadata' : info.scanMode
         });
         if (info.metadataOnly) {
             console.log('메타데이터와 대표 이미지 새로고침 완료');
@@ -386,6 +468,8 @@ async function main() {
                     number: parseInt(link[i].num),
                     title: link[i].fileName
                 });
+                completedEpisodes.add(parseInt(link[i].num));
+                saveCompletedEpisodeNumbers(completedEpisodes);
             }
             // 뉴토끼, 마나토끼
             else {
@@ -453,12 +537,16 @@ async function main() {
                     number: parseInt(link[i].num),
                     title: link[i].fileName
                 });
+                completedEpisodes.add(parseInt(link[i].num));
+                saveCompletedEpisodeNumbers(completedEpisodes);
             }
         }
         console.log('다운로드 완료');
         emitEvent('completed', {
             outputPath: getContentPath(),
-            selectedEpisodes: link.length
+            selectedEpisodes: link.length,
+            skippedExistingEpisodes,
+            scanMode: info.scanMode
         });
     } catch (error) {
         console.error(error);

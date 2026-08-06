@@ -102,6 +102,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd resume --job 일시정지작업ID
 .\toki-cli.cmd concurrency --json
 .\toki-cli.cmd set-concurrency --works 2 --images 5
+.\toki-cli.cmd rescan --job 작업ID --mode new
+.\toki-cli.cmd rescan --job 작업ID --mode full
+.\toki-cli.cmd rescan --job 작업ID --mode range --start 10 --last 25
 .\toki-cli.cmd retry --job 작업ID
 
 # 저장 폴더와 로그
@@ -202,6 +205,17 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 있으며 `config.json`에 저장됩니다. GUI의 `작품 병렬`, `이미지 병렬`과 `concurrency`
 CLI 조회는 같은 값을 사용합니다.
 
+`rescan --mode new`는 작품 목록을 확인한 뒤 로컬 완료 상태에 없는 회차만 받습니다.
+받을 회차가 0개면 오류가 아니라 정상 완료로 기록됩니다. `full`은 모든 회차
+페이지를 다시 확인하지만 이미 있는 정상 이미지·본문 파일은 건너뛰므로 누락 복구에
+사용합니다. `range`는 `--start`, `--last` 중 하나 이상이 필요하며 해당 구간만 검사합니다.
+GUI의 `검사 방식` 선택, 작업 메뉴, 작품 우클릭 `작품 재검사`가 같은 서비스를
+사용합니다. 기존 `retry`는 `full`의 호환 별칭입니다.
+
+완료 회차는 작품 폴더의 `.toki-state.json`에 기록됩니다. 이전 버전에서 받은 폴더는
+파일·폴더명 앞의 회차 번호를 최초 1회 완료 상태로 가져옵니다. 이전 폴더가 불완전하면
+`전체 재검사`를 사용해 누락 파일을 복구하세요.
+
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 
 ```powershell
@@ -221,13 +235,14 @@ npm install
 https://github.com/user-attachments/assets/b3879c59-3381-407b-a3a8-ad8bf8d84cbb
 ## 명령어
 ```bash
-node down -url "URL" [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"]
+node down -url "URL" [-scan-mode new|full|range] [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"]
 ```
 - -url은 필수 입력입니다. 반드시 큰따옴표 안에 넣어주세요.
 - -start는 옵션입니다. 받고싶은 회차 시작 번호를 입력하세요. 생략하면 처음부터 받습니다.
 - -last는 옵션입니다. 받고싶은 마지막 회차 번호를 입력하세요. 생략하면 마지막까지 받습니다.
 - -output은 옵션입니다. 저장할 기준 폴더를 지정하며, 생략하면 현재 실행 폴더에 저장합니다.
 - -image-concurrency는 한 회차에서 동시에 받을 이미지 수이며 기본값은 5입니다.
+- -scan-mode는 신규·전체·범위 검사를 분리합니다. 옵션을 생략한 기존 CLI는 하위 호환을 위해 전체 검사로 동작합니다.
 - -metadata-only는 회차를 받지 않고 메타데이터와 대표 이미지만 다시 받습니다.
 - -content-path는 메타데이터 전용 실행이 사용할 기존 작품 폴더를 직접 지정합니다.
 - 대괄호(`[]`)는 옵션이라는 뜻이므로 명령어에 직접 입력하지 마세요.

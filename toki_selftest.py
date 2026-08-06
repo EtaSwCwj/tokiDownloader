@@ -51,6 +51,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "toki_core.py",
         ROOT_DIR / "toki_gui.py",
         ROOT_DIR / "down.js",
+        ROOT_DIR / "downloader_policy.js",
         ROOT_DIR / "tokiDownloader.js",
         ROOT_DIR / "package.json",
         ROOT_DIR / "start-gui.cmd",
@@ -86,7 +87,7 @@ def _check_node_syntax() -> dict[str, Any]:
         check=True,
         timeout=15,
     ).stdout.strip()
-    files = [DOWNLOADER_PATH, ROOT_DIR / "tokiDownloader.js"]
+    files = [DOWNLOADER_PATH, ROOT_DIR / "downloader_policy.js", ROOT_DIR / "tokiDownloader.js"]
     for path in files:
         completed = subprocess.run(
             [node, "--check", str(path)],
@@ -102,6 +103,25 @@ def _check_node_syntax() -> dict[str, Any]:
             message = completed.stderr.strip() or completed.stdout.strip()
             raise RuntimeError(f"{path.name} 구문 오류: {message}")
     return {"detail": f"Node {version}, JavaScript 파일 {len(files)}개 구문 확인"}
+
+
+def _check_node_tests() -> dict[str, Any]:
+    completed = subprocess.run(
+        [find_node(), "--test", str(ROOT_DIR / "tests" / "downloader_policy.test.js")],
+        cwd=str(ROOT_DIR),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=30,
+    )
+    output = "\n".join(
+        part.strip() for part in (completed.stdout, completed.stderr) if part.strip()
+    )
+    if completed.returncode:
+        raise RuntimeError(output or f"종료 코드 {completed.returncode}")
+    return {"detail": "회차 선택 JavaScript 테스트 4건 통과", "tests": 4}
 
 
 def _check_unit_tests() -> dict[str, Any]:
@@ -144,6 +164,7 @@ def run_self_test(
         _run_check("required_files", _check_required_files),
         _run_check("python_syntax", _check_python_syntax),
         _run_check("node_syntax", _check_node_syntax),
+        _run_check("node_tests", _check_node_tests),
         _run_check("unit_tests", _check_unit_tests),
     ]
     if gui_probe is not None:

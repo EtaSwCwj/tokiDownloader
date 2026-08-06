@@ -27,6 +27,8 @@ from toki_core import (
     mark_run_cancelled,
     normalize_range,
     normalize_image_concurrency,
+    normalize_scan_mode,
+    normalize_scan_request,
     normalize_work_concurrency,
     read_run_log,
     resolve_cover_path,
@@ -67,6 +69,8 @@ class CoreContractTests(unittest.TestCase):
         self.assertIn("-json-events", args)
         concurrency_index = args.index("-image-concurrency")
         self.assertEqual(args[concurrency_index + 1], "5")
+        mode_index = args.index("-scan-mode")
+        self.assertEqual(args[mode_index + 1], "new")
 
     def test_image_concurrency_has_safe_bounds(self) -> None:
         self.assertEqual(normalize_image_concurrency(None), 5)
@@ -85,6 +89,29 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(available_work_slots(2, 3), 1)
         self.assertEqual(available_work_slots(3, 3), 0)
         self.assertEqual(available_work_slots(9, 3), 0)
+
+    def test_scan_modes_and_range_contract_are_explicit(self) -> None:
+        source = DownloadJob(
+            job_id="source",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+        )
+        self.assertEqual(normalize_scan_mode(None), "new")
+        self.assertEqual(
+            toki_core.rescan_job_parameters(source, "new")["scan_mode"], "new"
+        )
+        self.assertEqual(
+            toki_core.rescan_job_parameters(source, "full")["scan_mode"], "full"
+        )
+        ranged = toki_core.rescan_job_parameters(source, "range", 10, 20)
+        self.assertEqual((ranged["start"], ranged["last"]), (10, 20))
+        with self.assertRaises(ValueError):
+            toki_core.rescan_job_parameters(source, "range")
+        with self.assertRaises(ValueError):
+            normalize_scan_mode("auto")
+        self.assertEqual(normalize_scan_request("new", 10, 20), ("new", None, None))
+        with self.assertRaises(ValueError):
+            normalize_scan_request("range", None, None)
 
     def test_metadata_refresh_arguments_preserve_existing_work_folder(self) -> None:
         job = DownloadJob(
@@ -183,6 +210,7 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(retry["url"], source.url)
         self.assertIsNone(retry["start"])
         self.assertIsNone(retry["last"])
+        self.assertEqual(retry["scan_mode"], "full")
 
     def test_run_log_filters_current_and_rotated_files(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

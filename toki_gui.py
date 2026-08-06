@@ -75,13 +75,13 @@ from toki_core import (
     load_runs_page,
     mark_job_cancelled,
     mark_run_cancelled,
-    normalize_range,
     normalize_image_concurrency,
+    normalize_scan_request,
     normalize_work_concurrency,
     open_in_explorer,
     read_log_tail,
     read_run_log,
-    retry_job_parameters,
+    rescan_job_parameters,
     resolve_cover_path,
     reorder_pending_jobs,
     save_config,
@@ -496,9 +496,16 @@ class WorkDetailDialog(QDialog):
         self.run_table.setRowCount(len(runs))
         for row, run in enumerate(runs):
             requested = f"{run.get('requested_start') or '처음'} ~ {run.get('requested_last') or '끝'}"
+            operation_label = {
+                "metadata_refresh": "메타데이터",
+                "download_new": "신규 검사",
+                "download_full": "전체 재검사",
+                "download_range": "범위 검사",
+                "download": "다운로드",
+            }.get(str(run.get("operation") or ""), "다운로드")
             values = (
                 str(run.get("created_at") or "").replace("T", " "),
-                "메타데이터" if run.get("operation") == "metadata_refresh" else "다운로드",
+                operation_label,
                 str(run.get("state") or ""),
                 requested,
                 str(run.get("discovered_episodes") or 0),
@@ -664,6 +671,16 @@ class MainWindow(QMainWindow):
         self.retry_action.setShortcut("Ctrl+R")
         self.retry_action.triggered.connect(self.retry_selected_job)
 
+        self.new_scan_action = QAction("선택 작품 신규 회차만 검사", self)
+        self.new_scan_action.triggered.connect(
+            lambda: self.rescan_selected_job("new")
+        )
+
+        self.range_scan_action = QAction("선택 작품 입력 범위 검사", self)
+        self.range_scan_action.triggered.connect(
+            lambda: self.rescan_selected_job("range")
+        )
+
         self.open_folder_action = QAction("저장 폴더 열기", self)
         self.open_folder_action.setShortcut("Ctrl+O")
         self.open_folder_action.triggered.connect(self.open_output_folder)
@@ -699,6 +716,8 @@ class MainWindow(QMainWindow):
         work_menu.addAction(self.pause_action)
         work_menu.addAction(self.resume_action)
         work_menu.addAction(self.retry_action)
+        work_menu.addAction(self.new_scan_action)
+        work_menu.addAction(self.range_scan_action)
         work_menu.addSeparator()
         work_menu.addAction(self.exit_action)
 
@@ -748,6 +767,16 @@ class MainWindow(QMainWindow):
             "기본은 백그라운드 실행입니다. 사이트 인증 문제를 확인할 때만 켜세요."
         )
 
+        self.scan_mode_combo = QComboBox()
+        self.scan_mode_combo.addItem("신규 회차만", "new")
+        self.scan_mode_combo.addItem("전체 재검사", "full")
+        self.scan_mode_combo.addItem("지정 범위", "range")
+        self.scan_mode_combo.setToolTip(
+            "신규는 로컬에 없는 회차만, 전체는 모든 회차 페이지를, "
+            "범위는 입력한 구간만 검사합니다."
+        )
+        self.scan_mode_combo.currentIndexChanged.connect(self._scan_mode_changed)
+
         self.output_edit = QLineEdit(str(self.config.get("outputDir", ROOT_DIR)))
         self.output_edit.setReadOnly(True)
 
@@ -792,7 +821,6 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.start_spin, 1, 1)
         input_layout.addWidget(QLabel("~"), 1, 2)
         input_layout.addWidget(self.last_spin, 1, 3)
-        input_layout.addWidget(self.show_browser_check, 1, 4)
         input_layout.addWidget(self.stop_button, 1, 5)
         input_layout.addWidget(self.retry_button, 1, 6)
         input_layout.addWidget(QLabel("저장"), 2, 0)
@@ -805,7 +833,11 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(QLabel("작품 병렬"), 3, 4)
         input_layout.addWidget(self.work_concurrency_spin, 3, 5)
         input_layout.addWidget(QLabel("1~4"), 3, 6)
+        input_layout.addWidget(QLabel("검사 방식"), 4, 0)
+        input_layout.addWidget(self.scan_mode_combo, 4, 1, 1, 3)
+        input_layout.addWidget(self.show_browser_check, 4, 4, 1, 3)
         input_layout.setColumnStretch(1, 1)
+        self._scan_mode_changed()
 
         queue_header = QHBoxLayout()
         queue_title = QLabel("다운로드 작업")
@@ -965,14 +997,21 @@ class MainWindow(QMainWindow):
         scrollbar = self.log_edit.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+    def _scan_mode_changed(self, _index: int | None = None) -> None:
+        is_range = self.scan_mode_combo.currentData() == "range"
+        self.start_spin.setEnabled(is_range)
+        self.last_spin.setEnabled(is_range)
+
     def start_from_form(self) -> None:
         try:
+            scan_mode = str(self.scan_mode_combo.currentData() or "new")
             self.enqueue_download(
                 self.url_edit.text(),
-                self.start_spin.value() or None,
-                self.last_spin.value() or None,
+                self.start_spin.value() or None if scan_mode == "range" else None,
+                self.last_spin.value() or None if scan_mode == "range" else None,
                 self.output_edit.text(),
                 self.show_browser_check.isChecked(),
+                scan_mode=scan_mode,
             )
         except (ValueError, OSError, RuntimeError) as error:
             QMessageBox.warning(self, "다운로드를 시작할 수 없음", str(error))
@@ -987,9 +1026,12 @@ class MainWindow(QMainWindow):
         show_browser: bool = False,
         metadata_only: bool = False,
         image_concurrency: int | None = None,
+        scan_mode: str = "new",
     ) -> DownloadJob:
         valid_url = validate_url(url)
-        start_value, last_value = normalize_range(start, last)
+        scan_mode_value, start_value, last_value = normalize_scan_request(
+            scan_mode, start, last
+        )
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         find_node()
@@ -1021,6 +1063,7 @@ class MainWindow(QMainWindow):
             tag_color=existing.tag_color if existing else "",
             show_browser=show_browser,
             metadata_only=metadata_only,
+            scan_mode=scan_mode_value,
             image_concurrency=normalize_image_concurrency(
                 image_concurrency
                 if image_concurrency is not None
@@ -1390,6 +1433,12 @@ class MainWindow(QMainWindow):
                     delegate.cover_cache.clear()
         elif event_name == "queue_ready":
             job.episode_total = int(event.get("selectedEpisodes") or 0)
+            skipped = int(event.get("skippedExistingEpisodes") or 0)
+            if skipped:
+                self.log(
+                    f"기존 완료 회차 {skipped}개를 건너뛰었습니다.",
+                    job_id=job.job_id,
+                )
         elif event_name == "episode_started":
             job.episode_index = int(event.get("index") or 0)
             job.episode_total = int(event.get("total") or job.episode_total)
@@ -1643,11 +1692,20 @@ class MainWindow(QMainWindow):
         return next(reversed(self.jobs.values()), None) if self.jobs else None
 
     def retry_job(self, job_id: str | None = None) -> DownloadJob | None:
+        return self.rescan_job(job_id, "full")
+
+    def rescan_job(
+        self,
+        job_id: str | None,
+        mode: str,
+        start: int | None = None,
+        last: int | None = None,
+    ) -> DownloadJob | None:
         source = self.selected_job(job_id)
         if not source:
-            self.log("재시도할 작업을 선택해주세요.")
+            self.log("재검사할 작품을 선택해주세요.")
             return None
-        parameters = retry_job_parameters(source)
+        parameters = rescan_job_parameters(source, mode, start, last)
         return self.enqueue_download(**parameters)
 
     def retry_selected_job(self) -> None:
@@ -1655,6 +1713,15 @@ class MainWindow(QMainWindow):
             self.retry_job()
         except (ValueError, OSError, RuntimeError) as error:
             QMessageBox.warning(self, "작업을 재시도할 수 없음", str(error))
+            self.log(str(error), "ERROR")
+
+    def rescan_selected_job(self, mode: str, job_id: str | None = None) -> None:
+        try:
+            start = self.start_spin.value() or None if mode == "range" else None
+            last = self.last_spin.value() or None if mode == "range" else None
+            self.rescan_job(job_id, mode, start, last)
+        except (ValueError, OSError, RuntimeError) as error:
+            QMessageBox.warning(self, "작품을 재검사할 수 없음", str(error))
             self.log(str(error), "ERROR")
 
     def refresh_job_metadata(self, job_id: str | None = None) -> DownloadJob:
@@ -1878,8 +1945,25 @@ class MainWindow(QMainWindow):
         )
         remove_action.setEnabled(job.state not in {"대기", "실행 중", "일시정지"})
         menu.addSeparator()
-        retry_action = menu.addAction("작품 전체 재검사", self.retry_selected_job)
-        retry_action.setEnabled(job.state not in {"대기", "실행 중", "일시정지"})
+        rescan_menu = menu.addMenu("작품 재검사")
+        new_action = rescan_menu.addAction(
+            "신규 회차만",
+            lambda: self.rescan_selected_job("new", job.job_id),
+        )
+        full_action = rescan_menu.addAction(
+            "전체 회차",
+            lambda: self.rescan_selected_job("full", job.job_id),
+        )
+        range_action = rescan_menu.addAction(
+            "현재 입력 범위",
+            lambda: self.rescan_selected_job("range", job.job_id),
+        )
+        can_rescan = job.state not in {"대기", "실행 중", "일시정지"}
+        new_action.setEnabled(can_rescan)
+        full_action.setEnabled(can_rescan)
+        range_action.setEnabled(
+            can_rescan and bool(self.start_spin.value() or self.last_spin.value())
+        )
         stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
         active_context = self.active_contexts.get(job.job_id)
         stop_action.setEnabled(active_context is not None)
@@ -2202,6 +2286,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd concurrency [--json]\n"
             "toki-cli.cmd set-concurrency [--works 1~4] [--images 1~16]\n"
             "toki-cli.cmd retry [--job ID]\n"
+            "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
             "toki-cli.cmd open-folder [--job ID]\n"
             "toki-cli.cmd copy-link [--job ID]\n"
@@ -2347,13 +2432,14 @@ class MainWindow(QMainWindow):
             return {"pong": True}
         if action == "enqueue":
             job = self.enqueue_download(
-                str(request.get("url") or ""),
-                request.get("start"),
-                request.get("last"),
-                str(request.get("output") or self.output_edit.text()),
-                bool(request.get("showBrowser", False)),
-                bool(request.get("metadataOnly", False)),
-                request.get("imageConcurrency"),
+                url=str(request.get("url") or ""),
+                start=request.get("start"),
+                last=request.get("last"),
+                output_dir=str(request.get("output") or self.output_edit.text()),
+                show_browser=bool(request.get("showBrowser", False)),
+                metadata_only=bool(request.get("metadataOnly", False)),
+                image_concurrency=request.get("imageConcurrency"),
+                scan_mode=str(request.get("scanMode") or "new"),
             )
             return job.to_dict()
         if action == "stop":
@@ -2374,6 +2460,14 @@ class MainWindow(QMainWindow):
             )
         if action == "retry":
             job = self.retry_job(request.get("jobId"))
+            return job.to_dict() if job else None
+        if action == "rescan":
+            job = self.rescan_job(
+                str(request.get("jobId") or ""),
+                str(request.get("mode") or "new"),
+                request.get("start"),
+                request.get("last"),
+            )
             return job.to_dict() if job else None
         if action == "refresh_metadata":
             job = self.refresh_job_metadata(str(request.get("jobId") or ""))

@@ -35,6 +35,7 @@ from toki_core import (
     load_run,
     load_runs_page,
     normalize_image_concurrency,
+    normalize_scan_request,
     normalize_work_concurrency,
     update_job_markers,
     open_in_explorer,
@@ -156,13 +157,15 @@ def print_json(value: Any) -> None:
 def run_direct_download(args: argparse.Namespace) -> int:
     config = load_config()
     output = str(Path(args.output or config.get("outputDir") or ROOT_DIR).resolve())
+    scan_mode, start, last = normalize_scan_request(args.mode, args.start, args.last)
     job = DownloadJob(
         job_id="direct",
         url=args.url,
         output_dir=output,
-        start=args.start,
-        last=args.last,
+        start=start,
+        last=last,
         show_browser=args.show_browser,
+        scan_mode=scan_mode,
         image_concurrency=normalize_image_concurrency(config.get("imageConcurrency")),
     )
     command = [find_node(), *build_downloader_args(job, json_events=False)]
@@ -272,6 +275,12 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
     download.add_argument("--start", type=int, help="시작 회차")
     download.add_argument("--last", type=int, help="마지막 회차")
+    download.add_argument(
+        "--mode",
+        choices=("new", "full", "range"),
+        default="new",
+        help="검사 방식(기본값: 신규 회차만)",
+    )
     download.add_argument("--output", help="저장 기준 폴더")
     download.add_argument(
         "--show-browser",
@@ -308,6 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="선택 작품의 전체 회차를 재검사하고 기존 파일은 건너뛰기",
     )
     retry.add_argument("--job", help="작업 ID")
+    rescan = subparsers.add_parser("rescan", help="작품을 지정한 방식으로 다시 검사")
+    rescan.add_argument("--job", required=True, help="작품 작업 ID")
+    rescan.add_argument(
+        "--mode", choices=("new", "full", "range"), required=True, help="검사 방식"
+    )
+    rescan.add_argument("--start", type=int, help="range 시작 회차")
+    rescan.add_argument("--last", type=int, help="range 마지막 회차")
 
     status = subparsers.add_parser("status", help="GUI와 작업 상태 조회")
     status.add_argument("--json", action="store_true", help="JSON으로 출력")
@@ -469,6 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_cli(args: argparse.Namespace) -> int:
     command = args.command
     if command == "download":
+        scan_mode, start, last = normalize_scan_request(args.mode, args.start, args.last)
         if args.direct:
             return run_direct_download(args)
         ensure_gui_running()
@@ -477,10 +494,11 @@ def run_cli(args: argparse.Namespace) -> int:
             {
                 "action": "enqueue",
                 "url": args.url,
-                "start": args.start,
-                "last": args.last,
+                "start": start,
+                "last": last,
                 "output": args.output or config.get("outputDir") or str(ROOT_DIR),
                 "showBrowser": args.show_browser,
+                "scanMode": scan_mode,
             }
         )
         print(f"작업 추가: {result['job_id']}")
@@ -582,6 +600,19 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
     if command == "retry":
         print_json(control_request({"action": "retry", "jobId": args.job}))
+        return 0
+    if command == "rescan":
+        print_json(
+            control_request(
+                {
+                    "action": "rescan",
+                    "jobId": args.job,
+                    "mode": args.mode,
+                    "start": args.start,
+                    "last": args.last,
+                }
+            )
+        )
         return 0
     if command == "status":
         result = control_request({"action": "status"})

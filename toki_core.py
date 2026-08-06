@@ -176,6 +176,28 @@ def available_work_slots(active_count: int, work_concurrency: int | None) -> int
     return max(0, normalize_work_concurrency(work_concurrency) - active)
 
 
+def normalize_scan_mode(value: str | None) -> str:
+    mode = str(value or "new").strip().lower()
+    if mode not in {"new", "full", "range"}:
+        raise ValueError("검사 방식은 new, full, range 중 하나여야 합니다.")
+    return mode
+
+
+def normalize_scan_request(
+    mode: str | None,
+    start: int | None,
+    last: int | None,
+) -> tuple[str, int | None, int | None]:
+    scan_mode = normalize_scan_mode(mode)
+    start_value, last_value = normalize_range(start, last)
+    if scan_mode == "range" and start_value is None and last_value is None:
+        raise ValueError("지정 범위 검사는 시작 또는 마지막 회차가 필요합니다.")
+    if scan_mode != "range":
+        start_value = None
+        last_value = None
+    return scan_mode, start_value, last_value
+
+
 @dataclass
 class DownloadJob:
     job_id: str
@@ -198,6 +220,7 @@ class DownloadJob:
     tag_color: str = ""
     show_browser: bool = False
     metadata_only: bool = False
+    scan_mode: str = "new"
     queue_position: int = 0
     image_concurrency: int = 5
     episode_index: int = 0
@@ -214,6 +237,7 @@ class DownloadJob:
     def __post_init__(self) -> None:
         if not self.work_key:
             self.work_key = build_work_key(self.url)
+        self.scan_mode = normalize_scan_mode(self.scan_mode)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -251,7 +275,11 @@ class DownloadRun:
             work_key=job.work_key,
             requested_start=job.start,
             requested_last=job.last,
-            operation="metadata_refresh" if job.metadata_only else "download",
+            operation=(
+                "metadata_refresh"
+                if job.metadata_only
+                else f"download_{normalize_scan_mode(job.scan_mode)}"
+            ),
             state=job.state,
             selected_episodes=job.episode_total,
             processed_episodes=job.episode_index,
@@ -729,6 +757,8 @@ def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[st
         args.append("-metadata-only")
         if job.output_path:
             args.extend(["-content-path", job.output_path])
+    else:
+        args.extend(["-scan-mode", normalize_scan_mode(job.scan_mode)])
     args.extend(["-image-concurrency", str(normalize_image_concurrency(job.image_concurrency))])
     if json_events:
         args.append("-json-events")
@@ -737,12 +767,23 @@ def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[st
 
 def retry_job_parameters(source: DownloadJob) -> dict[str, Any]:
     """Return the shared full-rescan contract used by GUI and CLI retries."""
+    return rescan_job_parameters(source, "full")
+
+
+def rescan_job_parameters(
+    source: DownloadJob,
+    mode: str,
+    start: int | None = None,
+    last: int | None = None,
+) -> dict[str, Any]:
+    scan_mode, start_value, last_value = normalize_scan_request(mode, start, last)
     return {
         "url": source.url,
-        "start": None,
-        "last": None,
+        "start": start_value,
+        "last": last_value,
         "output_dir": source.output_dir,
         "show_browser": source.show_browser,
+        "scan_mode": scan_mode,
     }
 
 
