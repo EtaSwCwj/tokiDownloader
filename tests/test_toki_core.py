@@ -150,6 +150,17 @@ class CoreContractTests(unittest.TestCase):
             "pause", (ROOT_DIR / "setup-gui.cmd").read_text(encoding="utf-8")
         )
 
+    def test_clean_install_smoke_is_isolated_and_self_cleaning(self) -> None:
+        script = (ROOT_DIR / "scripts" / "clean-install-smoke.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("git -C $projectRoot archive", script)
+        self.assertIn("self-test --json", script)
+        self.assertIn("StartsWith($tempRoot", script)
+        self.assertIn("StartsWith('toki-clean-install-')", script)
+        self.assertIn("Remove-Item -LiteralPath $resolvedWorkspace", script)
+
     def test_dependency_doctor_separates_required_and_optional_tools(self) -> None:
         report = dependency_diagnostics()
         checks = {item["name"]: item for item in report["checks"]}

@@ -11,6 +11,7 @@
 
 - [ ] 작업 트리가 의도한 변경만 포함한다.
 - [ ] `setup-gui.cmd -CheckOnly`가 필수 5/5로 통과한다.
+- [ ] `scripts\clean-install-smoke.ps1`이 격리 setup·doctor·GUI IPC와 임시 폴더 제거를 통과한다.
 - [ ] `toki-cli.cmd doctor --json`의 필수 항목과 스키마가 정상이다.
 - [ ] `toki-cli.cmd migrate status --json`이 최신 설정/DB 버전을 보고한다.
 - [ ] `toki-cli.cmd self-test --json`이 Python, Node와 GUI IPC를 모두 통과한다.

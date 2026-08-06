@@ -500,7 +500,7 @@ SQLite `integrity_check`, 복구 ID, 임시 DB 제거와 메모리 변화를 JSO
 
 목표: 개발 환경 지식 없이도 설치하고 실행할 수 있는 배포 형태를 만든다.
 
-- [ ] 새 PC 기준 설치·실행 점검
+- [x] 새 PC 기준 설치·실행 점검
 - [x] 개발자용 재현 가능한 설치 스크립트 정리
 - [x] PyInstaller GUI 실행 파일과 Node/Puppeteer 런타임 묶음 검토
 - [x] 업데이트 및 데이터베이스 마이그레이션 절차
@@ -541,6 +541,13 @@ doctor가 함께 사용한다. `RELEASE_CHECKLIST.md`에 설치·스키마·자�
 롤백 절차를 고정했다. `PYINSTALLER_REVIEW.md`는 코드/데이터 경로, frozen 작업 재진입과
 Node/Puppeteer/Chromium 묶음 문제가 해결되기 전에는 소스+setup 배포를 유지한다는 결론과
 전환 조건을 기록한다. Python 118건을 통과했다.
+
+2026-08-07 클린 설치 스모크: `scripts/clean-install-smoke.ps1`이 현재 Git `HEAD`만 Windows
+임시 폴더에 풀어 기존 `.venv`, `node_modules`, config, DB와 다운로드 파일 없이 setup,
+doctor와 전체 self-test/GUI IPC를 실행한다. 임시 경로가 시스템 TEMP 아래의
+`toki-clean-install-*`인지 이중 확인한 뒤 성공·실패 모두 제거하며 JSON 보고서를 남긴다.
+실제 재설치는 34.5초, setup 23.4초, 필수 5/5, self-test 6/6와 GUI IPC를 통과했고 임시
+작업공간도 제거됐다. 정적 삭제 경계 테스트를 포함해 Python 119건을 통과했다.
 
 완료 조건:
 

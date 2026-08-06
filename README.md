@@ -42,6 +42,8 @@ https://github.com/user-attachments/assets/fe974989-5ffb-4831-b2dc-7ea576712f62
 현재 개발 버전은 `VERSION` 파일을 기준으로 하며 `toki-cli.cmd --version`으로 확인합니다.
 배포 전 절차는 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md), 독립 실행 파일 검토 결과는
 [PYINSTALLER_REVIEW.md](PYINSTALLER_REVIEW.md)를 참고하세요.
+처음 설치부터 업데이트·복구까지의 Windows 절차는 [WINDOWS_SETUP.md](WINDOWS_SETUP.md)를
+기준 문서로 사용합니다.
 
 ## 준비물 
 Node.js, Python 3
