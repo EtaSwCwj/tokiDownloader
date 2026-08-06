@@ -1082,6 +1082,97 @@ def update_job_note(job_id: str, text: str) -> DownloadJob:
     return job
 
 
+def plan_job_folder_move(job_id: str, output_dir: str) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if job.state in ACTIVE_JOB_STATES:
+        raise ValueError("대기 또는 실행 중인 작품 폴더는 이동할 수 없습니다.")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+
+    clean_output_dir = str(output_dir or "").strip()
+    if not clean_output_dir:
+        raise ValueError("새 저장 루트 폴더를 지정해주세요.")
+    source = Path(job.output_path).expanduser().resolve()
+    target_root = Path(clean_output_dir).expanduser().resolve()
+    if not source.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {source}")
+    destination = (target_root / source.parent.name / source.name).resolve()
+    same_path = os.path.normcase(str(source)) == os.path.normcase(str(destination))
+    try:
+        destination.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        if not same_path:
+            raise ValueError("작품 폴더 내부로는 이동할 수 없습니다.")
+    conflict = destination.exists() and not same_path
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": job.title,
+        "source": str(source),
+        "destination": str(destination),
+        "outputDir": str(target_root),
+        "siteFolder": source.parent.name,
+        "folderName": source.name,
+        "samePath": same_path,
+        "conflict": conflict,
+        "canExecute": same_path or not conflict,
+        "executed": False,
+    }
+
+
+def move_job_folder(job_id: str, output_dir: str) -> dict[str, Any]:
+    plan = plan_job_folder_move(job_id, output_dir)
+    if plan["conflict"]:
+        raise FileExistsError(f"목적지 폴더가 이미 존재합니다: {plan['destination']}")
+    if plan["samePath"]:
+        return {**plan, "executed": True, "moved": False}
+
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    source = Path(plan["source"])
+    destination = Path(plan["destination"])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(destination))
+
+    def relocated(value: str) -> str:
+        if not value:
+            return ""
+        candidate = Path(value).expanduser().resolve()
+        try:
+            relative = candidate.relative_to(source)
+        except ValueError:
+            return value
+        return str(destination / relative)
+
+    job.output_dir = plan["outputDir"]
+    job.output_path = str(destination)
+    job.cover_path = relocated(job.cover_path)
+    job.metadata_path = relocated(job.metadata_path)
+    try:
+        save_jobs([job])
+    except Exception as error:
+        try:
+            source.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(destination), str(source))
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "작품 폴더 이동 후 기록 저장과 원위치 복구가 모두 실패했습니다. "
+                f"현재 폴더를 확인하세요: {destination}"
+            ) from rollback_error
+        raise error
+    return {
+        **plan,
+        "executed": True,
+        "moved": True,
+        "job": job.to_dict(),
+    }
+
+
 def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:

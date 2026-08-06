@@ -112,6 +112,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 # 저장 폴더와 로그
 .\toki-cli.cmd set-output "D:\Manga"
 .\toki-cli.cmd open-folder --job 작업ID
+.\toki-cli.cmd move-folder --job 작업ID --output "E:\Manga" --dry-run --json
+.\toki-cli.cmd move-folder --job 작업ID --output "E:\Manga" --execute --yes --json
 .\toki-cli.cmd copy-link --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
@@ -235,6 +237,13 @@ GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `�
 `파일 시스템`, `기타`로 분류되어 작품 행과 실행 이력에 저장됩니다. Cloudflare 확인,
 CAPTCHA와 HTTP 403은 `인증 필요`로 끝내고 무의미한 자동 재시도를 하지 않습니다.
 `run-info --run 실행ID`로 분류와 자동 재시도 가능 여부를 확인할 수 있습니다.
+
+`move-folder`는 새 저장 루트 아래에 기존 사이트 폴더와 작품 폴더명을 유지한 목적지를
+계산합니다. 기본 동작과 `--dry-run`은 파일을 건드리지 않고 원본·목적지·충돌 여부만
+보여줍니다. 실제 이동은 `--execute --yes`가 모두 있어야 하며, GUI에서는 작품 우클릭
+`작품 폴더 이동...`에서 목적지를 미리 보여준 뒤 한 번 더 확인합니다. 목적지 폴더가 이미
+있거나 작품이 실행 중이면 이동하지 않습니다. 파일 이동이 끝난 뒤에만 작품 기록의
+저장 루트·표지·메타데이터 경로를 갱신하고, 기록 저장이 실패하면 원위치 복구를 시도합니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

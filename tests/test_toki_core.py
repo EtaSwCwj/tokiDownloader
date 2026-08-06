@@ -33,6 +33,8 @@ from toki_core import (
     normalize_retry_count,
     normalize_error_category,
     normalize_work_concurrency,
+    move_job_folder,
+    plan_job_folder_move,
     read_run_log,
     recover_interrupted_jobs,
     retry_backoff_seconds,
@@ -605,6 +607,72 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(count_jobs(), 0)
         self.assertEqual(count_runs(job.work_key), 0)
         self.assertTrue(image.is_file())
+
+    def test_folder_move_dry_run_and_execute_preserve_files_and_update_paths(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        source = workspace / "old-root" / "마나토끼" / "[작가][그룹] 작품"
+        source.mkdir(parents=True)
+        metadata = source / "metadata.json"
+        cover = source / "cover.jpg"
+        episode = source / "0001 1화" / "image0000.jpg"
+        episode.parent.mkdir()
+        metadata.write_text("{}", encoding="utf-8")
+        cover.write_bytes(b"cover")
+        episode.write_bytes(b"image")
+        job = DownloadJob(
+            job_id="move-work",
+            url="https://newtoki1.org/manhwa/6001",
+            output_dir=str(workspace / "old-root"),
+            output_path=str(source),
+            metadata_path=str(metadata),
+            cover_path=str(cover),
+            state="완료",
+        )
+        save_jobs([job])
+
+        target_root = workspace / "new root 한글"
+        plan = plan_job_folder_move(job.job_id, str(target_root))
+        destination = target_root / "마나토끼" / source.name
+        self.assertEqual(plan["destination"], str(destination.resolve()))
+        self.assertTrue(plan["canExecute"])
+        self.assertFalse(plan["executed"])
+        self.assertTrue(episode.is_file())
+        self.assertFalse(destination.exists())
+
+        result = move_job_folder(job.job_id, str(target_root))
+        moved = toki_core.load_job_by_id(job.job_id)
+        self.assertTrue(result["moved"])
+        self.assertFalse(source.exists())
+        self.assertTrue((destination / "0001 1화" / "image0000.jpg").is_file())
+        self.assertEqual(moved.output_dir, str(target_root.resolve()))
+        self.assertEqual(moved.output_path, str(destination.resolve()))
+        self.assertEqual(moved.metadata_path, str(destination / "metadata.json"))
+        self.assertEqual(moved.cover_path, str(destination / "cover.jpg"))
+
+    def test_folder_move_rejects_destination_collision_and_active_job(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        source = workspace / "old" / "마나토끼" / "작품"
+        source.mkdir(parents=True)
+        job = DownloadJob(
+            job_id="move-conflict",
+            url="https://newtoki1.org/manhwa/6002",
+            output_dir=str(workspace / "old"),
+            output_path=str(source),
+            state="완료",
+        )
+        save_jobs([job])
+        target = workspace / "target"
+        (target / "마나토끼" / "작품").mkdir(parents=True)
+        plan = plan_job_folder_move(job.job_id, str(target))
+        self.assertTrue(plan["conflict"])
+        self.assertFalse(plan["canExecute"])
+        with self.assertRaises(FileExistsError):
+            move_job_folder(job.job_id, str(target))
+
+        job.state = "실행 중"
+        save_jobs([job])
+        with self.assertRaises(ValueError):
+            plan_job_folder_move(job.job_id, str(workspace / "other"))
 
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:
         jobs = [

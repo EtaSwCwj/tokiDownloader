@@ -35,11 +35,13 @@ from toki_core import (
     load_jobs_page,
     load_run,
     load_runs_page,
+    move_job_folder,
     normalize_image_concurrency,
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_scan_request,
     normalize_work_concurrency,
+    plan_job_folder_move,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
@@ -475,6 +477,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     open_folder = subparsers.add_parser("open-folder", help="저장 폴더 열기")
     open_folder.add_argument("--job", help="작업 ID")
+
+    move_folder = subparsers.add_parser(
+        "move-folder",
+        help="작품 폴더 이동 계획을 확인하거나 명시적으로 실행",
+    )
+    move_folder.add_argument("--job", required=True, help="작업 ID")
+    move_folder.add_argument("--output", required=True, help="새 저장 루트 폴더")
+    move_mode = move_folder.add_mutually_exclusive_group()
+    move_mode.add_argument(
+        "--dry-run", action="store_true", help="파일을 옮기지 않고 목적지와 충돌만 확인"
+    )
+    move_mode.add_argument("--execute", action="store_true", help="실제 폴더 이동 실행")
+    move_folder.add_argument("--yes", action="store_true", help="실제 이동 확인")
+    move_folder.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
@@ -984,6 +1000,44 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "refresh-list":
         ensure_gui_running()
         print_json({"ok": True, **control_request({"action": "refresh_list"})})
+        return 0
+    if command == "move-folder":
+        execute = bool(args.execute)
+        if execute and not args.yes:
+            raise ControlError("실제 작품 폴더 이동에는 --execute --yes가 모두 필요합니다.")
+        if gui_is_running():
+            result = control_request(
+                {
+                    "action": "move_folder",
+                    "jobId": args.job,
+                    "output": args.output,
+                    "execute": execute,
+                },
+                timeout_ms=30000 if execute else 2500,
+            )
+        else:
+            result = (
+                move_job_folder(args.job, args.output)
+                if execute
+                else plan_job_folder_move(args.job, args.output)
+            )
+        if args.json:
+            print_json({"ok": True, **result})
+        else:
+            print(f"원본: {result['source']}")
+            print(f"목적지: {result['destination']}")
+            print(
+                "결과: "
+                + (
+                    "이동 완료"
+                    if result.get("moved")
+                    else "같은 경로"
+                    if result.get("samePath")
+                    else "목적지 충돌"
+                    if result.get("conflict")
+                    else "이동 가능(dry-run)"
+                )
+            )
         return 0
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())

@@ -77,12 +77,14 @@ from toki_core import (
     load_runs_page,
     mark_job_cancelled,
     mark_run_cancelled,
+    move_job_folder as execute_job_folder_move,
     normalize_image_concurrency,
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_scan_request,
     normalize_work_concurrency,
     open_in_explorer,
+    plan_job_folder_move,
     read_log_tail,
     read_run_log,
     recover_interrupted_jobs,
@@ -2000,6 +2002,75 @@ class MainWindow(QMainWindow):
         self.log(f"폴더 열기: {target}")
         return target
 
+    def move_job_folder(
+        self, job_id: str, output_dir: str, *, execute: bool = False
+    ) -> dict[str, Any]:
+        self._flush_job_history()
+        result = (
+            execute_job_folder_move(job_id, output_dir)
+            if execute
+            else plan_job_folder_move(job_id, output_dir)
+        )
+        if execute and result.get("job"):
+            moved = DownloadJob(**result["job"])
+            previous = self.jobs_by_work.get(moved.work_key)
+            if previous and previous.job_id != moved.job_id:
+                self.jobs.pop(previous.job_id, None)
+            self.jobs[moved.job_id] = moved
+            self.jobs_by_work[moved.work_key] = moved
+            self.task_model.update_job(moved)
+            if (
+                self.active_detail_dialog
+                and self.active_detail_dialog.job.work_key == moved.work_key
+            ):
+                self.active_detail_dialog.job = moved
+                self.active_detail_dialog.refresh()
+            self.log(
+                f"작품 폴더 이동: {result['source']} -> {result['destination']}",
+                job_id=moved.job_id,
+            )
+        return result
+
+    def confirm_move_job_folder(self, job_id: str) -> None:
+        job = self.selected_job(job_id)
+        if not job:
+            return
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "새 저장 루트 선택",
+            job.output_dir or self.output_edit.text(),
+        )
+        if not selected:
+            return
+        try:
+            plan = self.move_job_folder(job.job_id, selected, execute=False)
+        except (ValueError, FileNotFoundError) as error:
+            QMessageBox.warning(self, "작품 폴더 이동", str(error))
+            return
+        if plan["samePath"]:
+            QMessageBox.information(self, "작품 폴더 이동", "현재 위치와 같은 경로입니다.")
+            return
+        if plan["conflict"]:
+            QMessageBox.warning(
+                self,
+                "작품 폴더 이동",
+                f"목적지 폴더가 이미 존재합니다.\n\n{plan['destination']}",
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "작품 폴더 이동",
+            f"다음 작품 폴더를 이동할까요?\n\n"
+            f"원본: {plan['source']}\n\n목적지: {plan['destination']}\n\n"
+            "이동이 끝난 뒤 작품 기록의 경로도 함께 갱신됩니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.move_job_folder(job.job_id, selected, execute=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.critical(self, "작품 폴더 이동 실패", str(error))
+
     def open_job_source(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         if not job:
@@ -2098,6 +2169,13 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction("작품 정보 및 실행 이력", lambda: self.show_job_details(job.job_id))
         menu.addAction("다운로드 폴더 열기", lambda: self.open_output_folder(job.job_id))
+        move_action = menu.addAction(
+            "작품 폴더 이동...",
+            lambda: self.confirm_move_job_folder(job.job_id),
+        )
+        move_action.setEnabled(
+            job.state not in ACTIVE_JOB_STATES and bool(job.output_path)
+        )
         menu.addAction("원본 페이지 열기", lambda: self.open_job_source(job.job_id))
         menu.addAction("대표 이미지 원본 열기", lambda: self.open_job_cover(job.job_id))
         menu.addAction(
@@ -2472,6 +2550,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd remove-record --job ID --yes\n"
             "toki-cli.cmd cleanup-records --status completed|error|authentication|stopped --yes\n"
             "toki-cli.cmd refresh-list\n"
+            "toki-cli.cmd move-folder --job ID --output PATH --dry-run --json\n"
+            "toki-cli.cmd move-folder --job ID --output PATH --execute --yes --json\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -2694,6 +2774,12 @@ class MainWindow(QMainWindow):
             )
         if action == "open_folder":
             return {"opened": self.open_output_folder(request.get("jobId"))}
+        if action == "move_folder":
+            return self.move_job_folder(
+                str(request.get("jobId") or ""),
+                str(request.get("output") or ""),
+                execute=bool(request.get("execute")),
+            )
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}
         if action == "open_cover":

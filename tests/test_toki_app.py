@@ -211,6 +211,39 @@ class CliParserTests(unittest.TestCase):
         refresh = build_parser().parse_args(["refresh-list"])
         self.assertEqual(refresh.command, "refresh-list")
 
+    def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
+        dry_run = build_parser().parse_args(
+            ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={
+                    "source": r"C:\Manga\마나토끼\작품",
+                    "destination": r"D:\Manga\마나토끼\작품",
+                    "conflict": False,
+                },
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(dry_run), 0)
+        request.assert_called_once_with(
+            {
+                "action": "move_folder",
+                "jobId": "job-1",
+                "output": r"D:\Manga",
+                "execute": False,
+            },
+            timeout_ms=2500,
+        )
+
+        unsafe = build_parser().parse_args(
+            ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--execute"]
+        )
+        with self.assertRaises(RuntimeError):
+            run_cli(unsafe)
+
     def test_work_and_run_detail_arguments(self) -> None:
         info = build_parser().parse_args(["info", "--job", "job-1", "--json"])
         self.assertEqual(info.job, "job-1")
