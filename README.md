@@ -86,8 +86,24 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
+.\toki-cli.cmd self-test --json
+.\toki-cli.cmd self-test --via-gui --json
 .\toki-cli.cmd clear-log
 .\toki-cli.cmd quit --force
+```
+
+`self-test --json`은 Python/Node 구문, 필수 파일, 단위 테스트와 GUI IPC 및 화면 캡처를
+한 번에 검사합니다. GUI가 꺼져 있으면 점검용으로 시작했다가 자동 종료하며, 이미 실행
+중이면 종료하지 않습니다. `self-test --via-gui --json`은 GUI의 `자체 점검` 버튼과 같은
+비동기 경로를 CLI에서 실행해 검증합니다. 결과는 `logs/self-test.json`, 화면은
+`logs/self-test-gui.png`에 저장됩니다. GUI를 전혀 시작하지 않으려면 `--core-only`를
+사용합니다.
+
+기본 자체 점검은 사이트에 접속하거나 만화를 받지 않습니다. 실제 사이트 통합 검증은
+사용자가 지정한 폴더에 1화만 받도록 다음처럼 명시적으로 실행합니다.
+
+```powershell
+.\toki-cli.cmd download --direct --url "https://newtoki1.org/manhwa/34360" --start 1 --last 1 --output "D:\toki-self-test"
 ```
 
 `retry`는 이전에 지정했던 일부 회차 범위를 반복하는 명령이 아닙니다. 작품의 전체 회차

@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import uuid
 from collections import OrderedDict, deque
 from pathlib import Path
@@ -58,6 +59,7 @@ from toki_core import (
     normalize_range,
     open_in_explorer,
     read_log_tail,
+    retry_job_parameters,
     save_config,
     save_jobs,
     validate_url,
@@ -257,6 +259,10 @@ class MainWindow(QMainWindow):
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_job: DownloadJob | None = None
         self.process: QProcess | None = None
+        self.self_test_process: QProcess | None = None
+        self.self_test_stdout = ""
+        self.self_test_stderr = ""
+        self.last_self_test: dict[str, Any] | None = None
         self.cancel_requested = False
         self.force_close = False
         self.stdout_buffer = ""
@@ -338,6 +344,9 @@ class MainWindow(QMainWindow):
         self.screenshot_action.setShortcut("Ctrl+Shift+S")
         self.screenshot_action.triggered.connect(self.capture_window)
 
+        self.self_test_action = QAction("자체 점검 실행", self)
+        self.self_test_action.triggered.connect(self.start_self_test)
+
         self.exit_action = QAction("종료", self)
         self.exit_action.triggered.connect(self.close)
 
@@ -352,6 +361,7 @@ class MainWindow(QMainWindow):
         tools_menu = self.menuBar().addMenu("도구")
         tools_menu.addAction(self.open_folder_action)
         tools_menu.addAction(self.screenshot_action)
+        tools_menu.addAction(self.self_test_action)
         tools_menu.addAction(self.clear_log_action)
 
         help_menu = self.menuBar().addMenu("도움말")
@@ -461,9 +471,12 @@ class MainWindow(QMainWindow):
         copy_log_button.clicked.connect(self.copy_logs)
         screenshot_button = QPushButton("화면 캡처")
         screenshot_button.clicked.connect(self.capture_window)
+        self.self_test_button = QPushButton("자체 점검")
+        self.self_test_button.clicked.connect(self.start_self_test)
         clear_log_button = QPushButton("지우기")
         clear_log_button.clicked.connect(self.clear_logs)
         log_actions.addWidget(screenshot_button)
+        log_actions.addWidget(self.self_test_button)
         log_actions.addWidget(copy_log_button)
         log_actions.addWidget(clear_log_button)
         self.log_edit = QPlainTextEdit()
@@ -842,13 +855,8 @@ class MainWindow(QMainWindow):
         if not source:
             self.log("재시도할 작업을 선택해주세요.")
             return None
-        return self.enqueue_download(
-            source.url,
-            None,
-            None,
-            source.output_dir,
-            source.show_browser,
-        )
+        parameters = retry_job_parameters(source)
+        return self.enqueue_download(**parameters)
 
     def retry_selected_job(self) -> None:
         try:
@@ -978,6 +986,86 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"화면 저장: {target}", 3000)
         return str(target)
 
+    def start_self_test(self) -> bool:
+        if (
+            self.self_test_process
+            and self.self_test_process.state() != QProcess.ProcessState.NotRunning
+        ):
+            self.statusBar().showMessage("자체 점검이 이미 실행 중입니다.", 2500)
+            return False
+
+        process = QProcess(self)
+        self.self_test_process = process
+        self.self_test_stdout = ""
+        self.self_test_stderr = ""
+        self.last_self_test = None
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(sys.executable)
+        process.setArguments([str(ROOT_DIR / "toki_app.py"), "self-test", "--json"])
+        process.readyReadStandardOutput.connect(self._read_self_test_stdout)
+        process.readyReadStandardError.connect(self._read_self_test_stderr)
+        process.errorOccurred.connect(self._self_test_process_error)
+        process.finished.connect(self._self_test_finished)
+        self.self_test_button.setEnabled(False)
+        self.self_test_action.setEnabled(False)
+        self.status_label.setText("자체 점검 실행 중")
+        self.log("자체 점검 시작", job_id="self-test")
+        process.start()
+        return True
+
+    def _read_self_test_stdout(self) -> None:
+        if self.self_test_process:
+            self.self_test_stdout += bytes(
+                self.self_test_process.readAllStandardOutput()
+            ).decode("utf-8", errors="replace")
+
+    def _read_self_test_stderr(self) -> None:
+        if self.self_test_process:
+            self.self_test_stderr += bytes(
+                self.self_test_process.readAllStandardError()
+            ).decode("utf-8", errors="replace")
+
+    def _self_test_process_error(self, _error: QProcess.ProcessError) -> None:
+        if not self.self_test_process:
+            return
+        message = f"자체 점검 프로세스 오류: {self.self_test_process.errorString()}"
+        self.log(message, "ERROR", job_id="self-test")
+        self.status_label.setText("자체 점검 실행 오류")
+
+    def _self_test_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
+        self._read_self_test_stdout()
+        self._read_self_test_stderr()
+        try:
+            result = json.loads(self.self_test_stdout.strip())
+            if not isinstance(result, dict):
+                raise ValueError("자체 점검 결과가 JSON 객체가 아닙니다.")
+        except (json.JSONDecodeError, ValueError) as error:
+            result = {
+                "ok": False,
+                "summary": {"passed": 0, "failed": 1, "total": 1},
+                "error": str(error),
+                "stderr": self.self_test_stderr.strip(),
+            }
+        summary = result.get("summary") or {}
+        passed = int(summary.get("passed") or 0)
+        total = int(summary.get("total") or 0)
+        ok = bool(result.get("ok")) and exit_code == 0
+        self.last_self_test = {
+            "ok": ok,
+            "durationMs": result.get("durationMs"),
+            "summary": summary,
+            "reportPath": result.get("reportPath"),
+        }
+        message = f"자체 점검 {'통과' if ok else '실패'}: {passed}/{total}"
+        self.log(message, "INFO" if ok else "ERROR", job_id="self-test")
+        if self.self_test_stderr.strip() and not ok:
+            self.log(self.self_test_stderr.strip(), "ERROR", job_id="self-test")
+        self.status_label.setText(message)
+        self.statusBar().showMessage(message, 5000)
+        self.self_test_button.setEnabled(True)
+        self.self_test_action.setEnabled(True)
+        self.self_test_process = None
+
     def show_cli_help(self) -> None:
         QMessageBox.information(
             self,
@@ -995,6 +1083,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd copy-log [--tail 3000]\n"
             "toki-cli.cmd screenshot [--output PATH]\n"
             "toki-cli.cmd window [--x N --y N --width N --height N --maximize|--normal]\n"
+            "toki-cli.cmd self-test [--json] [--core-only]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
             "toki-cli.cmd quit",
@@ -1017,6 +1106,11 @@ class MainWindow(QMainWindow):
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
             "screenshotPath": str(LOG_PATH.parent / "gui-screenshot.png"),
+            "selfTestRunning": bool(
+                self.self_test_process
+                and self.self_test_process.state() != QProcess.ProcessState.NotRunning
+            ),
+            "lastSelfTest": self.last_self_test,
             "window": self.window_snapshot(),
         }
 
@@ -1128,6 +1222,8 @@ class MainWindow(QMainWindow):
             return {"path": self.capture_window(str(request.get("path") or ""))}
         if action == "window":
             return self.set_window_geometry(request)
+        if action == "self_test":
+            return {"started": self.start_self_test()}
         if action == "show":
             self.showNormal()
             self.raise_()

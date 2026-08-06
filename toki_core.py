@@ -325,6 +325,17 @@ def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[st
     return args
 
 
+def retry_job_parameters(source: DownloadJob) -> dict[str, Any]:
+    """Return the shared full-rescan contract used by GUI and CLI retries."""
+    return {
+        "url": source.url,
+        "start": None,
+        "last": None,
+        "output_dir": source.output_dir,
+        "show_browser": source.show_browser,
+    }
+
+
 def open_in_explorer(target: str | os.PathLike[str]) -> None:
     resolved = str(Path(target).expanduser().resolve())
     if os.name != "nt":

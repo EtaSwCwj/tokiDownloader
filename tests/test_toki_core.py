@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import toki_core
+from toki_core import (
+    DownloadJob,
+    build_downloader_args,
+    build_work_key,
+    count_jobs,
+    load_job_by_work_key,
+    load_jobs_page,
+    normalize_range,
+    save_jobs,
+)
+
+
+class CoreContractTests(unittest.TestCase):
+    def test_work_key_ignores_rotating_domain(self) -> None:
+        self.assertEqual(build_work_key("https://newtoki1.org/manhwa/34360"), "manatoki:34360")
+        self.assertEqual(build_work_key("https://newtoki999.org/comic/34360"), "manatoki:34360")
+        self.assertEqual(build_work_key("https://booktoki12.org/novel/88"), "booktoki:88")
+
+    def test_range_normalization_and_validation(self) -> None:
+        self.assertEqual(normalize_range(0, 0), (None, None))
+        self.assertEqual(normalize_range(3, 9), (3, 9))
+        with self.assertRaises(ValueError):
+            normalize_range(10, 2)
+
+    def test_downloader_arguments_keep_paths_as_single_arguments(self) -> None:
+        job = DownloadJob(
+            job_id="job",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\한글 폴더\Manga",
+            start=1,
+            last=2,
+            show_browser=True,
+        )
+        args = build_downloader_args(job)
+        self.assertIn(job.output_dir, args)
+        self.assertIn("-show-browser", args)
+        self.assertIn("-json-events", args)
+
+    def test_retry_contract_resets_previous_range(self) -> None:
+        source = DownloadJob(
+            job_id="old",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            start=10,
+            last=24,
+        )
+        retry = toki_core.retry_job_parameters(source)
+        self.assertEqual(retry["url"], source.url)
+        self.assertIsNone(retry["start"])
+        self.assertIsNone(retry["last"])
+
+
+class JobRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_dir.name) / "jobs.db"
+        self.path_patch = patch.object(toki_core, "JOB_DB_PATH", self.database_path)
+        self.path_patch.start()
+        toki_core._INITIALIZED_JOB_DBS.clear()
+
+    def tearDown(self) -> None:
+        toki_core._INITIALIZED_JOB_DBS.clear()
+        self.path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_same_work_upserts_one_record(self) -> None:
+        first = DownloadJob(
+            job_id="first",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            title="이전 제목",
+        )
+        latest = DownloadJob(
+            job_id="latest",
+            url="https://newtoki99.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            title="최신 제목",
+        )
+        save_jobs([first])
+        save_jobs([latest])
+        self.assertEqual(count_jobs(), 1)
+        loaded = load_job_by_work_key("manatoki:34360")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.job_id, "latest")
+        self.assertEqual(loaded.title, "최신 제목")
+
+    def test_page_loading_is_bounded(self) -> None:
+        jobs = [
+            DownloadJob(
+                job_id=f"job-{index}",
+                url=f"https://newtoki1.org/manhwa/{1000 + index}",
+                output_dir=r"C:\Manga",
+            )
+            for index in range(25)
+        ]
+        save_jobs(jobs)
+        self.assertEqual(len(load_jobs_page(limit=10, offset=0)), 10)
+        self.assertEqual(len(load_jobs_page(limit=10, offset=20)), 5)
+
+
+if __name__ == "__main__":
+    unittest.main()

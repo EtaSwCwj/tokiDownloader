@@ -28,6 +28,7 @@ from toki_core import (
     read_log_tail,
     save_config,
 )
+from toki_selftest import run_self_test
 
 
 class ControlError(RuntimeError):
@@ -153,6 +154,32 @@ def run_direct_download(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def run_gui_self_test_probe() -> dict[str, Any]:
+    was_running = gui_is_running()
+    if not was_running:
+        ensure_gui_running()
+    screenshot_path = ROOT_DIR / "logs" / "self-test-gui.png"
+    try:
+        ping = control_request({"action": "ping"})
+        status = control_request({"action": "status"})
+        screenshot = control_request({"action": "screenshot", "path": str(screenshot_path)})
+        if not screenshot_path.is_file() or screenshot_path.stat().st_size <= 0:
+            raise ControlError("GUI 자체 점검 화면 캡처 파일이 생성되지 않았습니다.")
+        return {
+            "detail": "GUI IPC 상태 조회와 화면 캡처 통과",
+            "wasRunning": was_running,
+            "ping": ping,
+            "loadedJobCount": status.get("loadedJobCount", 0),
+            "screenshotPath": screenshot.get("path"),
+        }
+    finally:
+        if not was_running and gui_is_running():
+            control_request({"action": "quit", "force": False})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and gui_is_running():
+                time.sleep(0.1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="toki-cli",
@@ -217,6 +244,20 @@ def build_parser() -> argparse.ArgumentParser:
     copy_log.add_argument("--tail", type=int, default=3000, help="마지막 N줄")
 
     subparsers.add_parser("clear-log", help="GUI 및 파일 로그 지우기")
+    self_test = subparsers.add_parser("self-test", help="로컬 핵심 기능과 GUI 제어 자체 점검")
+    self_test.add_argument("--json", action="store_true", help="JSON으로 결과 출력")
+    self_test_mode = self_test.add_mutually_exclusive_group()
+    self_test_mode.add_argument(
+        "--core-only",
+        action="store_true",
+        help="GUI 시작과 IPC 점검을 제외하고 핵심 검사만 실행",
+    )
+    self_test_mode.add_argument(
+        "--via-gui",
+        action="store_true",
+        help="실행 중인 GUI의 자체 점검 버튼 경로를 원격 실행",
+    )
+    self_test.add_argument("--timeout", type=int, default=120, help="GUI 점검 대기 초")
     quit_parser = subparsers.add_parser("quit", help="GUI 종료")
     quit_parser.add_argument("--force", action="store_true", help="실행 작업도 중지하고 종료")
     return parser
@@ -344,6 +385,39 @@ def run_cli(args: argparse.Namespace) -> int:
             clear_log_file()
             print("로그를 지웠습니다.")
         return 0
+    if command == "self-test":
+        if args.via_gui:
+            ensure_gui_running()
+            control_request({"action": "self_test"})
+            deadline = time.monotonic() + max(10, args.timeout)
+            result = None
+            while time.monotonic() < deadline:
+                status = control_request({"action": "status"})
+                if not status.get("selfTestRunning") and status.get("lastSelfTest"):
+                    result = status["lastSelfTest"]
+                    break
+                time.sleep(0.2)
+            if result is None:
+                raise ControlError("GUI 자체 점검이 제한 시간 안에 끝나지 않았습니다.")
+        else:
+            result = run_self_test(None if args.core_only else run_gui_self_test_probe)
+        append_log(
+            f"자체 점검: {result['summary']['passed']}/{result['summary']['total']} 통과",
+            level="INFO" if result["ok"] else "ERROR",
+            job_id="self-test",
+        )
+        if args.json:
+            print_json(result)
+        else:
+            for check in result.get("checks", []):
+                marker = "PASS" if check["ok"] else "FAIL"
+                print(f"[{marker}] {check['name']}: {check['detail']}")
+            summary = result.get("summary") or {}
+            print(
+                f"결과: {summary.get('passed', 0)}/{summary.get('total', 0)} 통과"
+            )
+            print(f"보고서: {result['reportPath']}")
+        return 0 if result["ok"] else 1
     if command == "quit":
         print_json(control_request({"action": "quit", "force": args.force}))
         return 0
