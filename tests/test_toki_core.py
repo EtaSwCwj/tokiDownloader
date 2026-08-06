@@ -48,6 +48,7 @@ from toki_core import (
     set_process_tree_paused,
     should_auto_retry,
     update_job_note,
+    verify_job_files,
     update_job_markers,
 )
 
@@ -724,6 +725,100 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(rebuilt["coverFile"], "cover.png")
         self.assertEqual(loaded.metadata_path, str(metadata_path.resolve()))
         self.assertEqual(loaded.author, "작가 A")
+
+    def test_file_verification_reports_healthy_episode_and_image_inventory(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 정상 작품"
+        for number in (1, 2):
+            episode = output / f"{number:04d} {number}화"
+            episode.mkdir(parents=True)
+            (episode / "image0000.jpg").write_bytes(
+                b"\xff\xd8\xff" + b"valid-image" + b"\xff\xd9"
+            )
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps({"version": 1, "completedEpisodes": [1, 2]}),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="verify-healthy",
+            url="https://newtoki1.org/manhwa/6200",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        result = verify_job_files(job.job_id)
+        self.assertTrue(result["healthy"])
+        self.assertTrue(result["readOnly"])
+        self.assertEqual(result["summary"]["episodeFolders"], 2)
+        self.assertEqual(result["summary"]["images"], 2)
+        self.assertEqual(result["summary"]["issueCount"], 0)
+
+    def test_file_verification_detects_missing_empty_and_invalid_images(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 문제 작품"
+        empty_episode = output / "0001 빈 회차"
+        broken_episode = output / "0002 손상 회차"
+        empty_episode.mkdir(parents=True)
+        broken_episode.mkdir(parents=True)
+        (broken_episode / "image0000.jpg").write_bytes(b"not-a-jpeg")
+        (broken_episode / "image0001.png").write_bytes(b"")
+        (output / "metadata.json").write_text("not-json", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps({"version": 1, "completedEpisodes": [1, 2, 3]}),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="verify-broken",
+            url="https://newtoki1.org/manhwa/6201",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        result = verify_job_files(job.job_id, issue_limit=3)
+        kinds = {issue["kind"] for issue in result["issues"]}
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["missingEpisodes"], [3])
+        self.assertEqual(result["summary"]["emptyEpisodes"], 1)
+        self.assertEqual(result["summary"]["invalidImages"], 1)
+        self.assertEqual(result["summary"]["zeroByteImages"], 1)
+        self.assertGreater(result["summary"]["issueCount"], 3)
+        self.assertTrue(result["summary"]["issuesTruncated"])
+        self.assertIn("metadata_invalid", kinds)
+
+    def test_file_verification_handles_one_thousand_episode_folders(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 대규모 작품"
+        valid_jpeg = b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        for number in range(1, 1001):
+            episode = output / f"{number:04d} {number}화"
+            episode.mkdir(parents=True)
+            (episode / "image0000.jpg").write_bytes(valid_jpeg)
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {"version": 1, "completedEpisodes": list(range(1, 1001))}
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="verify-large",
+            url="https://newtoki1.org/manhwa/6202",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        result = verify_job_files(job.job_id, issue_limit=10)
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["summary"]["episodeFolders"], 1000)
+        self.assertEqual(result["summary"]["images"], 1000)
+        self.assertEqual(result["summary"]["returnedIssues"], 0)
 
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:
         jobs = [

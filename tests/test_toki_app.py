@@ -271,6 +271,45 @@ class CliParserTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             run_cli(unsafe)
 
+    def test_verify_files_cli_uses_read_only_service_and_exit_code(self) -> None:
+        args = build_parser().parse_args(
+            ["verify-files", "--job", "job-1", "--issue-limit", "25", "--json"]
+        )
+        result = {
+            "jobId": "job-1",
+            "title": "작품",
+            "outputPath": r"C:\Manga\작품",
+            "healthy": False,
+            "durationMs": 3,
+            "summary": {
+                "episodeFolders": 1,
+                "images": 1,
+                "issueCount": 1,
+                "issuesTruncated": False,
+            },
+            "issues": [{"kind": "image_invalid", "path": "x", "detail": "손상"}],
+        }
+        with (
+            patch("toki_app.verify_job_files", return_value=result) as verify,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 2)
+        verify.assert_called_once_with("job-1", 25)
+
+        show_gui = build_parser().parse_args(
+            ["verify-files", "--job", "job-1", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"started": True, "jobId": "job-1"},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_gui), 0)
+        request.assert_called_once_with({"action": "verify_files", "jobId": "job-1"})
+
     def test_work_and_run_detail_arguments(self) -> None:
         info = build_parser().parse_args(["info", "--job", "job-1", "--json"])
         self.assertEqual(info.job, "job-1")

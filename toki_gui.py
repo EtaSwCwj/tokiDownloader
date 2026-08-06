@@ -583,6 +583,51 @@ class WorkDetailDialog(QDialog):
         self.owner.statusBar().showMessage("작품 메모를 저장했습니다.", 2500)
 
 
+class FileVerificationDialog(QDialog):
+    def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
+        super().__init__(owner)
+        self.setWindowTitle("작품 파일 검사 결과")
+        self.resize(760, 560)
+        layout = QVBoxLayout(self)
+        summary = result.get("summary") or {}
+        state = "정상" if result.get("healthy") else "문제 발견"
+        heading = QLabel(
+            f"{state} · 회차 {summary.get('episodeFolders', 0)} · "
+            f"이미지 {summary.get('images', 0)} · 문제 {summary.get('issueCount', 0)} · "
+            f"{result.get('durationMs', 0)}ms"
+        )
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        path_label = QLabel(str(result.get("outputPath") or ""))
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        lines = [
+            f"메타데이터: {'정상' if (result.get('metadata') or {}).get('valid') else '없음/손상'}",
+            f"완료 상태 파일: {'정상' if (result.get('state') or {}).get('valid') else '없음/손상'}",
+            f"빈 회차: {summary.get('emptyEpisodes', 0)}",
+            f"0바이트 이미지: {summary.get('zeroByteImages', 0)}",
+            f"손상 이미지: {summary.get('invalidImages', 0)}",
+            f"중복 회차: {summary.get('duplicateEpisodes', 0)}",
+            f"누락 회차: {summary.get('missingEpisodes', 0)}",
+            f"상태 미등록 회차: {summary.get('untrackedEpisodes', 0)}",
+            "",
+        ]
+        for issue in result.get("issues") or []:
+            target = f"\n  {issue.get('path')}" if issue.get("path") else ""
+            lines.append(f"[{issue.get('kind')}] {issue.get('detail')}{target}")
+        if summary.get("issuesTruncated"):
+            lines.append("\n문제 목록이 제한되어 일부 항목은 표시하지 않았습니다.")
+        if not result.get("issues"):
+            lines.append("검사에서 발견된 문제가 없습니다.")
+        details.setPlainText("\n".join(lines))
+        layout.addWidget(details, 1)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.close)
+        layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+
+
 @dataclass
 class ProcessContext:
     job: DownloadJob
@@ -617,6 +662,7 @@ class MainWindow(QMainWindow):
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_contexts: dict[str, ProcessContext] = {}
         self.self_test_process: QProcess | None = None
+        self.file_verify_processes: dict[str, QProcess] = {}
         self.self_test_stdout = ""
         self.self_test_stderr = ""
         self.last_self_test: dict[str, Any] | None = None
@@ -631,6 +677,7 @@ class MainWindow(QMainWindow):
         self.active_context_menu: QMenu | None = None
         self.active_detail_dialog: WorkDetailDialog | None = None
         self.active_run_log_dialog: RunLogDialog | None = None
+        self.active_file_verify_dialog: FileVerificationDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -2124,6 +2171,72 @@ class MainWindow(QMainWindow):
         except (OSError, RuntimeError, ValueError) as error:
             QMessageBox.critical(self, "메타데이터 재생성 실패", str(error))
 
+    def start_file_verification(self, job_id: str | None = None) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("파일을 검사할 작품을 선택해주세요.")
+        if job.job_id in self.file_verify_processes:
+            return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
+        python = Path(sys.executable).with_name("python.exe")
+        process = QProcess(self)
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(str(python if python.is_file() else Path(sys.executable)))
+        process.setArguments(
+            [
+                str(ROOT_DIR / "toki_app.py"),
+                "verify-files",
+                "--job",
+                job.job_id,
+                "--json",
+                "--ascii-json",
+            ]
+        )
+        process.finished.connect(
+            lambda exit_code, _status, selected=job.job_id: self._file_verification_finished(
+                selected, exit_code
+            )
+        )
+        self.file_verify_processes[job.job_id] = process
+        process.start()
+        self.log("작품 파일 검사 시작(별도 프로세스)", job_id=job.job_id)
+        self.statusBar().showMessage(f"{job.title} 파일 검사 중…")
+        return {"started": True, "jobId": job.job_id, "processId": 0}
+
+    def _file_verification_finished(self, job_id: str, exit_code: int) -> None:
+        process = self.file_verify_processes.pop(job_id, None)
+        if process is None:
+            return
+        stdout = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+        process.deleteLater()
+        try:
+            result = json.loads(stdout.strip())
+        except json.JSONDecodeError:
+            message = stderr.strip() or stdout.strip() or f"종료 코드 {exit_code}"
+            self.log(f"작품 파일 검사 실패: {message}", "ERROR", job_id)
+            QMessageBox.critical(self, "작품 파일 검사 실패", message)
+            return
+        if self.active_file_verify_dialog:
+            self.active_file_verify_dialog.close()
+        dialog = FileVerificationDialog(self, result)
+        self.active_file_verify_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda: setattr(self, "active_file_verify_dialog", None)
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        summary = result.get("summary") or {}
+        level = "INFO" if result.get("healthy") else "ERROR"
+        self.log(
+            f"작품 파일 검사 완료: 회차 {summary.get('episodeFolders', 0)}, "
+            f"이미지 {summary.get('images', 0)}, 문제 {summary.get('issueCount', 0)}",
+            level,
+            job_id,
+        )
+        self.statusBar().showMessage("작품 파일 검사가 완료되었습니다.", 3500)
+
     def open_job_source(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         if not job:
@@ -2241,6 +2354,13 @@ class MainWindow(QMainWindow):
         )
         rebuild_action.setEnabled(
             job.state not in ACTIVE_JOB_STATES and bool(job.output_path)
+        )
+        verify_action = menu.addAction(
+            "보유 회차·파일 검사",
+            lambda: self.start_file_verification(job.job_id),
+        )
+        verify_action.setEnabled(
+            bool(job.output_path) and job.job_id not in self.file_verify_processes
         )
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
@@ -2498,7 +2618,12 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if self.active_run_log_dialog and self.active_run_log_dialog.isVisible():
+        if (
+            self.active_file_verify_dialog
+            and self.active_file_verify_dialog.isVisible()
+        ):
+            screenshot = self.active_file_verify_dialog.grab()
+        elif self.active_run_log_dialog and self.active_run_log_dialog.isVisible():
             screenshot = self.active_run_log_dialog.grab()
         elif self.active_detail_dialog and self.active_detail_dialog.isVisible():
             screenshot = self.active_detail_dialog.grab()
@@ -2614,6 +2739,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd move-folder --job ID --output PATH --execute --yes --json\n"
             "toki-cli.cmd rebuild-metadata --job ID --dry-run --json\n"
             "toki-cli.cmd rebuild-metadata --job ID --execute --yes --json\n"
+            "toki-cli.cmd verify-files --job ID [--json|--show-gui]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -2686,6 +2812,7 @@ class MainWindow(QMainWindow):
                 self.self_test_process
                 and self.self_test_process.state() != QProcess.ProcessState.NotRunning
             ),
+            "fileVerificationJobs": sorted(self.file_verify_processes),
             "lastSelfTest": self.last_self_test,
             "listFilter": {
                 "query": self.history_query,
@@ -2847,6 +2974,8 @@ class MainWindow(QMainWindow):
                 str(request.get("jobId") or ""),
                 execute=bool(request.get("execute")),
             )
+        if action == "verify_files":
+            return self.start_file_verification(str(request.get("jobId") or ""))
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}
         if action == "open_cover":

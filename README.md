@@ -116,6 +116,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd move-folder --job 작업ID --output "E:\Manga" --execute --yes --json
 .\toki-cli.cmd rebuild-metadata --job 작업ID --dry-run --json
 .\toki-cli.cmd rebuild-metadata --job 작업ID --execute --yes --json
+.\toki-cli.cmd verify-files --job 작업ID --json
+.\toki-cli.cmd verify-files --job 작업ID --show-gui
 .\toki-cli.cmd copy-link --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
@@ -254,6 +256,14 @@ CAPTCHA와 HTTP 403은 `인증 필요`로 끝내고 무의미한 자동 재시�
 있는 값은 보존하며, 손상된 파일은 DB와 `[작가][그룹] 제목` 폴더명에서 핵심 필드를
 복구합니다. GUI에서는 작품 우클릭 `로컬 메타데이터 재생성...`에서 같은 기능을 확인 후
 실행할 수 있습니다.
+
+`verify-files`는 작품 폴더를 변경하지 않는 읽기 전용 검사입니다. 완료 상태 대비 누락
+회차, 같은 번호의 중복 폴더, 이미지가 없는 회차, 0바이트 파일, JPG·PNG·WebP·GIF·BMP·
+AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`을 구분해 반환합니다.
+문제가 없으면 종료 코드 0, 문제가 발견되면 결과 JSON을 출력한 뒤 종료 코드 2를 사용합니다.
+`--issue-limit`으로 상세 문제 배열 크기를 제한할 수 있어 수천 파일에서도 출력이 무한히
+커지지 않습니다. GUI 우클릭 `보유 회차·파일 검사`와 `--show-gui`는 같은 CLI 검사를 별도
+프로세스로 실행하므로 검사 중에도 작품 목록과 창 조작이 멈추지 않습니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

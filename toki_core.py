@@ -1284,6 +1284,200 @@ def rebuild_job_metadata(job_id: str) -> dict[str, Any]:
     }
 
 
+IMAGE_EXTENSIONS = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+)
+
+
+def _image_signature_valid(path: Path) -> bool:
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return False
+        with path.open("rb") as handle:
+            header = handle.read(16)
+            tail = b""
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                handle.seek(max(0, size - 16))
+                tail = handle.read(16)
+    except OSError:
+        return False
+    extension = path.suffix.lower()
+    if extension in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xff\xd8\xff") and tail.endswith(b"\xff\xd9")
+    if extension == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n") and b"IEND" in tail
+    if extension == ".gif":
+        return header.startswith((b"GIF87a", b"GIF89a"))
+    if extension == ".webp":
+        return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+    if extension == ".bmp":
+        return header.startswith(b"BM")
+    if extension == ".avif":
+        return len(header) >= 12 and header[4:8] == b"ftyp" and b"avif" in header[8:16]
+    return False
+
+
+def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    clean_limit = max(1, min(10000, int(issue_limit)))
+    started = datetime.now().astimezone()
+    issues: list[dict[str, Any]] = []
+    issue_count = 0
+
+    def add_issue(kind: str, path: Path | None, detail: str) -> None:
+        nonlocal issue_count
+        issue_count += 1
+        if len(issues) < clean_limit:
+            issues.append(
+                {
+                    "kind": kind,
+                    "path": str(path) if path is not None else "",
+                    "detail": detail,
+                }
+            )
+
+    metadata_path = output_path / "metadata.json"
+    metadata_valid = False
+    if metadata_path.is_file():
+        try:
+            metadata_valid = isinstance(
+                json.loads(metadata_path.read_text(encoding="utf-8")), dict
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
+    if not metadata_valid:
+        add_issue(
+            "metadata_missing" if not metadata_path.exists() else "metadata_invalid",
+            metadata_path,
+            "metadata.json이 없거나 올바른 JSON 객체가 아닙니다.",
+        )
+
+    state_path = output_path / ".toki-state.json"
+    expected_episodes: set[int] = set()
+    state_valid = False
+    if state_path.is_file():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            raw_episodes = state.get("completedEpisodes", []) if isinstance(state, dict) else []
+            expected_episodes = {
+                int(value)
+                for value in raw_episodes
+                if str(value).isdigit() and int(value) > 0
+            }
+            state_valid = isinstance(state, dict)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    if state_path.exists() and not state_valid:
+        add_issue("state_invalid", state_path, "완료 회차 상태 파일을 읽을 수 없습니다.")
+
+    episode_folders: dict[int, list[Path]] = {}
+    image_count = 0
+    other_file_count = 0
+    zero_byte_count = 0
+    invalid_image_count = 0
+    empty_episode_count = 0
+    for entry in os.scandir(output_path):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        matched = re.match(r"^0*(\d+)(?:\s|$)", entry.name)
+        if not matched:
+            continue
+        episode_number = int(matched.group(1))
+        episode_path = Path(entry.path)
+        episode_folders.setdefault(episode_number, []).append(episode_path)
+        episode_image_count = 0
+        try:
+            children = os.scandir(episode_path)
+        except OSError as error:
+            add_issue("episode_unreadable", episode_path, str(error))
+            continue
+        with children:
+            for child in children:
+                if not child.is_file(follow_symlinks=False):
+                    continue
+                child_path = Path(child.path)
+                if child_path.suffix.lower() not in IMAGE_EXTENSIONS:
+                    other_file_count += 1
+                    continue
+                episode_image_count += 1
+                image_count += 1
+                try:
+                    file_size = child.stat(follow_symlinks=False).st_size
+                except OSError as error:
+                    add_issue("image_unreadable", child_path, str(error))
+                    continue
+                if file_size <= 0:
+                    zero_byte_count += 1
+                    add_issue("image_empty", child_path, "이미지 파일 크기가 0바이트입니다.")
+                elif not _image_signature_valid(child_path):
+                    invalid_image_count += 1
+                    add_issue("image_invalid", child_path, "확장자와 이미지 서명이 맞지 않습니다.")
+        if episode_image_count == 0:
+            empty_episode_count += 1
+            add_issue("episode_empty", episode_path, "회차 폴더에 지원 이미지가 없습니다.")
+
+    physical_episodes = set(episode_folders)
+    duplicate_episodes = sorted(
+        number for number, paths in episode_folders.items() if len(paths) > 1
+    )
+    for number in duplicate_episodes:
+        add_issue(
+            "episode_duplicate",
+            episode_folders[number][0],
+            f"{number}번 회차 접두어 폴더가 {len(episode_folders[number])}개입니다.",
+        )
+    missing_episodes = sorted(expected_episodes - physical_episodes)
+    for number in missing_episodes:
+        add_issue("episode_missing", None, f"완료 상태의 {number}번 회차 폴더가 없습니다.")
+    untracked_episodes = sorted(physical_episodes - expected_episodes) if state_valid else []
+
+    finished = datetime.now().astimezone()
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": job.title,
+        "outputPath": str(output_path),
+        "healthy": issue_count == 0,
+        "readOnly": True,
+        "startedAt": started.isoformat(timespec="seconds"),
+        "finishedAt": finished.isoformat(timespec="seconds"),
+        "durationMs": max(0, int((finished - started).total_seconds() * 1000)),
+        "summary": {
+            "episodeFolders": sum(len(paths) for paths in episode_folders.values()),
+            "uniqueEpisodes": len(physical_episodes),
+            "expectedEpisodes": len(expected_episodes),
+            "images": image_count,
+            "otherFiles": other_file_count,
+            "emptyEpisodes": empty_episode_count,
+            "zeroByteImages": zero_byte_count,
+            "invalidImages": invalid_image_count,
+            "duplicateEpisodes": len(duplicate_episodes),
+            "missingEpisodes": len(missing_episodes),
+            "untrackedEpisodes": len(untracked_episodes),
+            "issueCount": issue_count,
+            "returnedIssues": len(issues),
+            "issuesTruncated": issue_count > len(issues),
+        },
+        "metadata": {"path": str(metadata_path), "valid": metadata_valid},
+        "state": {
+            "path": str(state_path),
+            "exists": state_path.exists(),
+            "valid": state_valid,
+        },
+        "missingEpisodes": missing_episodes,
+        "untrackedEpisodes": untracked_episodes,
+        "issues": issues,
+    }
+
+
 def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:

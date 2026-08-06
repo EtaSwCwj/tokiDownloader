@@ -54,6 +54,7 @@ from toki_core import (
     save_jobs,
     should_auto_retry,
     update_job_note,
+    verify_job_files,
 )
 from toki_selftest import run_self_test
 
@@ -506,6 +507,22 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_mode.add_argument("--execute", action="store_true", help="메타데이터 재생성 실행")
     rebuild_metadata.add_argument("--yes", action="store_true", help="기존 파일 변경 확인")
     rebuild_metadata.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    verify_files = subparsers.add_parser(
+        "verify-files",
+        help="작품 폴더의 회차, 누락 파일과 이미지 서명을 읽기 전용 검사",
+    )
+    verify_files.add_argument("--job", required=True, help="작업 ID")
+    verify_files.add_argument(
+        "--issue-limit", type=int, default=500, help="JSON에 포함할 문제 항목 수(최대 10000)"
+    )
+    verify_files.add_argument(
+        "--show-gui", action="store_true", help="GUI 별도 프로세스 검사와 결과 창 표시"
+    )
+    verify_files.add_argument(
+        "--ascii-json", action="store_true", help=argparse.SUPPRESS
+    )
+    verify_files.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
@@ -1083,6 +1100,34 @@ def run_cli(args: argparse.Namespace) -> int:
                 else "결과: 생성 가능(dry-run)"
             )
         return 0
+    if command == "verify-files":
+        if args.show_gui:
+            ensure_gui_running()
+            print_json(
+                control_request({"action": "verify_files", "jobId": args.job})
+            )
+            return 0
+        result = verify_job_files(args.job, args.issue_limit)
+        if args.json:
+            payload = {"ok": True, **result}
+            if args.ascii_json:
+                print(json.dumps(payload, ensure_ascii=True, indent=2))
+            else:
+                print_json(payload)
+        else:
+            summary = result["summary"]
+            print(f"작품: {result['title']}")
+            print(f"폴더: {result['outputPath']}")
+            print(
+                f"회차 {summary['episodeFolders']} · 이미지 {summary['images']} · "
+                f"문제 {summary['issueCount']} · {result['durationMs']}ms"
+            )
+            for issue in result["issues"]:
+                target = f" ({issue['path']})" if issue["path"] else ""
+                print(f"- {issue['kind']}: {issue['detail']}{target}")
+            if summary["issuesTruncated"]:
+                print("- 나머지 문제는 --issue-limit 값을 늘려 확인하세요.")
+        return 0 if result["healthy"] else 2
     if command == "set-output":
         resolved = str(Path(args.path).expanduser().resolve())
         Path(resolved).mkdir(parents=True, exist_ok=True)
