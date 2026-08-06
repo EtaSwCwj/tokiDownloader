@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import json
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,15 +10,22 @@ from unittest.mock import patch
 import toki_core
 from toki_core import (
     DownloadJob,
+    DownloadRun,
     build_downloader_args,
     build_work_key,
     count_jobs,
+    count_runs,
     delete_job_record,
     delete_job_records,
+    hydrate_job_metadata,
     load_job_by_work_key,
     load_jobs_page,
+    load_run,
+    load_runs_page,
     normalize_range,
     save_jobs,
+    save_runs,
+    update_job_note,
     update_job_markers,
 )
 
@@ -95,6 +104,134 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(loaded.job_id, "latest")
         self.assertEqual(loaded.title, "최신 제목")
 
+    def test_same_work_keeps_multiple_execution_runs(self) -> None:
+        first = DownloadJob(
+            job_id="run-first",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            state="완료",
+        )
+        second = DownloadJob(
+            job_id="run-second",
+            url="https://newtoki99.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            state="오류",
+        )
+        save_jobs([first])
+        save_runs([DownloadRun.from_job(first)])
+        save_jobs([second])
+        save_runs([DownloadRun.from_job(second)])
+        self.assertEqual(count_jobs(), 1)
+        self.assertEqual(count_runs(first.work_key), 2)
+        self.assertEqual(
+            {run.run_id for run in load_runs_page(first.work_key)},
+            {"run-first", "run-second"},
+        )
+
+    def test_existing_job_database_backfills_one_legacy_run(self) -> None:
+        job = DownloadJob(
+            job_id="legacy-run",
+            url="https://newtoki1.org/manhwa/34361",
+            output_dir=r"C:\Manga",
+            state="완료",
+            progress=100,
+        )
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE jobs (
+                    job_id TEXT PRIMARY KEY, work_key TEXT NOT NULL, title TEXT NOT NULL,
+                    state TEXT NOT NULL, progress INTEGER NOT NULL, url TEXT NOT NULL,
+                    pinned INTEGER NOT NULL, tag_color TEXT NOT NULL, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL, payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job.job_id,
+                    job.work_key,
+                    job.title,
+                    job.state,
+                    job.progress,
+                    job.url,
+                    0,
+                    "",
+                    job.created_at,
+                    job.created_at,
+                    json.dumps(job.to_dict(), ensure_ascii=False),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertEqual(count_runs(job.work_key), 1)
+        migrated = load_run(job.job_id)
+        self.assertIsNotNone(migrated)
+        self.assertEqual(migrated.state, "완료")
+        self.assertEqual(migrated.progress, 100)
+
+    def test_run_updates_do_not_duplicate_and_pages_are_bounded(self) -> None:
+        work_key = "manatoki:7001"
+        runs = [
+            DownloadRun(run_id=f"run-{index}", work_key=work_key)
+            for index in range(15)
+        ]
+        save_runs(runs)
+        runs[0].state = "완료"
+        runs[0].progress = 100
+        save_runs([runs[0]])
+        self.assertEqual(count_runs(work_key), 15)
+        self.assertEqual(len(load_runs_page(work_key, limit=10, offset=0)), 10)
+        self.assertEqual(len(load_runs_page(work_key, limit=10, offset=10)), 5)
+        loaded = load_run("run-0")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.state, "완료")
+        self.assertEqual(loaded.progress, 100)
+
+    def test_user_note_persists_on_work_record(self) -> None:
+        job = DownloadJob(
+            job_id="noted",
+            url="https://newtoki1.org/manhwa/7002",
+            output_dir=r"C:\Manga",
+        )
+        save_jobs([job])
+        update_job_note(job.job_id, "다음에 10화부터 확인")
+        loaded = load_job_by_work_key(job.work_key)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.user_note, "다음에 10화부터 확인")
+
+    def test_existing_metadata_file_hydrates_work_fields(self) -> None:
+        output_folder = Path(self.temp_dir.name) / "hydrated-work"
+        output_folder.mkdir()
+        metadata_path = output_folder / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "author": "작가 A",
+                    "group": "그룹 B",
+                    "coverUrl": "https://example.test/cover.jpg",
+                    "coverFile": "cover.jpg",
+                    "source": {"site": "manatoki"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="hydrate",
+            url="https://newtoki1.org/manhwa/7003",
+            output_dir=self.temp_dir.name,
+            output_path=str(output_folder),
+        )
+        self.assertTrue(hydrate_job_metadata(job))
+        self.assertEqual(job.author, "작가 A")
+        self.assertEqual(job.group, "그룹 B")
+        self.assertEqual(job.site, "manatoki")
+        self.assertEqual(job.metadata_path, str(metadata_path.resolve()))
+
     def test_page_loading_is_bounded(self) -> None:
         jobs = [
             DownloadJob(
@@ -170,9 +307,11 @@ class JobRepositoryTests(unittest.TestCase):
             state="완료",
         )
         save_jobs([job])
+        save_runs([DownloadRun.from_job(job)])
         deleted = delete_job_record(job.job_id)
         self.assertEqual(deleted.job_id, job.job_id)
         self.assertEqual(count_jobs(), 0)
+        self.assertEqual(count_runs(job.work_key), 0)
         self.assertTrue(image.is_file())
 
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:

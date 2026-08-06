@@ -145,6 +145,11 @@ class DownloadJob:
     output_path: str = ""
     cover_url: str = ""
     cover_path: str = ""
+    author: str = ""
+    group: str = ""
+    site: str = ""
+    metadata_path: str = ""
+    user_note: str = ""
     pinned: bool = False
     tag_color: str = ""
     show_browser: bool = False
@@ -165,6 +170,48 @@ class DownloadJob:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class DownloadRun:
+    run_id: str
+    work_key: str
+    requested_start: int | None = None
+    requested_last: int | None = None
+    state: str = "대기"
+    process_pid: int = 0
+    discovered_episodes: int = 0
+    selected_episodes: int = 0
+    processed_episodes: int = 0
+    last_episode_number: int = 0
+    progress: int = 0
+    error: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    created_at: str = field(
+        default_factory=lambda: datetime.now().astimezone().isoformat(timespec="seconds")
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_job(cls, job: DownloadJob) -> "DownloadRun":
+        finished_at = job.created_at if job.state in {"완료", "오류", "중지됨"} else ""
+        return cls(
+            run_id=job.job_id,
+            work_key=job.work_key,
+            requested_start=job.start,
+            requested_last=job.last,
+            state=job.state,
+            selected_episodes=job.episode_total,
+            processed_episodes=job.episode_index,
+            last_episode_number=job.episode_number,
+            progress=job.progress,
+            error=job.error,
+            finished_at=finished_at,
+            created_at=job.created_at,
+        )
 
 
 def build_work_key(url: str) -> str:
@@ -200,6 +247,21 @@ def _connect_job_db() -> sqlite3.Connection:
             pinned INTEGER NOT NULL DEFAULT 0,
             tag_color TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runs (
+            run_id TEXT PRIMARY KEY,
+            work_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT '',
+            process_pid INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT '',
+            finished_at TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL,
             payload TEXT NOT NULL
         )
@@ -261,6 +323,36 @@ def _connect_job_db() -> sqlite3.Connection:
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_work_key ON jobs(work_key)"
         )
+        run_field_names = set(DownloadRun.__dataclass_fields__)
+        for job_id, payload in connection.execute(
+            "SELECT job_id, payload FROM jobs ORDER BY updated_at ASC, rowid ASC"
+        ).fetchall():
+            try:
+                data = json.loads(payload)
+                filtered = {key: value for key, value in data.items() if key in set(DownloadJob.__dataclass_fields__)}
+                legacy_run = DownloadRun.from_job(DownloadJob(**filtered))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            run_data = {key: value for key, value in legacy_run.to_dict().items() if key in run_field_names}
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO runs(
+                    run_id, work_key, state, process_pid, created_at,
+                    started_at, finished_at, updated_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    legacy_run.work_key,
+                    legacy_run.state,
+                    legacy_run.process_pid,
+                    legacy_run.created_at,
+                    legacy_run.started_at,
+                    legacy_run.finished_at,
+                    legacy_run.created_at,
+                    json.dumps(run_data, ensure_ascii=False),
+                ),
+            )
         connection.commit()
         _INITIALIZED_JOB_DBS.add(database_key)
     connection.execute(
@@ -280,6 +372,12 @@ def _connect_job_db() -> sqlite3.Connection:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_pinned_updated ON jobs(pinned DESC, updated_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runs_work_created ON runs(work_key, created_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runs_state_updated ON runs(state, updated_at DESC)"
     )
     return connection
 
@@ -330,6 +428,103 @@ def save_jobs(jobs: list[DownloadJob]) -> None:
             )
     finally:
         connection.close()
+
+
+def save_runs(runs: list[DownloadRun]) -> None:
+    if not runs:
+        return
+    updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    rows = [
+        (
+            run.run_id,
+            run.work_key,
+            run.state,
+            int(run.process_pid),
+            run.created_at,
+            run.started_at,
+            run.finished_at,
+            updated_at,
+            json.dumps(run.to_dict(), ensure_ascii=False),
+        )
+        for run in runs
+    ]
+    connection = _connect_job_db()
+    try:
+        with connection:
+            connection.executemany(
+                """
+                INSERT INTO runs(
+                    run_id, work_key, state, process_pid, created_at,
+                    started_at, finished_at, updated_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    work_key=excluded.work_key,
+                    state=excluded.state,
+                    process_pid=excluded.process_pid,
+                    started_at=excluded.started_at,
+                    finished_at=excluded.finished_at,
+                    updated_at=excluded.updated_at,
+                    payload=excluded.payload
+                """,
+                rows,
+            )
+    finally:
+        connection.close()
+
+
+def count_runs(work_key: str = "") -> int:
+    connection = _connect_job_db()
+    try:
+        if work_key:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM runs WHERE work_key = ?", (work_key,)
+                ).fetchone()[0]
+            )
+        return int(connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def load_run(run_id: str) -> DownloadRun | None:
+    connection = _connect_job_db()
+    try:
+        row = connection.execute(
+            "SELECT payload FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    return _decode_run(row[0]) if row else None
+
+
+def load_runs_page(
+    work_key: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[DownloadRun]:
+    connection = _connect_job_db()
+    try:
+        rows = connection.execute(
+            """
+            SELECT payload FROM runs
+            WHERE work_key = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ? OFFSET ?
+            """,
+            (work_key, max(1, min(1000, int(limit))), max(0, int(offset))),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [run for (payload,) in rows if (run := _decode_run(payload)) is not None]
+
+
+def _decode_run(payload: str) -> DownloadRun | None:
+    try:
+        data = json.loads(payload)
+        field_names = set(DownloadRun.__dataclass_fields__)
+        return DownloadRun(**{key: value for key, value in data.items() if key in field_names})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _job_filter_clause(query: str = "", state: str = "") -> tuple[str, list[Any]]:
@@ -432,6 +627,37 @@ def load_recent_jobs(limit: int = 500) -> list[DownloadJob]:
     return load_jobs_page(limit=limit, offset=0)
 
 
+def hydrate_job_metadata(job: DownloadJob) -> bool:
+    metadata_path = (
+        Path(job.metadata_path)
+        if job.metadata_path
+        else Path(job.output_path) / "metadata.json" if job.output_path else None
+    )
+    if metadata_path is None or not metadata_path.is_file():
+        return False
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    changed = False
+    source = metadata.get("source") or {}
+    values = {
+        "author": str(metadata.get("author") or ""),
+        "group": str(metadata.get("group") or ""),
+        "site": str(source.get("site") or ""),
+        "metadata_path": str(metadata_path.resolve()),
+        "cover_url": str(metadata.get("coverUrl") or job.cover_url),
+    }
+    cover_file = str(metadata.get("coverFile") or "")
+    if cover_file and not job.cover_path:
+        values["cover_path"] = str((metadata_path.parent / cover_file).resolve())
+    for attribute, value in values.items():
+        if value and getattr(job, attribute) != value:
+            setattr(job, attribute, value)
+            changed = True
+    return changed
+
+
 def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[str]:
     args = [str(DOWNLOADER_PATH), "-url", job.url, "-output", job.output_dir]
     if job.start is not None:
@@ -476,6 +702,15 @@ def update_job_markers(
     return job
 
 
+def update_job_note(job_id: str, text: str) -> DownloadJob:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    job.user_note = str(text or "").strip()
+    save_jobs([job])
+    return job
+
+
 def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:
@@ -485,6 +720,7 @@ def delete_job_record(job_id: str) -> DownloadJob:
     connection = _connect_job_db()
     try:
         with connection:
+            connection.execute("DELETE FROM runs WHERE work_key = ?", (job.work_key,))
             connection.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
     finally:
         connection.close()
@@ -511,6 +747,13 @@ def delete_job_records(states: list[str]) -> list[DownloadJob]:
             filtered = {key: value for key, value in data.items() if key in field_names}
             jobs.append(DownloadJob(**filtered))
         with connection:
+            work_keys = [job.work_key for job in jobs]
+            if work_keys:
+                work_placeholders = ",".join("?" for _ in work_keys)
+                connection.execute(
+                    f"DELETE FROM runs WHERE work_key IN ({work_placeholders})",
+                    work_keys,
+                )
             connection.execute(
                 f"DELETE FROM jobs WHERE state IN ({placeholders})",
                 clean_states,

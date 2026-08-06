@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import traceback
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +24,22 @@ from toki_core import (
     build_downloader_args,
     clear_log_file,
     find_node,
+    hydrate_job_metadata,
     count_jobs,
+    count_runs,
     delete_job_record,
     delete_job_records,
     load_config,
+    load_job_by_id,
     load_jobs_page,
+    load_run,
+    load_runs_page,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
     save_config,
+    save_jobs,
+    update_job_note,
 )
 from toki_selftest import run_self_test
 
@@ -170,12 +178,38 @@ def run_gui_self_test_probe() -> dict[str, Any]:
         screenshot = control_request({"action": "screenshot", "path": str(screenshot_path)})
         if not screenshot_path.is_file() or screenshot_path.stat().st_size <= 0:
             raise ControlError("GUI 자체 점검 화면 캡처 파일이 생성되지 않았습니다.")
+        detail_probe: dict[str, Any] = {"skipped": True, "reason": "저장된 작품 없음"}
+        jobs = status.get("jobs") or []
+        if jobs:
+            job_id = str(jobs[0]["job_id"])
+            job_info = control_request({"action": "job_info", "jobId": job_id})
+            runs = control_request(
+                {"action": "list_runs", "jobId": job_id, "limit": 5, "offset": 0}
+            )
+            shown = control_request({"action": "show_details", "jobId": job_id})
+            detail_path = ROOT_DIR / "logs" / "self-test-work-details.png"
+            detail_shot = control_request(
+                {"action": "screenshot", "path": str(detail_path)}
+            )
+            closed = control_request({"action": "close_details"})
+            if not detail_path.is_file() or detail_path.stat().st_size <= 0:
+                raise ControlError("작품 상세창 자체 점검 캡처 파일이 생성되지 않았습니다.")
+            detail_probe = {
+                "skipped": False,
+                "jobId": job_id,
+                "runCount": job_info.get("runCount", 0),
+                "returnedRuns": len(runs.get("runs") or []),
+                "shown": shown.get("shown"),
+                "screenshotPath": detail_shot.get("path"),
+                "closed": closed.get("closed"),
+            }
         return {
-            "detail": "GUI IPC 상태 조회와 화면 캡처 통과",
+            "detail": "GUI IPC, 작품 상세 이력, 화면 캡처 통과",
             "wasRunning": was_running,
             "ping": ping,
             "loadedJobCount": status.get("loadedJobCount", 0),
             "screenshotPath": screenshot.get("path"),
+            "workDetails": detail_probe,
         }
     finally:
         if not was_running and gui_is_running():
@@ -234,6 +268,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="같은 검색·필터·정렬을 실행 중인 GUI 목록에도 적용",
     )
     list_jobs.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    info = subparsers.add_parser("info", help="작품 메타데이터와 실행 이력 요약 조회")
+    info.add_argument("--job", required=True, help="작업 ID")
+    info.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    runs = subparsers.add_parser("runs", help="작품의 실행 이력 페이지 조회")
+    runs.add_argument("--job", required=True, help="작업 ID")
+    runs.add_argument("--limit", type=int, default=100, help="가져올 실행 수(최대 1000)")
+    runs.add_argument("--offset", type=int, default=0, help="건너뛸 실행 수")
+    runs.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    run_info = subparsers.add_parser("run-info", help="실행 1건의 상세 정보 조회")
+    run_info.add_argument("--run", required=True, help="실행 ID")
+    run_info.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    set_note = subparsers.add_parser("set-note", help="작품 사용자 메모 저장")
+    set_note.add_argument("--job", required=True, help="작업 ID")
+    set_note.add_argument("--text", required=True, help="저장할 메모(빈 문자열이면 삭제)")
+
+    open_source = subparsers.add_parser("open-source", help="작품 원본 페이지 열기")
+    open_source.add_argument("--job", required=True, help="작업 ID")
+
+    details = subparsers.add_parser("details", help="GUI 작품 정보 및 실행 이력 창 표시")
+    details_target = details.add_mutually_exclusive_group(required=True)
+    details_target.add_argument("--job", help="작업 ID")
+    details_target.add_argument("--close", action="store_true", help="열린 상세창 닫기")
 
     pin = subparsers.add_parser("pin", help="작품 고정 상태 변경")
     pin.add_argument("--job", required=True, help="작업 ID")
@@ -411,6 +471,106 @@ def run_cli(args: argparse.Namespace) -> int:
             for job in result["jobs"]:
                 print(f"{job['job_id']} | {job['state']} | {job['title']}")
             print(f"표시 {len(result['jobs'])} / 전체 {result['total']}")
+        return 0
+    if command == "info":
+        if gui_is_running():
+            result = control_request({"action": "job_info", "jobId": args.job})
+        else:
+            job = load_job_by_id(args.job)
+            if job is None:
+                raise ControlError(f"작업 기록을 찾을 수 없습니다: {args.job}")
+            if hydrate_job_metadata(job):
+                save_jobs([job])
+            result = {"job": job.to_dict(), "runCount": count_runs(job.work_key)}
+        if args.json:
+            print_json(result)
+        else:
+            job_data = result["job"]
+            print(f"작품: {job_data['title']}")
+            print(f"작업 ID: {job_data['job_id']} | 작품 키: {job_data['work_key']}")
+            print(f"상태: {job_data['state']} | 실행 이력: {result['runCount']}건")
+            print(f"작가: {job_data.get('author') or '-'} | 그룹: {job_data.get('group') or '-'}")
+            print(f"저장 폴더: {job_data.get('output_path') or job_data['output_dir']}")
+            print(f"메모: {job_data.get('user_note') or '-'}")
+        return 0
+    if command == "runs":
+        if gui_is_running():
+            result = control_request(
+                {
+                    "action": "list_runs",
+                    "jobId": args.job,
+                    "limit": args.limit,
+                    "offset": args.offset,
+                }
+            )
+        else:
+            job = load_job_by_id(args.job)
+            if job is None:
+                raise ControlError(f"작업 기록을 찾을 수 없습니다: {args.job}")
+            limit = max(1, min(1000, args.limit))
+            offset = max(0, args.offset)
+            result = {
+                "jobId": job.job_id,
+                "workKey": job.work_key,
+                "total": count_runs(job.work_key),
+                "limit": limit,
+                "offset": offset,
+                "runs": [run.to_dict() for run in load_runs_page(job.work_key, limit, offset)],
+            }
+        if args.json:
+            print_json(result)
+        else:
+            for run in result["runs"]:
+                requested = f"{run.get('requested_start') or '처음'}~{run.get('requested_last') or '끝'}"
+                print(
+                    f"{run['run_id']} | {run['state']} | {run['progress']}% | "
+                    f"범위 {requested} | {run['created_at']}"
+                )
+            print(f"표시 {len(result['runs'])} / 전체 {result['total']}")
+        return 0
+    if command == "run-info":
+        run = load_run(args.run)
+        if run is None:
+            raise ControlError(f"실행 기록을 찾을 수 없습니다: {args.run}")
+        result = run.to_dict()
+        if args.json:
+            print_json(result)
+        else:
+            print(f"실행 ID: {run.run_id} | 상태: {run.state} | 진행률: {run.progress}%")
+            print(f"작품 키: {run.work_key} | PID: {run.process_pid or '-'}")
+            print(
+                f"발견/선택/처리: {run.discovered_episodes}/"
+                f"{run.selected_episodes}/{run.processed_episodes}"
+            )
+            print(f"시작: {run.started_at or '-'} | 종료: {run.finished_at or '-'}")
+            if run.error:
+                print(f"오류: {run.error}")
+        return 0
+    if command == "set-note":
+        if gui_is_running():
+            result = control_request(
+                {"action": "set_note", "jobId": args.job, "text": args.text}
+            )
+        else:
+            result = update_job_note(args.job, args.text).to_dict()
+        print_json({"ok": True, "job": result})
+        return 0
+    if command == "open-source":
+        if gui_is_running():
+            result = control_request({"action": "open_source", "jobId": args.job})
+            print(result["opened"])
+        else:
+            job = load_job_by_id(args.job)
+            if job is None:
+                raise ControlError(f"작업 기록을 찾을 수 없습니다: {args.job}")
+            if not webbrowser.open(job.url):
+                raise ControlError("기본 브라우저에서 작품 페이지를 열지 못했습니다.")
+            print(job.url)
+        return 0
+    if command == "details":
+        ensure_gui_running()
+        action = "close_details" if args.close else "show_details"
+        print_json(control_request({"action": action, "jobId": args.job}))
         return 0
     if command == "pin":
         if gui_is_running():

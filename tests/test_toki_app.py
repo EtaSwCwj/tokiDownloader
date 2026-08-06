@@ -56,6 +56,30 @@ class CliParserTests(unittest.TestCase):
         refresh = build_parser().parse_args(["refresh-list"])
         self.assertEqual(refresh.command, "refresh-list")
 
+    def test_work_and_run_detail_arguments(self) -> None:
+        info = build_parser().parse_args(["info", "--job", "job-1", "--json"])
+        self.assertEqual(info.job, "job-1")
+        self.assertTrue(info.json)
+        runs = build_parser().parse_args(
+            ["runs", "--job", "job-1", "--limit", "25", "--offset", "50", "--json"]
+        )
+        self.assertEqual(runs.limit, 25)
+        self.assertEqual(runs.offset, 50)
+        run_info = build_parser().parse_args(["run-info", "--run", "run-1"])
+        self.assertEqual(run_info.run, "run-1")
+
+    def test_note_and_open_source_arguments(self) -> None:
+        note = build_parser().parse_args(
+            ["set-note", "--job", "job-1", "--text", "확인 필요"]
+        )
+        self.assertEqual(note.text, "확인 필요")
+        source = build_parser().parse_args(["open-source", "--job", "job-1"])
+        self.assertEqual(source.job, "job-1")
+        details = build_parser().parse_args(["details", "--job", "job-1"])
+        self.assertEqual(details.job, "job-1")
+        close_details = build_parser().parse_args(["details", "--close"])
+        self.assertTrue(close_details.close)
+
 
 if __name__ == "__main__":
     unittest.main()

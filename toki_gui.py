@@ -8,20 +8,23 @@ import subprocess
 import sys
 import uuid
 from collections import OrderedDict, deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QByteArray, QAbstractListModel, QModelIndex, QPoint, QProcess, QRect, QSize, Qt, QTimer
-from PyQt6.QtGui import QAction, QColor, QCloseEvent, QFont, QPainter, QPen, QPixmap
+from PyQt6.QtCore import QByteArray, QAbstractListModel, QModelIndex, QPoint, QProcess, QRect, QSize, Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QFont, QPainter, QPen, QPixmap
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -36,6 +39,8 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QStyle,
     QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetItem,
     QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
@@ -49,24 +54,31 @@ from toki_core import (
     ROOT_DIR,
     TAG_COLORS,
     DownloadJob,
+    DownloadRun,
     append_log,
     build_work_key,
     build_downloader_args,
     clear_log_file,
     count_jobs,
+    count_runs,
     delete_job_record,
     delete_job_records,
     find_node,
+    hydrate_job_metadata,
     load_config,
     load_job_by_id,
     load_job_by_work_key,
     load_jobs_page,
+    load_run,
+    load_runs_page,
     normalize_range,
     open_in_explorer,
     read_log_tail,
     retry_job_parameters,
     save_config,
     save_jobs,
+    save_runs,
+    update_job_note,
     update_job_markers,
     validate_url,
 )
@@ -275,6 +287,194 @@ class JobItemDelegate(QStyledItemDelegate):
         return scaled
 
 
+class WorkDetailDialog(QDialog):
+    page_size = 100
+
+    def __init__(self, owner: "MainWindow", job: DownloadJob) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.job = job
+        self.offset = 0
+        self.setWindowTitle("작품 정보 및 실행 이력")
+        self.setMinimumSize(820, 620)
+        self.resize(920, 700)
+
+        root = QVBoxLayout(self)
+        overview = QHBoxLayout()
+        self.cover_label = QLabel("대표 이미지 없음")
+        self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cover_label.setFixedSize(150, 205)
+        self.cover_label.setStyleSheet("border: 1px solid #cfd6df; background: #eef1f4;")
+        overview.addWidget(self.cover_label)
+
+        metadata = QGridLayout()
+        self.title_label = QLabel()
+        self.title_label.setWordWrap(True)
+        title_font = self.title_label.font()
+        title_font.setBold(True)
+        title_font.setPointSize(title_font.pointSize() + 2)
+        self.title_label.setFont(title_font)
+        metadata.addWidget(self.title_label, 0, 0, 1, 2)
+        self.metadata_labels: dict[str, QLabel] = {}
+        for row, (key, label) in enumerate(
+            (
+                ("author", "작가"),
+                ("group", "그룹"),
+                ("site", "사이트"),
+                ("state", "현재 상태"),
+                ("work_key", "작품 키"),
+                ("output", "저장 폴더"),
+                ("metadata", "메타데이터"),
+            ),
+            start=1,
+        ):
+            metadata.addWidget(QLabel(f"{label}:"), row, 0)
+            value = QLabel()
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            value.setWordWrap(True)
+            self.metadata_labels[key] = value
+            metadata.addWidget(value, row, 1)
+        overview.addLayout(metadata, 1)
+        root.addLayout(overview)
+
+        action_row = QHBoxLayout()
+        open_folder = QPushButton("다운로드 폴더 열기")
+        open_folder.clicked.connect(lambda: owner.open_output_folder(self.job.job_id))
+        open_source = QPushButton("원본 페이지 열기")
+        open_source.clicked.connect(lambda: owner.open_job_source(self.job.job_id))
+        action_row.addWidget(open_folder)
+        action_row.addWidget(open_source)
+        action_row.addStretch(1)
+        root.addLayout(action_row)
+
+        root.addWidget(QLabel("사용자 메모"))
+        note_row = QHBoxLayout()
+        self.note_edit = QPlainTextEdit()
+        self.note_edit.setMaximumHeight(80)
+        note_row.addWidget(self.note_edit, 1)
+        save_note = QPushButton("메모 저장")
+        save_note.clicked.connect(self._save_note)
+        note_row.addWidget(save_note)
+        root.addLayout(note_row)
+
+        history_header = QHBoxLayout()
+        history_header.addWidget(QLabel("실행 이력"))
+        history_header.addStretch(1)
+        self.page_label = QLabel()
+        history_header.addWidget(self.page_label)
+        root.addLayout(history_header)
+
+        columns = ("실행 시각", "상태", "요청 범위", "발견", "선택", "처리", "진행률", "PID")
+        self.run_table = QTableWidget(0, len(columns))
+        self.run_table.setHorizontalHeaderLabels(columns)
+        self.run_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.run_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.run_table.verticalHeader().setVisible(False)
+        header = self.run_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        root.addWidget(self.run_table, 1)
+
+        self.run_detail_label = QLabel("실행을 선택하면 오류와 시작·종료 시각이 표시됩니다.")
+        self.run_detail_label.setWordWrap(True)
+        self.run_detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root.addWidget(self.run_detail_label)
+        self.run_table.itemSelectionChanged.connect(self._show_selected_run)
+
+        paging = QHBoxLayout()
+        self.previous_button = QPushButton("이전 100건")
+        self.previous_button.clicked.connect(self._previous_page)
+        self.next_button = QPushButton("다음 100건")
+        self.next_button.clicked.connect(self._next_page)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.close)
+        paging.addWidget(self.previous_button)
+        paging.addWidget(self.next_button)
+        paging.addStretch(1)
+        paging.addWidget(close_button)
+        root.addLayout(paging)
+
+        self.refresh()
+
+    def refresh(self) -> None:
+        current = self.owner.selected_job(self.job.job_id)
+        if current:
+            self.job = current
+        job = self.job
+        self.title_label.setText(job.title)
+        self.metadata_labels["author"].setText(job.author or "-")
+        self.metadata_labels["group"].setText(job.group or "-")
+        self.metadata_labels["site"].setText(job.site or "-")
+        self.metadata_labels["state"].setText(job.state)
+        self.metadata_labels["work_key"].setText(job.work_key)
+        self.metadata_labels["output"].setText(job.output_path or job.output_dir)
+        self.metadata_labels["metadata"].setText(job.metadata_path or "-")
+        self.note_edit.setPlainText(job.user_note)
+        cover = QPixmap(job.cover_path) if job.cover_path else QPixmap()
+        if not cover.isNull():
+            self.cover_label.setPixmap(
+                cover.scaled(
+                    self.cover_label.size() - QSize(8, 8),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        self._load_runs()
+
+    def _load_runs(self) -> None:
+        result = self.owner.list_runs_snapshot(self.job.job_id, self.page_size, self.offset)
+        runs = result["runs"]
+        self.run_table.setRowCount(len(runs))
+        for row, run in enumerate(runs):
+            requested = f"{run.get('requested_start') or '처음'} ~ {run.get('requested_last') or '끝'}"
+            values = (
+                str(run.get("created_at") or "").replace("T", " "),
+                str(run.get("state") or ""),
+                requested,
+                str(run.get("discovered_episodes") or 0),
+                str(run.get("selected_episodes") or 0),
+                str(run.get("processed_episodes") or 0),
+                f"{int(run.get('progress') or 0)}%",
+                str(run.get("process_pid") or "-"),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, run)
+                self.run_table.setItem(row, column, item)
+        total = int(result["total"])
+        first = self.offset + 1 if runs else 0
+        last = self.offset + len(runs)
+        self.page_label.setText(f"{first}-{last} / {total}건")
+        self.previous_button.setEnabled(self.offset > 0)
+        self.next_button.setEnabled(self.offset + len(runs) < total)
+
+    def _previous_page(self) -> None:
+        self.offset = max(0, self.offset - self.page_size)
+        self._load_runs()
+
+    def _next_page(self) -> None:
+        self.offset += self.page_size
+        self._load_runs()
+
+    def _show_selected_run(self) -> None:
+        items = self.run_table.selectedItems()
+        if not items:
+            return
+        run = items[0].data(Qt.ItemDataRole.UserRole) or {}
+        detail = (
+            f"실행 ID {run.get('run_id')} | 시작 {run.get('started_at') or '-'} | "
+            f"종료 {run.get('finished_at') or '-'}"
+        )
+        if run.get("error"):
+            detail += f" | 오류: {run['error']}"
+        self.run_detail_label.setText(detail)
+
+    def _save_note(self) -> None:
+        self.owner.set_job_note(self.job.job_id, self.note_edit.toPlainText())
+        self.owner.statusBar().showMessage("작품 메모를 저장했습니다.", 2500)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -295,6 +495,7 @@ class MainWindow(QMainWindow):
         self.history_filter_timer.timeout.connect(self.apply_history_filters)
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_job: DownloadJob | None = None
+        self.active_run: DownloadRun | None = None
         self.process: QProcess | None = None
         self.self_test_process: QProcess | None = None
         self.self_test_stdout = ""
@@ -306,6 +507,7 @@ class MainWindow(QMainWindow):
         self.stderr_buffer = ""
         self.control_sockets: set[Any] = set()
         self.active_context_menu: QMenu | None = None
+        self.active_detail_dialog: WorkDetailDialog | None = None
         self.dirty_job_ids: set[str] = set()
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
@@ -374,6 +576,10 @@ class MainWindow(QMainWindow):
         self.open_folder_action.setShortcut("Ctrl+O")
         self.open_folder_action.triggered.connect(self.open_output_folder)
 
+        self.details_action = QAction("작품 정보 및 실행 이력", self)
+        self.details_action.setShortcut("Ctrl+I")
+        self.details_action.triggered.connect(self.show_job_details)
+
         self.clear_log_action = QAction("로그 지우기", self)
         self.clear_log_action.triggered.connect(self.clear_logs)
 
@@ -404,6 +610,7 @@ class MainWindow(QMainWindow):
 
         tools_menu = self.menuBar().addMenu("도구")
         tools_menu.addAction(self.open_folder_action)
+        tools_menu.addAction(self.details_action)
         tools_menu.addAction(self.refresh_list_action)
         tools_menu.addAction(self.cleanup_records_action)
         tools_menu.addSeparator()
@@ -588,15 +795,22 @@ class MainWindow(QMainWindow):
             """
             QWidget { color: #20262e; }
             QMainWindow { background: #f3f5f7; color: #20262e; }
+            QDialog { background: #f3f5f7; color: #20262e; }
             QMenuBar { background: #ffffff; color: #20262e; border-bottom: 1px solid #d9dee5; }
             QMenuBar::item:selected { background: #e9f1ff; }
             QMenu { background: #ffffff; color: #20262e; border: 1px solid #cfd6df; }
             QMenu::item:selected { background: #e9f1ff; }
             #inputBox { background: #ffffff; border: 1px solid #d8dde5; border-radius: 5px; }
-            QLineEdit, QSpinBox, QPlainTextEdit, QListView {
+            QLineEdit, QSpinBox, QPlainTextEdit, QListView, QTableWidget {
                 background: #ffffff; color: #20262e; border: 1px solid #cfd6df; border-radius: 4px;
                 padding: 5px; selection-background-color: #2f7de1;
                 selection-color: #ffffff;
+            }
+            QTableWidget { gridline-color: #d8dde5; padding: 0; }
+            QHeaderView::section {
+                background: #e9edf2; color: #20262e; border: 0;
+                border-right: 1px solid #cfd6df; border-bottom: 1px solid #cfd6df;
+                padding: 5px; font-weight: 700;
             }
             QPushButton { min-height: 28px; padding: 0 12px; border: 1px solid #c9d0d9;
                 border-radius: 4px; background: #ffffff; color: #20262e; }
@@ -675,8 +889,17 @@ class MainWindow(QMainWindow):
             output_path=existing.output_path if existing else "",
             cover_url=existing.cover_url if existing else "",
             cover_path=existing.cover_path if existing else "",
+            author=existing.author if existing else "",
+            group=existing.group if existing else "",
+            site=existing.site if existing else "",
+            metadata_path=existing.metadata_path if existing else "",
+            user_note=existing.user_note if existing else "",
+            pinned=existing.pinned if existing else False,
+            tag_color=existing.tag_color if existing else "",
             show_browser=show_browser,
         )
+        run = DownloadRun.from_job(job)
+        save_runs([run])
         if existing:
             self.jobs.pop(existing.job_id, None)
         self.jobs[job.job_id] = job
@@ -706,6 +929,7 @@ class MainWindow(QMainWindow):
 
     def _restore_job_history(self) -> None:
         recovered: list[DownloadJob] = []
+        metadata_updates: list[DownloadJob] = []
         self.history_all_total = count_jobs()
         self.history_total = count_jobs(self.history_query, self.history_state)
         page = load_jobs_page(
@@ -716,6 +940,8 @@ class MainWindow(QMainWindow):
             self.history_sort,
         )
         for job in page:
+            if hydrate_job_metadata(job):
+                metadata_updates.append(job)
             if job.state in {"대기", "실행 중"}:
                 job.state = "중지됨"
                 job.error = job.error or "이전 GUI가 종료되어 작업이 중단되었습니다."
@@ -725,7 +951,17 @@ class MainWindow(QMainWindow):
         self.task_model.append_jobs(page)
         self.history_loaded = len(page)
         if recovered:
-            save_jobs(recovered)
+            recovered_runs: list[DownloadRun] = []
+            for job in recovered:
+                run = load_run(job.job_id) or DownloadRun.from_job(job)
+                run.state = job.state
+                run.error = job.error
+                run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+                recovered_runs.append(run)
+            save_runs(recovered_runs)
+        changed_jobs = {job.job_id: job for job in [*metadata_updates, *recovered]}
+        if changed_jobs:
+            save_jobs(list(changed_jobs.values()))
         if self.task_model.rowCount():
             self.task_list.setCurrentIndex(self.task_model.index(0, 0))
             self.task_list.scrollToTop()
@@ -912,6 +1148,7 @@ class MainWindow(QMainWindow):
 
         job = self.pending_jobs.popleft()
         self.active_job = job
+        self.active_run = load_run(job.job_id) or DownloadRun.from_job(job)
         self.cancel_requested = False
         job.state = "실행 중"
         job.error = ""
@@ -926,16 +1163,25 @@ class MainWindow(QMainWindow):
         process.setArguments(build_downloader_args(job, json_events=True))
         process.readyReadStandardOutput.connect(self._read_stdout)
         process.readyReadStandardError.connect(self._read_stderr)
-        process.started.connect(
-            lambda: self.log(
-                f"작업 시작 PID={int(process.processId())}: {job.url}", job_id=job.job_id
-            )
-        )
+        process.started.connect(self._process_started)
         process.errorOccurred.connect(
             lambda error: self.log(f"프로세스 오류: {error}", "ERROR", job.job_id)
         )
         process.finished.connect(self._process_finished)
         process.start()
+
+    def _process_started(self) -> None:
+        if not self.process or not self.active_job or not self.active_run:
+            return
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        self.active_run.state = "실행 중"
+        self.active_run.process_pid = int(self.process.processId())
+        self.active_run.started_at = now
+        save_runs([self.active_run])
+        self.log(
+            f"작업 시작 PID={self.active_run.process_pid}: {self.active_job.url}",
+            job_id=self.active_job.job_id,
+        )
 
     def _consume_lines(self, text: str, is_stderr: bool) -> None:
         buffer_name = "stderr_buffer" if is_stderr else "stdout_buffer"
@@ -978,6 +1224,11 @@ class MainWindow(QMainWindow):
             job.output_path = str(event.get("outputPath") or "")
             job.cover_url = str(metadata.get("coverUrl") or "")
             job.cover_path = str(event.get("coverPath") or "")
+            job.author = str(metadata.get("author") or "")
+            job.group = str(metadata.get("group") or "")
+            source = metadata.get("source") or {}
+            job.site = str(source.get("site") or "")
+            job.metadata_path = str(Path(job.output_path) / "metadata.json") if job.output_path else ""
         elif event_name == "queue_ready":
             job.episode_total = int(event.get("selectedEpisodes") or 0)
         elif event_name == "episode_started":
@@ -1007,6 +1258,22 @@ class MainWindow(QMainWindow):
                 job.progress = min(99, int((job.episode_index / job.episode_total) * 100))
         if event_name == "completed":
             job.progress = 100
+        run = self.active_run
+        if run:
+            run.state = job.state
+            run.progress = job.progress
+            run.error = job.error
+            if event_name == "queue_ready":
+                run.discovered_episodes = int(event.get("totalEpisodes") or 0)
+                run.selected_episodes = int(event.get("selectedEpisodes") or 0)
+            elif event_name in {"episode_started", "episode_completed"}:
+                run.processed_episodes = int(event.get("index") or run.processed_episodes)
+                run.last_episode_number = int(event.get("number") or job.episode_number)
+            if event_name in {
+                "work_metadata", "queue_ready", "episode_started",
+                "episode_completed", "completed", "error",
+            }:
+                save_runs([run])
         self._update_job_card(job)
 
     def _process_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
@@ -1030,9 +1297,16 @@ class MainWindow(QMainWindow):
                     job.error = f"프로세스 종료 코드 {exit_code}"
             self.log(f"작업 종료: {job.state} (code={exit_code})", job_id=job.job_id)
             self._update_job_card(job)
+            if self.active_run:
+                self.active_run.state = job.state
+                self.active_run.progress = job.progress
+                self.active_run.error = job.error
+                self.active_run.finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+                save_runs([self.active_run])
 
         self.process = None
         self.active_job = None
+        self.active_run = None
         self.cancel_requested = False
         QTimer.singleShot(250, self._start_next_job)
 
@@ -1056,7 +1330,7 @@ class MainWindow(QMainWindow):
 
     def selected_job(self, job_id: str | None = None) -> DownloadJob | None:
         if job_id:
-            return self.jobs.get(job_id)
+            return self.jobs.get(job_id) or load_job_by_id(job_id)
         index = self.task_list.currentIndex()
         if index.isValid():
             return self.task_model.job_at(index.row())
@@ -1102,6 +1376,37 @@ class MainWindow(QMainWindow):
         self.log(f"폴더 열기: {target}")
         return target
 
+    def open_job_source(self, job_id: str | None = None) -> str:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("원본 페이지를 열 작품을 선택해주세요.")
+        if not QDesktopServices.openUrl(QUrl(job.url)):
+            raise RuntimeError("기본 브라우저에서 작품 페이지를 열지 못했습니다.")
+        self.log(f"원본 페이지 열기: {job.url}", job_id=job.job_id)
+        return job.url
+
+    def show_job_details(self, job_id: str | None = None) -> bool:
+        job = self.selected_job(job_id if isinstance(job_id, str) else None)
+        if not job:
+            self.statusBar().showMessage("상세 정보를 볼 작품을 선택해주세요.", 2500)
+            return False
+        if self.active_detail_dialog:
+            self.active_detail_dialog.close()
+        dialog = WorkDetailDialog(self, job)
+        self.active_detail_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(lambda: setattr(self, "active_detail_dialog", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_job_details(self) -> bool:
+        if not self.active_detail_dialog:
+            return False
+        self.active_detail_dialog.close()
+        return True
+
     def open_job_index_folder(self, index: QModelIndex) -> None:
         job = self.task_model.job_at(index.row())
         if not job or not job.output_path:
@@ -1137,7 +1442,9 @@ class MainWindow(QMainWindow):
 
     def _popup_job_context_menu(self, job: DownloadJob, global_position: QPoint) -> None:
         menu = QMenu(self)
+        menu.addAction("작품 정보 및 실행 이력", lambda: self.show_job_details(job.job_id))
         menu.addAction("다운로드 폴더 열기", lambda: self.open_output_folder(job.job_id))
+        menu.addAction("원본 페이지 열기", lambda: self.open_job_source(job.job_id))
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
         menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
@@ -1215,6 +1522,41 @@ class MainWindow(QMainWindow):
             updated = current
         self.task_model.update_job(updated)
         self.log(f"작품 색상 태그 변경: {color}", job_id=job_id)
+        return updated.to_dict()
+
+    def job_info_snapshot(self, job_id: str) -> dict[str, Any]:
+        self._flush_job_history()
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+        return {"job": job.to_dict(), "runCount": count_runs(job.work_key)}
+
+    def list_runs_snapshot(
+        self, job_id: str, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+        clean_limit = max(1, min(1000, int(limit)))
+        clean_offset = max(0, int(offset))
+        runs = load_runs_page(job.work_key, clean_limit, clean_offset)
+        return {
+            "jobId": job.job_id,
+            "workKey": job.work_key,
+            "total": count_runs(job.work_key),
+            "limit": clean_limit,
+            "offset": clean_offset,
+            "runs": [run.to_dict() for run in runs],
+        }
+
+    def set_job_note(self, job_id: str, text: str) -> dict[str, Any]:
+        updated = update_job_note(job_id, text)
+        current = self.jobs.get(job_id)
+        if current:
+            current.user_note = updated.user_note
+            updated = current
+        self.task_model.update_job(updated)
+        self.log("작품 메모 변경", job_id=job_id)
         return updated.to_dict()
 
     def confirm_remove_job_record(self, job_id: str) -> None:
@@ -1304,7 +1646,10 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        screenshot = self.grab()
+        if self.active_detail_dialog and self.active_detail_dialog.isVisible():
+            screenshot = self.active_detail_dialog.grab()
+        else:
+            screenshot = self.grab()
         if self.active_context_menu and self.active_context_menu.isVisible():
             QApplication.processEvents()
             menu_image = self.active_context_menu.grab()
@@ -1554,6 +1899,12 @@ class MainWindow(QMainWindow):
             return {"outputDir": self.set_output_folder(str(request.get("path") or ""))}
         if action == "open_folder":
             return {"opened": self.open_output_folder(request.get("jobId"))}
+        if action == "open_source":
+            return {"opened": self.open_job_source(request.get("jobId"))}
+        if action == "show_details":
+            return {"shown": self.show_job_details(request.get("jobId"))}
+        if action == "close_details":
+            return {"closed": self.close_job_details()}
         if action == "copy_link":
             return {"copied": self.copy_job_link(request.get("jobId"))}
         if action == "copy_title":
@@ -1572,6 +1923,18 @@ class MainWindow(QMainWindow):
             limit = max(1, min(1000, int(request.get("limit") or 200)))
             offset = max(0, int(request.get("offset") or 0))
             return self.list_jobs_snapshot(query, state, sort, limit, offset)
+        if action == "job_info":
+            return self.job_info_snapshot(str(request.get("jobId") or ""))
+        if action == "list_runs":
+            return self.list_runs_snapshot(
+                str(request.get("jobId") or ""),
+                int(request.get("limit") or 100),
+                int(request.get("offset") or 0),
+            )
+        if action == "set_note":
+            return self.set_job_note(
+                str(request.get("jobId") or ""), str(request.get("text") or "")
+            )
         if action == "set_list_filter":
             return self.set_history_filters(
                 str(request.get("query") or ""),
