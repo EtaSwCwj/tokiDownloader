@@ -11,6 +11,35 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_thumbnail_cache_cli_previews_and_executes_through_running_gui(self) -> None:
+        report = {
+            "ok": True,
+            "existingFiles": 12,
+            "existingBytes": 4096,
+            "removeFiles": 3,
+            "removeBytes": 1024,
+        }
+        status = build_parser().parse_args(["thumbnail-cache", "status", "--json"])
+        with (
+            patch("toki_app.cleanup_thumbnail_cache", return_value=report) as cleanup,
+            redirect_stdout(StringIO()),
+        ):
+            status_exit = run_cli(status)
+        self.assertEqual(status_exit, 0)
+        cleanup.assert_called_once_with(execute=False)
+
+        execute = build_parser().parse_args(
+            ["thumbnail-cache", "cleanup", "--execute", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=report) as request,
+            redirect_stdout(StringIO()),
+        ):
+            execute_exit = run_cli(execute)
+        self.assertEqual(execute_exit, 0)
+        request.assert_called_once_with({"action": "cleanup_thumbnail_cache"})
+
     def test_self_test_core_only_json_arguments(self) -> None:
         args = build_parser().parse_args(["self-test", "--core-only", "--json"])
         self.assertEqual(args.command, "self-test")

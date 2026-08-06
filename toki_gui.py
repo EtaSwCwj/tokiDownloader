@@ -99,6 +99,7 @@ from toki_core import (
     build_work_key,
     build_downloader_args,
     clear_log_file,
+    cleanup_thumbnail_cache,
     count_jobs,
     count_runs,
     delete_job_record,
@@ -143,6 +144,7 @@ from toki_core import (
     set_process_tree_paused,
     retry_backoff_seconds,
     should_auto_retry,
+    thumbnail_cache_path,
     update_job_note,
     update_job_markers,
     update_app_settings,
@@ -504,11 +506,28 @@ class JobItemDelegate(QStyledItemDelegate):
     def _cover(self, cover_path: str) -> QPixmap | None:
         if not cover_path:
             return None
-        cached = self.cover_cache.get(cover_path)
+        try:
+            disk_cache_path = thumbnail_cache_path(cover_path)
+        except OSError:
+            return None
+        cache_key = str(disk_cache_path)
+        cached = self.cover_cache.get(cache_key)
         if cached is not None:
-            self.cover_cache.move_to_end(cover_path)
+            self.cover_cache.move_to_end(cache_key)
             return cached
-        source = QPixmap(cover_path)
+        source = QPixmap(str(disk_cache_path)) if disk_cache_path.is_file() else QPixmap()
+        if not source.isNull():
+            try:
+                os.utime(disk_cache_path, None)
+            except OSError:
+                pass
+        else:
+            if disk_cache_path.is_file():
+                try:
+                    disk_cache_path.unlink()
+                except OSError:
+                    pass
+            source = QPixmap(cover_path)
         if source.isNull():
             return None
         scaled = source.scaled(
@@ -516,7 +535,15 @@ class JobItemDelegate(QStyledItemDelegate):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.cover_cache[cover_path] = scaled
+        if not disk_cache_path.is_file():
+            try:
+                disk_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = disk_cache_path.with_suffix(".png.tmp")
+                if scaled.save(str(temporary), "PNG"):
+                    os.replace(temporary, disk_cache_path)
+            except OSError:
+                pass
+        self.cover_cache[cache_key] = scaled
         if len(self.cover_cache) > self.cache_limit:
             self.cover_cache.popitem(last=False)
         return scaled
@@ -1579,6 +1606,10 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_ui()
         self._apply_style()
+        try:
+            self.thumbnail_cache_report = cleanup_thumbnail_cache(execute=True)
+        except OSError as error:
+            self.thumbnail_cache_report = {"ok": False, "error": str(error)}
         self._configure_tray()
         self._start_control_server()
         self._restore_job_history()
@@ -1684,6 +1715,9 @@ class MainWindow(QMainWindow):
         )
         self.refresh_list_action.triggered.connect(self.refresh_job_list)
 
+        self.thumbnail_cache_action = QAction("썸네일 캐시 정리", self)
+        self.thumbnail_cache_action.triggered.connect(self.cleanup_thumbnail_cache_now)
+
         self.cleanup_records_action = QAction("완료·오류 기록 정리...", self)
         self.cleanup_records_action.triggered.connect(self.confirm_cleanup_records)
 
@@ -1755,6 +1789,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.open_folder_action)
         tools_menu.addAction(self.details_action)
         tools_menu.addAction(self.refresh_list_action)
+        tools_menu.addAction(self.thumbnail_cache_action)
         tools_menu.addAction(self.cleanup_records_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.settings_action)
@@ -2548,6 +2583,21 @@ class MainWindow(QMainWindow):
             self.log("작품 목록과 썸네일 캐시 새로고침")
         return result
 
+    def cleanup_thumbnail_cache_now(self) -> dict[str, Any]:
+        report = cleanup_thumbnail_cache(execute=True)
+        self.thumbnail_cache_report = report
+        delegate = self.task_list.itemDelegate()
+        if isinstance(delegate, JobItemDelegate):
+            delegate.cover_cache.clear()
+        self.task_list.viewport().update()
+        message = (
+            f"썸네일 캐시 정리: {int(report['removedFiles'])}개, "
+            f"{int(report['removedBytes']) / (1024 * 1024):.1f} MiB 제거"
+        )
+        self.log(message)
+        self.statusBar().showMessage(message, 4000)
+        return report
+
     def set_history_filters(self, query: str, state: str, sort: str) -> dict[str, Any]:
         state_index = self.state_filter_combo.findData(state)
         sort_index = self.sort_combo.findData(sort)
@@ -2693,6 +2743,18 @@ class MainWindow(QMainWindow):
             "intervalMs": self.job_ui_update_timer.interval(),
             "imageSavedPolicy": downloader_event_update_policy("image_saved"),
         }
+
+    def thumbnail_cache_snapshot(self) -> dict[str, Any]:
+        try:
+            current = cleanup_thumbnail_cache(execute=False)
+            self.thumbnail_cache_report = current
+        except OSError as error:
+            current = {"ok": False, "error": str(error)}
+        delegate = self.task_list.itemDelegate()
+        memory_entries = (
+            len(delegate.cover_cache) if isinstance(delegate, JobItemDelegate) else 0
+        )
+        return {**current, "memoryEntries": memory_entries}
 
     def _start_next_job(self) -> None:
         concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
@@ -4642,6 +4704,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd window [--x N --y N --width N --height N --screen NAME --center --safe --maximize|--normal]\n"
             "toki-cli.cmd performance audit [--json|--show-gui|--close]\n"
             "toki-cli.cmd performance benchmark [--sizes N...] [--page-size N --json|--via-gui]\n"
+            "toki-cli.cmd performance event-policy --event EVENT --json\n"
+            "toki-cli.cmd thumbnail-cache status|cleanup [--execute --json]\n"
             "toki-cli.cmd self-test [--json] [--core-only]\n"
             "toki-cli.cmd clear-log\n"
             "toki-cli.cmd show\n"
@@ -4750,6 +4814,7 @@ class MainWindow(QMainWindow):
             ),
             "performanceBenchmark": self.performance_benchmark_snapshot(),
             "eventUpdates": self.event_update_snapshot(),
+            "thumbnailCache": self.thumbnail_cache_snapshot(),
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
@@ -5095,6 +5160,10 @@ class MainWindow(QMainWindow):
             return self.cleanup_job_records(states)
         if action == "refresh_list":
             return self.refresh_job_list()
+        if action == "thumbnail_cache_status":
+            return self.thumbnail_cache_snapshot()
+        if action == "cleanup_thumbnail_cache":
+            return self.cleanup_thumbnail_cache_now()
         if action == "list_view_state":
             return dict(self.list_view_state)
         if action == "preview_list_view_state":

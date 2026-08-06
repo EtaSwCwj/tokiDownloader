@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import json
 import importlib.util
+import os
 import sqlite3
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +18,7 @@ from toki_core import (
     build_downloader_args,
     build_job_list_view_state,
     build_work_key,
+    cleanup_thumbnail_cache,
     count_jobs,
     count_runs,
     convert_job_images,
@@ -61,6 +64,7 @@ from toki_core import (
     set_process_tree_paused,
     should_auto_retry,
     settings_snapshot,
+    thumbnail_cache_path,
     update_app_settings,
     update_job_note,
     verify_job_files,
@@ -69,6 +73,48 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_thumbnail_cache_key_changes_with_source_and_cleanup_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "원본 표지.jpg"
+            cache_dir = root / "앱 캐시"
+            source.write_bytes(b"first")
+            first_key = thumbnail_cache_path(source, cache_dir=cache_dir)
+            source.write_bytes(b"second-version")
+            second_key = thumbnail_cache_path(source, cache_dir=cache_dir)
+            self.assertNotEqual(first_key, second_key)
+            self.assertEqual(second_key.parent, cache_dir.resolve())
+
+            cache_dir.mkdir(parents=True)
+            now = time.time()
+            for index in range(5):
+                path = cache_dir / f"{index}.png"
+                path.write_bytes(bytes([index]) * (index + 1) * 10)
+                os.utime(path, (now - index, now - index))
+            (cache_dir / "partial.tmp").write_bytes(b"partial")
+
+            preview = cleanup_thumbnail_cache(
+                cache_dir=cache_dir,
+                max_files=2,
+                max_bytes=1_000,
+                max_age_days=90,
+                execute=False,
+            )
+            self.assertEqual(preview["removeFiles"], 4)
+            self.assertEqual(len(list(cache_dir.iterdir())), 6)
+
+            executed = cleanup_thumbnail_cache(
+                cache_dir=cache_dir,
+                max_files=2,
+                max_bytes=1_000,
+                max_age_days=90,
+                execute=True,
+            )
+            self.assertTrue(executed["ok"])
+            self.assertEqual(executed["removedFiles"], 4)
+            self.assertEqual(len(list(cache_dir.glob("*.png"))), 2)
+            self.assertTrue(source.is_file())
+
     def test_downloader_event_policy_coalesces_only_high_frequency_progress(self) -> None:
         image = downloader_event_update_policy("image_saved")
         completed = downloader_event_update_policy("completed")

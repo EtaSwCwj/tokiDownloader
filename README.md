@@ -154,6 +154,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd performance benchmark --json
 .\toki-cli.cmd performance benchmark --sizes 100 1000 10000 100000 --via-gui --json
 .\toki-cli.cmd performance event-policy --event image_saved --json
+.\toki-cli.cmd thumbnail-cache status --json
+.\toki-cli.cmd thumbnail-cache cleanup --execute --json
 .\toki-cli.cmd logs --tail 200
 .\toki-cli.cmd copy-log
 .\toki-cli.cmd screenshot
@@ -188,6 +190,13 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 제한합니다. 회차 시작·완료, 작품 메타데이터, 오류와 최종 완료는 즉시 반영됩니다.
 `performance event-policy --event EVENT --json`으로 공용 정책을 확인하고, 실행 중 누적된
 수신·병합·렌더 횟수는 `status --json`의 `eventUpdates`에서 확인할 수 있습니다.
+
+작품 카드는 원본 표지의 경로·크기·수정 시각으로 키를 만든 50×66 PNG를
+`.cache\thumbnails`에 저장해 다음 실행의 원본 이미지 디코딩을 줄입니다. 앱 전용 캐시는
+최대 2,000개, 256 MiB, 최근 90일로 제한되며 GUI 시작 시 자동 정리됩니다.
+`thumbnail-cache status`는 정리 예정량만 조회하고 `cleanup --execute`가 실제 캐시만
+제거합니다. 다운로드 폴더의 원본 표지와 작품 파일은 건드리지 않습니다. 실행 중 GUI가 있으면
+같은 도구 메뉴 동작을 호출해 메모리 캐시도 함께 비웁니다.
 
 `pin --on|--off`는 작품을 모든 정렬의 상단에 고정하거나 해제합니다. `tag --color`는
 `none`, `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `gray` 중 하나를 지정하며

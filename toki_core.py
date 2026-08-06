@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -23,6 +24,7 @@ CONFIG_PATH = ROOT_DIR / "config.json"
 LOG_DIR = ROOT_DIR / "logs"
 LOG_PATH = LOG_DIR / "gui.log"
 JOB_DB_PATH = ROOT_DIR / "jobs.db"
+THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
@@ -1759,6 +1761,123 @@ def resolve_cover_path(job: DownloadJob) -> str:
     if not cover_path.is_file():
         raise FileNotFoundError(f"대표 이미지 파일을 찾을 수 없습니다: {cover_path}")
     return str(cover_path)
+
+
+def thumbnail_cache_path(
+    source_path: str | Path,
+    *,
+    width: int = 50,
+    height: int = 66,
+    cache_dir: Path | None = None,
+) -> Path:
+    source = Path(source_path).expanduser().resolve()
+    stat = source.stat()
+    fingerprint = "|".join(
+        (
+            str(source).casefold(),
+            str(stat.st_size),
+            str(stat.st_mtime_ns),
+            str(max(1, int(width))),
+            str(max(1, int(height))),
+        )
+    )
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+    root = Path(cache_dir) if cache_dir is not None else THUMBNAIL_CACHE_DIR
+    return root.resolve() / f"{digest}.png"
+
+
+def cleanup_thumbnail_cache(
+    *,
+    cache_dir: Path | None = None,
+    max_files: int = 2_000,
+    max_bytes: int = 256 * 1024 * 1024,
+    max_age_days: int = 90,
+    execute: bool = False,
+) -> dict[str, Any]:
+    """Plan or execute cleanup only inside the application thumbnail cache."""
+    root = (Path(cache_dir) if cache_dir is not None else THUMBNAIL_CACHE_DIR).resolve()
+    safe_max_files = max(1, int(max_files))
+    safe_max_bytes = max(1, int(max_bytes))
+    safe_max_age_days = max(1, int(max_age_days))
+    if not root.exists():
+        return {
+            "ok": True,
+            "executed": bool(execute),
+            "cacheDir": str(root),
+            "existingFiles": 0,
+            "existingBytes": 0,
+            "removeFiles": 0,
+            "removeBytes": 0,
+            "removedFiles": 0,
+            "removedBytes": 0,
+            "keptFiles": 0,
+            "keptBytes": 0,
+            "limits": {
+                "maxFiles": safe_max_files,
+                "maxBytes": safe_max_bytes,
+                "maxAgeDays": safe_max_age_days,
+            },
+        }
+    if not root.is_dir():
+        raise NotADirectoryError(f"썸네일 캐시 경로가 폴더가 아닙니다: {root}")
+
+    entries: list[dict[str, Any]] = []
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append(
+            {"path": path, "size": int(stat.st_size), "mtime": float(stat.st_mtime)}
+        )
+    existing_bytes = sum(entry["size"] for entry in entries)
+    cutoff = time.time() - (safe_max_age_days * 24 * 60 * 60)
+    removal_paths: set[Path] = {
+        entry["path"]
+        for entry in entries
+        if entry["mtime"] < cutoff or entry["path"].suffix.lower() != ".png"
+    }
+    kept_count = 0
+    kept_bytes = 0
+    for entry in sorted(entries, key=lambda item: item["mtime"], reverse=True):
+        if entry["path"] in removal_paths:
+            continue
+        if kept_count >= safe_max_files or kept_bytes + entry["size"] > safe_max_bytes:
+            removal_paths.add(entry["path"])
+            continue
+        kept_count += 1
+        kept_bytes += entry["size"]
+    removal_entries = [entry for entry in entries if entry["path"] in removal_paths]
+    removed_files = 0
+    removed_bytes = 0
+    if execute:
+        for entry in removal_entries:
+            try:
+                entry["path"].unlink(missing_ok=True)
+                removed_files += 1
+                removed_bytes += entry["size"]
+            except OSError:
+                continue
+    return {
+        "ok": removed_files == len(removal_entries) if execute else True,
+        "executed": bool(execute),
+        "cacheDir": str(root),
+        "existingFiles": len(entries),
+        "existingBytes": existing_bytes,
+        "removeFiles": len(removal_entries),
+        "removeBytes": sum(entry["size"] for entry in removal_entries),
+        "removedFiles": removed_files,
+        "removedBytes": removed_bytes,
+        "keptFiles": kept_count,
+        "keptBytes": kept_bytes,
+        "limits": {
+            "maxFiles": safe_max_files,
+            "maxBytes": safe_max_bytes,
+            "maxAgeDays": safe_max_age_days,
+        },
+    }
 
 
 def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[str]:

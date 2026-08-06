@@ -6,6 +6,7 @@ jobs.db
 jobs.db-shm
 jobs.db-wal
 logs/
+.cache/
 gui-preview.png
 build/
 dist/

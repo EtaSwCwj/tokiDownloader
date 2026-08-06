@@ -24,6 +24,7 @@ from toki_core import (
     build_job_list_view_state,
     build_downloader_args,
     clear_log_file,
+    cleanup_thumbnail_cache,
     find_node,
     hydrate_job_metadata,
     job_database_diagnostics,
@@ -469,6 +470,24 @@ def build_parser() -> argparse.ArgumentParser:
     performance_event_policy.add_argument(
         "--json", action="store_true", help="JSON으로 출력"
     )
+
+    thumbnail_cache = subparsers.add_parser(
+        "thumbnail-cache", help="앱 전용 썸네일 디스크 캐시 조회·정리"
+    )
+    thumbnail_cache_commands = thumbnail_cache.add_subparsers(
+        dest="thumbnail_cache_command", required=True
+    )
+    thumbnail_cache_status = thumbnail_cache_commands.add_parser(
+        "status", help="캐시 크기와 정리 예정 항목 조회"
+    )
+    thumbnail_cache_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    thumbnail_cache_cleanup = thumbnail_cache_commands.add_parser(
+        "cleanup", help="보존 기간·파일 수·용량 상한을 넘는 캐시 정리"
+    )
+    thumbnail_cache_cleanup.add_argument(
+        "--execute", action="store_true", help="실제로 앱 캐시 파일 제거"
+    )
+    thumbnail_cache_cleanup.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     list_state = subparsers.add_parser(
         "list-state", help="작품 목록의 빈 화면·로딩·오류 상태 조회 및 GUI 점검"
@@ -1066,6 +1085,24 @@ def run_cli(args: argparse.Namespace) -> int:
             getattr(args, "close", False) or getattr(args, "via_gui", False)
         )
         return 0 if bool(effective.get("ok", default_success)) else 2
+    if command == "thumbnail-cache":
+        execute = bool(
+            args.thumbnail_cache_command == "cleanup" and args.execute
+        )
+        if execute and gui_is_running():
+            result = control_request({"action": "cleanup_thumbnail_cache"})
+        else:
+            result = cleanup_thumbnail_cache(execute=execute)
+        if args.json:
+            print_json(result)
+        else:
+            action = "제거" if execute else "제거 예정"
+            print(
+                f"캐시 {int(result['existingFiles']):,}개, "
+                f"{int(result['existingBytes']) / (1024 * 1024):.1f} MiB | "
+                f"{action} {int(result['removeFiles']):,}개"
+            )
+        return 0 if result.get("ok") else 2
     if command == "status":
         result = control_request({"action": "status"})
         if args.json:
