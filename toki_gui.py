@@ -85,6 +85,7 @@ from PyQt6.QtWidgets import (
 )
 
 from toki_core import (
+    APP_VERSION,
     ACTIVE_JOB_STATES,
     CONTROL_SERVER_NAME,
     EVENT_PREFIX,
@@ -1770,7 +1771,7 @@ class MainWindow(QMainWindow):
             "renderedUpdates": 0,
         }
 
-        self.setWindowTitle("tokiDownloader")
+        self.setWindowTitle(f"tokiDownloader {APP_VERSION}")
         window_config = self.config.get("window", {})
         self.setMinimumSize(QSize(720, 580))
         self.restore_maximized = bool(window_config.get("maximized", False))

@@ -17,6 +17,7 @@ from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
 from toki_core import (
+    APP_VERSION,
     apply_config_migrations,
     apply_database_migrations,
     CONTROL_SERVER_NAME,
@@ -351,6 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="toki-cli",
         description="tokiDownloader GUI 및 CLI 제어",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("gui", help="GUI 실행 또는 기존 GUI 앞으로 가져오기")

@@ -23,6 +23,12 @@ import psutil
 
 
 ROOT_DIR = Path(__file__).resolve().parent
+VERSION_PATH = ROOT_DIR / "VERSION"
+APP_VERSION = (
+    VERSION_PATH.read_text(encoding="utf-8").strip()
+    if VERSION_PATH.is_file()
+    else "0.0.0-dev"
+)
 DOWNLOADER_PATH = ROOT_DIR / "down.js"
 CONFIG_PATH = ROOT_DIR / "config.json"
 LOG_DIR = ROOT_DIR / "logs"
@@ -717,6 +723,7 @@ def dependency_diagnostics() -> dict[str, Any]:
     return {
         "ok": not missing_required and all(item["ok"] for item in schemas.values()),
         "platform": {
+            "appVersion": APP_VERSION,
             "system": os.name,
             "pythonArchitecture": 64 if sys.maxsize > 2**32 else 32,
             "root": str(ROOT_DIR),

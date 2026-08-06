@@ -502,11 +502,11 @@ SQLite `integrity_check`, 복구 ID, 임시 DB 제거와 메모리 변화를 JSO
 
 - [ ] 새 PC 기준 설치·실행 점검
 - [x] 개발자용 재현 가능한 설치 스크립트 정리
-- [ ] PyInstaller GUI 실행 파일과 Node/Puppeteer 런타임 묶음 검토
+- [x] PyInstaller GUI 실행 파일과 Node/Puppeteer 런타임 묶음 검토
 - [x] 업데이트 및 데이터베이스 마이그레이션 절차
 - [x] 오류 보고용 진단 정보 내보내기
-- [ ] README의 GUI/CLI 명령과 실제 `--help` 일치 확인
-- [ ] 릴리스 체크리스트와 버전 규칙
+- [x] README의 GUI/CLI 명령과 실제 `--help` 일치 확인
+- [x] 릴리스 체크리스트와 버전 규칙
 
 2026-08-07 설치 환경 진단 기반: `doctor --json`과 도구 메뉴의 설치 진단창이 Python,
 PyQt6, psutil, Node.js, npm, Puppeteer 및 Pillow·FFmpeg·yt-dlp·PyInstaller의 설치 여부,
@@ -534,6 +534,13 @@ GUI에도 설정·DB 현재/지원 버전을 표시한다. 실제 설정 v0→v1
 파일은 포함하지 않고 앱 루트, 사용자 홈, 별도 저장 폴더, HTTP URL, 작업 ID와 작품 키를
 치환한다. 실제 `logs/diagnostics-gui.zip`을 다시 열어 세 파일만 존재하고 실제 앱/홈 경로와
 URL이 0건임을 검사했다. 직접/GUI CLI 계약과 치환 테스트를 포함해 Python 116건을 통과했다.
+
+2026-08-07 CLI·릴리스 계약: argparse의 모든 최상위 명령이 README에 있고 존재하지 않는
+명령은 문서에 없음을 자동 테스트한다. `VERSION`의 SemVer 값을 `--version`, GUI 제목과
+doctor가 함께 사용한다. `RELEASE_CHECKLIST.md`에 설치·스키마·자체 점검·안정성·진단 ZIP·
+롤백 절차를 고정했다. `PYINSTALLER_REVIEW.md`는 코드/데이터 경로, frozen 작업 재진입과
+Node/Puppeteer/Chromium 묶음 문제가 해결되기 전에는 소스+setup 배포를 유지한다는 결론과
+전환 조건을 기록한다. Python 118건을 통과했다.
 
 완료 조건:
 

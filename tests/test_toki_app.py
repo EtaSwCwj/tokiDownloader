@@ -1,16 +1,45 @@
 from __future__ import annotations
 
 import json
+import argparse
+import re
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import toki_app
 from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_version_file_is_semver_and_cli_reports_same_value(self) -> None:
+        version = (toki_app.ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+        with redirect_stdout(StringIO()) as output, self.assertRaises(SystemExit) as exit_result:
+            build_parser().parse_args(["--version"])
+
+        self.assertEqual(exit_result.exception.code, 0)
+        self.assertEqual(output.getvalue().strip(), f"toki-cli {version}")
+
+    def test_readme_covers_every_top_level_cli_command(self) -> None:
+        parser = build_parser()
+        subparsers = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        commands = set(subparsers.choices)
+        readme = (toki_app.ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        documented = set(
+            re.findall(r"(?:\.\\)?toki-cli\.cmd\s+([a-z][a-z-]*)", readme)
+        )
+
+        self.assertEqual(commands - documented, set())
+        self.assertEqual(documented - commands, set())
+
     def test_diagnostics_export_cli_supports_direct_and_gui_contracts(self) -> None:
         direct_args = build_parser().parse_args(
             ["diagnostics", "export", "--output", "bundle.zip", "--json"]

@@ -39,6 +39,10 @@ https://github.com/user-attachments/assets/fe974989-5ffb-4831-b2dc-7ea576712f62
 ```
 
 # 2. 뉴토끼 마나토끼 북토끼 다운로더
+현재 개발 버전은 `VERSION` 파일을 기준으로 하며 `toki-cli.cmd --version`으로 확인합니다.
+배포 전 절차는 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md), 독립 실행 파일 검토 결과는
+[PYINSTALLER_REVIEW.md](PYINSTALLER_REVIEW.md)를 참고하세요.
+
 ## 준비물 
 Node.js, Python 3
 
@@ -70,6 +74,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 # GUI 실행 또는 앞으로 가져오기
 .\toki-cli.cmd gui
 .\toki-cli.cmd show
+.\toki-cli.cmd --version
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
