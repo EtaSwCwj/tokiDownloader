@@ -104,6 +104,27 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_list_state_recovery_actions_are_connected(self) -> None:
+        calls = []
+        url = type(
+            "UrlHarness",
+            (),
+            {
+                "setFocus": lambda _self: calls.append("focus"),
+                "selectAll": lambda _self: calls.append("select"),
+            },
+        )()
+        harness = type("ListStateHarness", (), {})()
+        harness.url_edit = url
+        harness.reset_history_filters = lambda: calls.append("reset")
+        harness.refresh_job_list = lambda: calls.append("retry")
+
+        for action in ("focus_url", "reset_filters", "retry"):
+            harness.list_view_state = {"action": action}
+            MainWindow._handle_list_state_action(harness)
+
+        self.assertEqual(calls, ["focus", "select", "reset", "retry"])
+
     def test_job_result_notifications_follow_settings(self) -> None:
         messages = []
         harness = type("NotificationHarness", (), {})()

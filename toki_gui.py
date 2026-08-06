@@ -69,6 +69,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QStatusBar,
     QStyle,
     QStyledItemDelegate,
@@ -93,6 +94,7 @@ from toki_core import (
     DownloadRun,
     available_work_slots,
     append_log,
+    build_job_list_view_state,
     build_work_key,
     build_downloader_args,
     clear_log_file,
@@ -1367,6 +1369,7 @@ class MainWindow(QMainWindow):
         self.history_query = ""
         self.history_state = ""
         self.history_sort = "updated"
+        self.list_view_state = build_job_list_view_state(loading=True)
         self.history_filter_timer = QTimer(self)
         self.history_filter_timer.setSingleShot(True)
         self.history_filter_timer.setInterval(250)
@@ -1746,6 +1749,40 @@ class MainWindow(QMainWindow):
         self.task_list.customContextMenuRequested.connect(self.show_job_context_menu)
         self.task_list.verticalScrollBar().valueChanged.connect(self._maybe_load_more_history)
 
+        self.list_state_panel = QFrame()
+        self.list_state_panel.setObjectName("listStatePanel")
+        state_layout = QVBoxLayout(self.list_state_panel)
+        state_layout.setContentsMargins(32, 32, 32, 32)
+        state_layout.addStretch(1)
+        self.list_state_title = QLabel()
+        self.list_state_title.setObjectName("listStateTitle")
+        self.list_state_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.list_state_title.setWordWrap(True)
+        state_title_font = QFont()
+        state_title_font.setPointSize(13)
+        state_title_font.setBold(True)
+        self.list_state_title.setFont(state_title_font)
+        self.list_state_message = QLabel()
+        self.list_state_message.setObjectName("mutedLabel")
+        self.list_state_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.list_state_message.setWordWrap(True)
+        self.list_state_action_button = QPushButton()
+        self.list_state_action_button.clicked.connect(self._handle_list_state_action)
+        self.list_state_action_button.setMaximumWidth(180)
+        state_layout.addWidget(self.list_state_title)
+        state_layout.addWidget(self.list_state_message)
+        state_layout.addSpacing(8)
+        state_layout.addWidget(
+            self.list_state_action_button, 0, Qt.AlignmentFlag.AlignHCenter
+        )
+        state_layout.addStretch(1)
+
+        self.list_stack = QStackedWidget()
+        self.list_stack.setObjectName("listStack")
+        self.list_stack.addWidget(self.task_list)
+        self.list_stack.addWidget(self.list_state_panel)
+        self._set_list_view_state(self.list_view_state)
+
         self.log_box = QGroupBox("실행 로그")
         log_layout = QVBoxLayout(self.log_box)
         log_actions = QHBoxLayout()
@@ -1772,7 +1809,7 @@ class MainWindow(QMainWindow):
         root.addWidget(input_box)
         root.addLayout(queue_header)
         root.addLayout(filter_bar)
-        root.addWidget(self.task_list, 1)
+        root.addWidget(self.list_stack, 1)
         root.addWidget(self.log_box)
         self.log_box.setVisible(bool(self.config.get("logVisible", True)))
         self.setCentralWidget(central)
@@ -1818,6 +1855,8 @@ class MainWindow(QMainWindow):
             QTabBar::tab:selected { background: %(surface)s; color: %(text)s; font-weight: 700; }
             QTabWidget > QWidget, #settingsPage { background: %(surface)s; color: %(text)s; }
             #inputBox { background: %(surface)s; border: 1px solid %(border)s; border-radius: 5px; }
+            #listStatePanel { background: %(surface)s; border: 1px solid %(border)s; border-radius: 4px; }
+            #listStateTitle { color: %(text)s; }
             QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QListView, QListWidget, QTableWidget {
                 background: %(surface)s; color: %(text)s; border: 1px solid %(border)s; border-radius: 4px;
                 padding: 5px; selection-background-color: %(selection)s; selection-color: #ffffff; }
@@ -1980,19 +2019,91 @@ class MainWindow(QMainWindow):
         index = self.task_model.index(0, 0)
         self.task_list.setCurrentIndex(index)
         self.task_list.scrollTo(index)
+        self._update_list_view_state()
+
+    def _set_list_view_state(self, view_state: dict[str, Any]) -> dict[str, Any]:
+        self.list_view_state = dict(view_state)
+        state_name = str(self.list_view_state.get("state") or "error")
+        if state_name == "content":
+            self.list_stack.setCurrentWidget(self.task_list)
+            self.task_list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            return dict(self.list_view_state)
+
+        self.list_state_panel.setProperty("state", state_name)
+        self.list_state_title.setText(str(self.list_view_state.get("title") or ""))
+        self.list_state_message.setText(str(self.list_view_state.get("message") or ""))
+        action_label = str(self.list_view_state.get("actionLabel") or "")
+        self.list_state_action_button.setText(action_label)
+        self.list_state_action_button.setVisible(bool(action_label))
+        self.list_stack.setCurrentWidget(self.list_state_panel)
+        return dict(self.list_view_state)
+
+    def _update_list_view_state(
+        self, *, loading: bool = False, error: str = ""
+    ) -> dict[str, Any]:
+        return self._set_list_view_state(
+            build_job_list_view_state(
+                loading=loading,
+                error=error,
+                total_count=self.history_all_total,
+                filtered_count=self.history_total,
+                query=self.history_query,
+                state=self.history_state,
+            )
+        )
+
+    def _handle_list_state_action(self) -> None:
+        action = str(self.list_view_state.get("action") or "")
+        if action == "focus_url":
+            self.url_edit.setFocus()
+            self.url_edit.selectAll()
+        elif action == "reset_filters":
+            self.reset_history_filters()
+        elif action == "retry":
+            self.refresh_job_list()
+
+    def preview_list_view_state(self, state_name: str, message: str = "") -> dict[str, Any]:
+        normalized = str(state_name or "auto").strip().lower().replace("-", "_")
+        if normalized == "auto":
+            return self._update_list_view_state()
+        if normalized == "loading":
+            return self._update_list_view_state(loading=True)
+        if normalized == "error":
+            return self._update_list_view_state(
+                error=str(message or "진단용 오류 상태 미리보기입니다.")
+            )
+        if normalized == "empty":
+            return self._set_list_view_state(build_job_list_view_state())
+        if normalized == "no_results":
+            return self._set_list_view_state(
+                build_job_list_view_state(
+                    total_count=max(1, self.history_all_total),
+                    filtered_count=0,
+                    query=self.history_query or "진단용 검색",
+                    state=self.history_state,
+                )
+            )
+        raise ValueError(f"지원하지 않는 목록 상태입니다: {state_name}")
 
     def _restore_job_history(self) -> None:
-        self.startup_recovery = recover_interrupted_jobs()
-        metadata_updates: list[DownloadJob] = []
-        self.history_all_total = count_jobs()
-        self.history_total = count_jobs(self.history_query, self.history_state)
-        page = load_jobs_page(
-            self.history_page_size,
-            0,
-            self.history_query,
-            self.history_state,
-            self.history_sort,
-        )
+        self._update_list_view_state(loading=True)
+        try:
+            self.startup_recovery = recover_interrupted_jobs()
+            metadata_updates: list[DownloadJob] = []
+            self.history_all_total = count_jobs()
+            self.history_total = count_jobs(self.history_query, self.history_state)
+            page = load_jobs_page(
+                self.history_page_size,
+                0,
+                self.history_query,
+                self.history_state,
+                self.history_sort,
+            )
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self._update_list_view_state(error=str(error))
+            self.log(f"작업 목록 초기 로딩 실패: {error}", "ERROR")
+            self._update_summary()
+            return
         for job in page:
             if hydrate_job_metadata(job):
                 metadata_updates.append(job)
@@ -2013,6 +2124,7 @@ class MainWindow(QMainWindow):
             self.task_list.setCurrentIndex(self.task_model.index(0, 0))
             self.task_list.scrollToTop()
         self._update_summary()
+        self._update_list_view_state()
 
     def _job_matches_history_filters(self, job: DownloadJob) -> bool:
         if self.history_state and job.state != self.history_state:
@@ -2023,7 +2135,7 @@ class MainWindow(QMainWindow):
         haystack = " ".join((job.title, job.work_key, job.url)).casefold()
         return query in haystack
 
-    def apply_history_filters(self, *_args: Any) -> None:
+    def apply_history_filters(self, *_args: Any) -> dict[str, Any]:
         self.history_filter_timer.stop()
         self._flush_job_history()
         selected = self.selected_job()
@@ -2031,13 +2143,23 @@ class MainWindow(QMainWindow):
         self.history_query = self.search_edit.text().strip()
         self.history_state = str(self.state_filter_combo.currentData() or "")
         self.history_sort = str(self.sort_combo.currentData() or "updated")
-        page = load_jobs_page(
-            self.history_page_size,
-            0,
-            self.history_query,
-            self.history_state,
-            self.history_sort,
-        )
+        self._update_list_view_state(loading=True)
+        QApplication.processEvents()
+        try:
+            page = load_jobs_page(
+                self.history_page_size,
+                0,
+                self.history_query,
+                self.history_state,
+                self.history_sort,
+            )
+            history_all_total = count_jobs()
+            history_total = count_jobs(self.history_query, self.history_state)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self._update_list_view_state(error=str(error))
+            self.log(f"작업 목록 로딩 실패: {error}", "ERROR")
+            self._update_summary()
+            return dict(self.list_view_state)
         display_jobs: list[DownloadJob] = []
         for stored_job in page:
             job = self.jobs_by_work.get(stored_job.work_key) or stored_job
@@ -2046,8 +2168,8 @@ class MainWindow(QMainWindow):
                 self.jobs_by_work[job.work_key] = job
             display_jobs.append(job)
         self.task_model.replace_jobs(display_jobs)
-        self.history_all_total = count_jobs()
-        self.history_total = count_jobs(self.history_query, self.history_state)
+        self.history_all_total = history_all_total
+        self.history_total = history_total
         self.history_loaded = len(display_jobs)
         if selected_key and selected_key in self.task_model.row_by_key:
             row = self.task_model.row_by_key[selected_key]
@@ -2055,6 +2177,7 @@ class MainWindow(QMainWindow):
         elif display_jobs:
             self.task_list.setCurrentIndex(self.task_model.index(0, 0))
         self._update_summary()
+        return self._update_list_view_state()
 
     def reset_history_filters(self) -> None:
         self.history_filter_timer.stop()
@@ -2067,15 +2190,18 @@ class MainWindow(QMainWindow):
         delegate = self.task_list.itemDelegate()
         if isinstance(delegate, JobItemDelegate):
             delegate.cover_cache.clear()
-        self.apply_history_filters()
+        view_state = self.apply_history_filters()
         self.task_list.viewport().update()
+        refreshed = view_state.get("state") != "error"
         result = {
-            "refreshed": True,
+            "refreshed": refreshed,
             "loaded": self.task_model.rowCount(),
             "total": self.history_total,
             "thumbnailCacheCleared": True,
+            "viewState": view_state,
         }
-        self.log("작품 목록과 썸네일 캐시 새로고침")
+        if refreshed:
+            self.log("작품 목록과 썸네일 캐시 새로고침")
         return result
 
     def set_history_filters(self, query: str, state: str, sort: str) -> dict[str, Any]:
@@ -2146,9 +2272,14 @@ class MainWindow(QMainWindow):
                 self.jobs[job.job_id] = job
                 self.jobs_by_work[job.work_key] = job
             self.task_model.append_jobs(unseen)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self._update_list_view_state(error=str(error))
+            self.log(f"추가 작업 목록 로딩 실패: {error}", "ERROR")
+            return
         finally:
             self.history_loading = False
         self._update_summary()
+        self._update_list_view_state()
 
     def _schedule_job_persist(self, job: DownloadJob) -> None:
         self.dirty_job_ids.add(job.job_id)
@@ -3974,6 +4105,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd download --url URL [--start N --last N --output PATH --show-browser]\n"
             "toki-cli.cmd status [--json]\n"
             "toki-cli.cmd list [--query TEXT --status STATE --sort updated|title|progress --apply-gui --json]\n"
+            "toki-cli.cmd list-state [--query TEXT --status STATE --apply-gui --preview STATE --json]\n"
             "toki-cli.cmd pin --job ID --on|--off\n"
             "toki-cli.cmd tag --job ID --color COLOR\n"
             "toki-cli.cmd remove-record --job ID --yes\n"
@@ -4074,6 +4206,7 @@ class MainWindow(QMainWindow):
                 "loaded": self.task_model.rowCount(),
                 "total": self.history_total,
             },
+            "listViewState": dict(self.list_view_state),
             "window": self.window_snapshot(),
         }
 
@@ -4321,6 +4454,13 @@ class MainWindow(QMainWindow):
             return self.cleanup_job_records(states)
         if action == "refresh_list":
             return self.refresh_job_list()
+        if action == "list_view_state":
+            return dict(self.list_view_state)
+        if action == "preview_list_view_state":
+            return self.preview_list_view_state(
+                str(request.get("state") or "auto"),
+                str(request.get("message") or ""),
+            )
         if action == "screenshot":
             return {"path": self.capture_window(str(request.get("path") or ""))}
         if action == "window":

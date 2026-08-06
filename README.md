@@ -75,6 +75,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd status --json
 .\toki-cli.cmd list --query "오타쿠" --status "완료" --sort title --json
 .\toki-cli.cmd list --query "오타쿠" --status "완료" --sort title --apply-gui --json
+.\toki-cli.cmd list-state --json
+.\toki-cli.cmd list-state --query "없는 작품" --json
+.\toki-cli.cmd list-state --apply-gui --preview no-results --json
+.\toki-cli.cmd list-state --apply-gui --preview error --message "진단 오류" --json
 .\toki-cli.cmd info --job 작업ID --json
 .\toki-cli.cmd runs --job 작업ID --limit 100 --offset 0 --json
 .\toki-cli.cmd run-info --run 실행ID --json
@@ -203,7 +207,16 @@ GUI 상세창으로 엽니다. 실행 이력 행을 더블클릭하거나 `선�
 `cleanup-records`도 같은 파일 보존 규칙을 사용하며 `completed`, `error`,
 `authentication`, `stopped` 상태를 여러 번 지정할 수 있습니다. `refresh-list`는
 SQLite에서 현재 페이지를 다시 읽고 목록용
-썸네일 메모리 캐시를 비웁니다.
+썸네일 메모리 캐시를 비웁니다. DB 조회가 실패하면 `ok: false`, `refreshed: false`와
+종료 코드 2를 반환하고 GUI의 오류 상태를 유지합니다.
+
+작품 목록은 로딩 중, 첫 사용 빈 목록, 검색 결과 없음, 읽기 오류와 정상 목록을 서로 다른
+상태로 표시합니다. 빈 목록에서는 URL 입력으로 이동하고, 검색 결과가 없으면 필터를
+초기화하며, 오류 상태에서는 목록을 다시 읽을 수 있습니다. `list-state --json`은 GUI 없이
+같은 공용 판정 결과를 반환하고, `--apply-gui --preview loading|error|empty|no-results`는
+화면 배치와 복구 버튼을 CLI에서 점검할 때만 사용하는 일시적 미리보기입니다.
+`--preview auto` 또는 `refresh-list`를 실행하면 실제 목록 상태로 돌아갑니다.
+현재 상태는 `status --json`의 `listViewState`에도 포함됩니다.
 
 `self-test --json`은 Python/Node 구문, 필수 파일, 단위 테스트와 GUI IPC 및 화면 캡처를
 한 번에 검사합니다. GUI가 꺼져 있으면 점검용으로 시작했다가 자동 종료하며, 이미 실행

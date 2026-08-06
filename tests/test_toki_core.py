@@ -14,6 +14,7 @@ from toki_core import (
     DownloadJob,
     DownloadRun,
     build_downloader_args,
+    build_job_list_view_state,
     build_work_key,
     count_jobs,
     count_runs,
@@ -62,6 +63,24 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_job_list_view_state_covers_loading_empty_filtered_error_and_content(self) -> None:
+        loading = build_job_list_view_state(loading=True, total_count=12)
+        empty = build_job_list_view_state()
+        no_results = build_job_list_view_state(
+            total_count=12, filtered_count=0, query="없는 작품"
+        )
+        error = build_job_list_view_state(error="DB 읽기 실패", total_count=12)
+        content = build_job_list_view_state(total_count=12, filtered_count=3)
+
+        self.assertEqual(loading["state"], "loading")
+        self.assertEqual(empty["action"], "focus_url")
+        self.assertEqual(no_results["state"], "no_results")
+        self.assertEqual(no_results["action"], "reset_filters")
+        self.assertEqual(error["action"], "retry")
+        self.assertEqual(error["message"], "DB 읽기 실패")
+        self.assertEqual(content["state"], "content")
+        self.assertEqual(content["filtered"], 3)
+
     def test_settings_normalize_invalid_values_and_update_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

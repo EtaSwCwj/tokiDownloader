@@ -298,6 +298,71 @@ class CliParserTests(unittest.TestCase):
         refresh = build_parser().parse_args(["refresh-list"])
         self.assertEqual(refresh.command, "refresh-list")
 
+    def test_refresh_list_reports_gui_loading_failure_with_nonzero_exit(self) -> None:
+        args = build_parser().parse_args(["refresh-list"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={
+                    "refreshed": False,
+                    "viewState": {"state": "error", "message": "DB 읽기 실패"},
+                },
+            ),
+            redirect_stdout(StringIO()) as output,
+        ):
+            exit_code = run_cli(args)
+        result = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["viewState"]["state"], "error")
+
+    def test_list_state_parser_and_local_json_contract(self) -> None:
+        args = build_parser().parse_args(
+            ["list-state", "--query", "없는 작품", "--json"]
+        )
+        self.assertEqual(args.command, "list-state")
+        self.assertEqual(args.preview, "auto")
+        with (
+            patch("toki_app.count_jobs", side_effect=[4, 0]),
+            redirect_stdout(StringIO()) as output,
+        ):
+            exit_code = run_cli(args)
+        result = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(result["state"], "no_results")
+        self.assertEqual(result["action"], "reset_filters")
+
+    def test_list_state_gui_preview_uses_ipc_contract(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "list-state",
+                "--apply-gui",
+                "--preview",
+                "error",
+                "--message",
+                "진단 오류",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"state": "error", "message": "진단 오류"},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            exit_code = run_cli(args)
+        self.assertEqual(exit_code, 0)
+        request.assert_called_once_with(
+            {
+                "action": "preview_list_view_state",
+                "state": "error",
+                "message": "진단 오류",
+            }
+        )
+
     def test_move_folder_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
         dry_run = build_parser().parse_args(
             ["move-folder", "--job", "job-1", "--output", r"D:\Manga", "--json"]

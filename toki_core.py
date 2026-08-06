@@ -456,6 +456,83 @@ def error_category_label(value: str | None) -> str:
     return ERROR_CATEGORY_LABELS[normalize_error_category(value)]
 
 
+def build_job_list_view_state(
+    *,
+    loading: bool = False,
+    error: str = "",
+    total_count: int = 0,
+    filtered_count: int | None = None,
+    query: str = "",
+    state: str = "",
+) -> dict[str, Any]:
+    """Return the shared, machine-readable state for the work list surface."""
+    total = max(0, int(total_count or 0))
+    filtered = total if filtered_count is None else max(0, int(filtered_count or 0))
+    clean_query = str(query or "").strip()
+    clean_state = str(state or "").strip()
+    clean_error = str(error or "").strip()
+
+    if loading:
+        return {
+            "state": "loading",
+            "title": "작업 목록을 불러오는 중입니다",
+            "message": "저장된 작품과 썸네일 정보를 확인하고 있습니다.",
+            "action": "",
+            "actionLabel": "",
+            "total": total,
+            "filtered": filtered,
+            "query": clean_query,
+            "status": clean_state,
+        }
+    if clean_error:
+        return {
+            "state": "error",
+            "title": "작업 목록을 불러오지 못했습니다",
+            "message": clean_error,
+            "action": "retry",
+            "actionLabel": "다시 시도",
+            "total": total,
+            "filtered": filtered,
+            "query": clean_query,
+            "status": clean_state,
+        }
+    if filtered > 0:
+        return {
+            "state": "content",
+            "title": "",
+            "message": "",
+            "action": "",
+            "actionLabel": "",
+            "total": total,
+            "filtered": filtered,
+            "query": clean_query,
+            "status": clean_state,
+        }
+    if total <= 0 and not clean_query and not clean_state:
+        return {
+            "state": "empty",
+            "title": "아직 등록된 작품이 없습니다",
+            "message": "위 URL 입력란에 작품 링크를 넣고 다운로드를 시작하세요.",
+            "action": "focus_url",
+            "actionLabel": "URL 입력으로 이동",
+            "total": 0,
+            "filtered": 0,
+            "query": "",
+            "status": "",
+        }
+    return {
+        "state": "no_results",
+        "title": "조건에 맞는 작품이 없습니다",
+        "message": "검색어나 상태 필터를 바꾸거나 초기화해 보세요.",
+        "action": "reset_filters",
+        "actionLabel": "필터 초기화",
+        "total": total,
+        "filtered": 0,
+        "query": clean_query,
+        "status": clean_state,
+    }
+
+
 def retry_backoff_seconds(retry_number: int, base_seconds: int | None) -> int:
     retry = max(1, int(retry_number))
     base = normalize_retry_backoff(base_seconds)

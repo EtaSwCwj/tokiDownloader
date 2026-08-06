@@ -21,6 +21,7 @@ from toki_core import (
     ROOT_DIR,
     DownloadJob,
     append_log,
+    build_job_list_view_state,
     build_downloader_args,
     clear_log_file,
     find_node,
@@ -219,6 +220,15 @@ def run_gui_self_test_probe() -> dict[str, Any]:
     try:
         ping = control_request({"action": "ping"})
         status = control_request({"action": "status"})
+        list_view_state = status.get("listViewState")
+        if not isinstance(list_view_state, dict) or list_view_state.get("state") not in {
+            "loading",
+            "error",
+            "empty",
+            "no_results",
+            "content",
+        }:
+            raise ControlError("GUI 상태에 작품 목록 화면 상태가 없습니다.")
         active_jobs = status.get("activeJobs")
         if not isinstance(active_jobs, list):
             raise ControlError("GUI 상태에 다중 실행 작품 목록이 없습니다.")
@@ -291,6 +301,7 @@ def run_gui_self_test_probe() -> dict[str, Any]:
             "activeJobCount": len(active_jobs),
             "workConcurrency": status.get("workConcurrency"),
             "startupRecovery": startup_recovery,
+            "listViewState": list_view_state,
             "pendingQueueCount": queue_status.get("total", 0),
             "screenshotPath": screenshot.get("path"),
             "workDetails": detail_probe,
@@ -394,6 +405,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="같은 검색·필터·정렬을 실행 중인 GUI 목록에도 적용",
     )
     list_jobs.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    list_state = subparsers.add_parser(
+        "list-state", help="작품 목록의 빈 화면·로딩·오류 상태 조회 및 GUI 점검"
+    )
+    list_state.add_argument("--query", default="", help="상태 판정에 사용할 검색어")
+    list_state.add_argument("--status", default="", help="상태 판정에 사용할 작업 상태 필터")
+    list_state.add_argument(
+        "--apply-gui", action="store_true", help="검색 조건 또는 미리보기를 실행 중인 GUI에 적용"
+    )
+    list_state.add_argument(
+        "--preview",
+        choices=("auto", "loading", "error", "empty", "no-results"),
+        default="auto",
+        help="GUI 상태 패널 진단용 미리보기",
+    )
+    list_state.add_argument("--message", default="", help="오류 미리보기의 진단 문구")
+    list_state.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     info = subparsers.add_parser("info", help="작품 메타데이터와 실행 이력 요약 조회")
     info.add_argument("--job", required=True, help="작업 ID")
@@ -942,6 +970,45 @@ def run_cli(args: argparse.Namespace) -> int:
             print(f"저장 폴더: {job_data.get('output_path') or job_data['output_dir']}")
             print(f"메모: {job_data.get('user_note') or '-'}")
         return 0
+    if command == "list-state":
+        if not args.apply_gui and (args.preview != "auto" or args.message):
+            raise ValueError("--preview와 --message는 --apply-gui와 함께 사용해야 합니다.")
+        if args.apply_gui:
+            ensure_gui_running()
+            if args.preview == "auto":
+                control_request(
+                    {
+                        "action": "set_list_filter",
+                        "query": args.query,
+                        "status": args.status,
+                        "sort": "updated",
+                    }
+                )
+                result = control_request({"action": "list_view_state"})
+            else:
+                result = control_request(
+                    {
+                        "action": "preview_list_view_state",
+                        "state": args.preview,
+                        "message": args.message,
+                    }
+                )
+        else:
+            total = count_jobs()
+            filtered = count_jobs(args.query, args.status)
+            result = build_job_list_view_state(
+                total_count=total,
+                filtered_count=filtered,
+                query=args.query,
+                state=args.status,
+            )
+        if args.json:
+            print_json(result)
+        else:
+            print(f"{result['state']} | {result['title'] or '작업 목록'}")
+            if result.get("message"):
+                print(result["message"])
+        return 0
     if command == "runs":
         if gui_is_running():
             result = control_request(
@@ -1132,8 +1199,10 @@ def run_cli(args: argparse.Namespace) -> int:
         return 0
     if command == "refresh-list":
         ensure_gui_running()
-        print_json({"ok": True, **control_request({"action": "refresh_list"})})
-        return 0
+        result = control_request({"action": "refresh_list"})
+        refreshed = bool(result.get("refreshed", False))
+        print_json({"ok": refreshed, **result})
+        return 0 if refreshed else 2
     if command == "move-folder":
         execute = bool(args.execute)
         if execute and not args.yes:
