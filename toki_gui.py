@@ -85,8 +85,10 @@ from toki_core import (
     normalize_work_concurrency,
     open_in_explorer,
     plan_job_folder_move,
+    plan_metadata_rebuild,
     read_log_tail,
     read_run_log,
+    rebuild_job_metadata as execute_metadata_rebuild,
     recover_interrupted_jobs,
     rescan_job_parameters,
     resolve_cover_path,
@@ -2071,6 +2073,57 @@ class MainWindow(QMainWindow):
         except (OSError, RuntimeError, ValueError) as error:
             QMessageBox.critical(self, "작품 폴더 이동 실패", str(error))
 
+    def rebuild_job_metadata(
+        self, job_id: str, *, execute: bool = False
+    ) -> dict[str, Any]:
+        self._flush_job_history()
+        result = (
+            execute_metadata_rebuild(job_id)
+            if execute
+            else plan_metadata_rebuild(job_id)
+        )
+        if execute and result.get("job"):
+            rebuilt = DownloadJob(**result["job"])
+            self.jobs[rebuilt.job_id] = rebuilt
+            self.jobs_by_work[rebuilt.work_key] = rebuilt
+            self.task_model.update_job(rebuilt)
+            if (
+                self.active_detail_dialog
+                and self.active_detail_dialog.job.work_key == rebuilt.work_key
+            ):
+                self.active_detail_dialog.job = rebuilt
+                self.active_detail_dialog.refresh()
+            self.log(
+                f"로컬 메타데이터 재생성: {result['metadataPath']}",
+                job_id=rebuilt.job_id,
+            )
+        return result
+
+    def confirm_rebuild_job_metadata(self, job_id: str) -> None:
+        try:
+            plan = self.rebuild_job_metadata(job_id, execute=False)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "메타데이터 재생성", str(error))
+            return
+        backup_text = (
+            f"기존 파일은 다음 위치에 백업됩니다.\n{plan['backupPath']}\n\n"
+            if plan["willOverwrite"]
+            else "새 metadata.json 파일을 만듭니다.\n\n"
+        )
+        answer = QMessageBox.question(
+            self,
+            "로컬 메타데이터 재생성",
+            f"사이트에 접속하지 않고 다음 파일을 재생성할까요?\n\n"
+            f"{plan['metadataPath']}\n\n{backup_text}"
+            "설명·장르 등 읽을 수 있는 기존 값은 보존됩니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.rebuild_job_metadata(job_id, execute=True)
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.critical(self, "메타데이터 재생성 실패", str(error))
+
     def open_job_source(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         if not job:
@@ -2181,6 +2234,13 @@ class MainWindow(QMainWindow):
         menu.addAction(
             "메타데이터 새로고침",
             lambda: self.refresh_selected_metadata(job.job_id),
+        )
+        rebuild_action = menu.addAction(
+            "로컬 메타데이터 재생성...",
+            lambda: self.confirm_rebuild_job_metadata(job.job_id),
+        )
+        rebuild_action.setEnabled(
+            job.state not in ACTIVE_JOB_STATES and bool(job.output_path)
         )
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
@@ -2552,6 +2612,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd refresh-list\n"
             "toki-cli.cmd move-folder --job ID --output PATH --dry-run --json\n"
             "toki-cli.cmd move-folder --job ID --output PATH --execute --yes --json\n"
+            "toki-cli.cmd rebuild-metadata --job ID --dry-run --json\n"
+            "toki-cli.cmd rebuild-metadata --job ID --execute --yes --json\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -2778,6 +2840,11 @@ class MainWindow(QMainWindow):
             return self.move_job_folder(
                 str(request.get("jobId") or ""),
                 str(request.get("output") or ""),
+                execute=bool(request.get("execute")),
+            )
+        if action == "rebuild_metadata":
+            return self.rebuild_job_metadata(
+                str(request.get("jobId") or ""),
                 execute=bool(request.get("execute")),
             )
         if action == "open_source":

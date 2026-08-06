@@ -244,6 +244,33 @@ class CliParserTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             run_cli(unsafe)
 
+    def test_rebuild_metadata_defaults_to_dry_run_and_execute_requires_yes(self) -> None:
+        dry_run = build_parser().parse_args(
+            ["rebuild-metadata", "--job", "job-1", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={
+                    "metadataPath": r"C:\Manga\작품\metadata.json",
+                    "backupPath": r"C:\Manga\작품\metadata.json.bak",
+                    "executed": False,
+                },
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(dry_run), 0)
+        request.assert_called_once_with(
+            {"action": "rebuild_metadata", "jobId": "job-1", "execute": False}
+        )
+
+        unsafe = build_parser().parse_args(
+            ["rebuild-metadata", "--job", "job-1", "--execute"]
+        )
+        with self.assertRaises(RuntimeError):
+            run_cli(unsafe)
+
     def test_work_and_run_detail_arguments(self) -> None:
         info = build_parser().parse_args(["info", "--job", "job-1", "--json"])
         self.assertEqual(info.job, "job-1")

@@ -1173,6 +1173,117 @@ def move_job_folder(job_id: str, output_dir: str) -> dict[str, Any]:
     }
 
 
+def plan_metadata_rebuild(job_id: str) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if job.state in ACTIVE_JOB_STATES:
+        raise ValueError("대기 또는 실행 중인 작품의 메타데이터는 재생성할 수 없습니다.")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    metadata_path = output_path / "metadata.json"
+    existing: dict[str, Any] = {}
+    existing_valid = False
+    if metadata_path.is_file():
+        try:
+            loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+                existing_valid = True
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    folder_match = re.match(r"^\[([^]]*)\]\[([^]]*)\]\s*(.+)$", output_path.name)
+    parsed_author = folder_match.group(1) if folder_match else ""
+    parsed_group = folder_match.group(2) if folder_match else ""
+    parsed_title = folder_match.group(3) if folder_match else output_path.name
+    work_site = job.work_key.split(":", 1)[0] if ":" in job.work_key else ""
+    site = (
+        job.site
+        or str((existing.get("source") or {}).get("site") or "")
+        or (work_site if work_site in {"manatoki", "newtoki", "booktoki"} else "")
+    )
+    site_title = {
+        "manatoki": "마나토끼",
+        "newtoki": "뉴토끼",
+        "booktoki": "북토끼",
+    }.get(site, output_path.parent.name)
+    work_id = job.work_key.rsplit(":", 1)[-1] if ":" in job.work_key else ""
+    cover_path = Path(job.cover_path).expanduser() if job.cover_path else None
+    cover_file = ""
+    if cover_path and cover_path.is_file() and cover_path.parent.resolve() == output_path:
+        cover_file = cover_path.name
+    elif str(existing.get("coverFile") or ""):
+        candidate = output_path / str(existing["coverFile"])
+        if candidate.is_file():
+            cover_file = candidate.name
+
+    rebuilt = dict(existing)
+    rebuilt.update(
+        {
+            "schemaVersion": 1,
+            "title": str(existing.get("title") or parsed_title),
+            "author": str(job.author or existing.get("author") or parsed_author or "N／A"),
+            "group": str(job.group or existing.get("group") or parsed_group or "N／A"),
+            "coverUrl": str(job.cover_url or existing.get("coverUrl") or ""),
+            "source": {
+                "site": site,
+                "siteTitle": site_title,
+                "workId": work_id,
+                "url": job.url,
+            },
+            "folderName": output_path.name,
+            "episodeCount": int(
+                existing.get("episodeCount")
+                or max(job.episode_total, job.episode_number, 0)
+            ),
+            "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "generatedBy": "tokiDownloader-local-rebuild",
+        }
+    )
+    if cover_file:
+        rebuilt["coverFile"] = cover_file
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "metadataPath": str(metadata_path),
+        "backupPath": str(metadata_path.with_suffix(".json.bak")),
+        "willOverwrite": metadata_path.exists(),
+        "existingValid": existing_valid,
+        "metadata": rebuilt,
+        "executed": False,
+    }
+
+
+def rebuild_job_metadata(job_id: str) -> dict[str, Any]:
+    plan = plan_metadata_rebuild(job_id)
+    metadata_path = Path(plan["metadataPath"])
+    backup_path = Path(plan["backupPath"])
+    temporary_path = metadata_path.with_suffix(".json.tmp")
+    if metadata_path.is_file():
+        shutil.copy2(metadata_path, backup_path)
+    temporary_path.write_text(
+        json.dumps(plan["metadata"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, metadata_path)
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    job.metadata_path = str(metadata_path)
+    hydrate_job_metadata(job)
+    save_jobs([job])
+    return {
+        **plan,
+        "executed": True,
+        "backupCreated": backup_path.is_file(),
+        "job": job.to_dict(),
+    }
+
+
 def delete_job_record(job_id: str) -> DownloadJob:
     job = load_job_by_id(job_id)
     if job is None:

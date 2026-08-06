@@ -35,7 +35,9 @@ from toki_core import (
     normalize_work_concurrency,
     move_job_folder,
     plan_job_folder_move,
+    plan_metadata_rebuild,
     read_run_log,
+    rebuild_job_metadata,
     recover_interrupted_jobs,
     retry_backoff_seconds,
     resolve_cover_path,
@@ -673,6 +675,55 @@ class JobRepositoryTests(unittest.TestCase):
         save_jobs([job])
         with self.assertRaises(ValueError):
             plan_job_folder_move(job.job_id, str(workspace / "other"))
+
+    def test_local_metadata_rebuild_previews_backs_up_and_recovers_core_fields(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가 A][그룹 B] 작품 제목"
+        output.mkdir(parents=True)
+        metadata_path = output / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "description": "기존 설명",
+                    "genres": ["판타지"],
+                    "episodeCount": 77,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        cover = output / "cover.png"
+        cover.write_bytes(b"cover")
+        job = DownloadJob(
+            job_id="rebuild-meta",
+            url="https://newtoki1.org/manhwa/6100",
+            output_dir=str(workspace),
+            output_path=str(output),
+            cover_path=str(cover),
+            cover_url="https://example.test/cover.png",
+            site="manatoki",
+            state="완료",
+        )
+        save_jobs([job])
+
+        preview = plan_metadata_rebuild(job.job_id)
+        self.assertFalse(preview["executed"])
+        self.assertEqual(preview["metadata"]["title"], "작품 제목")
+        self.assertEqual(preview["metadata"]["author"], "작가 A")
+        self.assertEqual(preview["metadata"]["group"], "그룹 B")
+        self.assertEqual(preview["metadata"]["description"], "기존 설명")
+        self.assertEqual(preview["metadata"]["episodeCount"], 77)
+
+        result = rebuild_job_metadata(job.job_id)
+        rebuilt = json.loads(metadata_path.read_text(encoding="utf-8"))
+        backup = json.loads(metadata_path.with_suffix(".json.bak").read_text(encoding="utf-8"))
+        loaded = toki_core.load_job_by_id(job.job_id)
+        self.assertTrue(result["backupCreated"])
+        self.assertEqual(backup["description"], "기존 설명")
+        self.assertEqual(rebuilt["source"]["workId"], "6100")
+        self.assertEqual(rebuilt["coverFile"], "cover.png")
+        self.assertEqual(loaded.metadata_path, str(metadata_path.resolve()))
+        self.assertEqual(loaded.author, "작가 A")
 
     def test_bulk_cleanup_only_removes_selected_states(self) -> None:
         jobs = [

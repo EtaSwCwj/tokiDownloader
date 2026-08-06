@@ -42,10 +42,12 @@ from toki_core import (
     normalize_scan_request,
     normalize_work_concurrency,
     plan_job_folder_move,
+    plan_metadata_rebuild,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
     read_run_log,
+    rebuild_job_metadata,
     resolve_cover_path,
     retry_backoff_seconds,
     save_config,
@@ -491,6 +493,19 @@ def build_parser() -> argparse.ArgumentParser:
     move_mode.add_argument("--execute", action="store_true", help="실제 폴더 이동 실행")
     move_folder.add_argument("--yes", action="store_true", help="실제 이동 확인")
     move_folder.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    rebuild_metadata = subparsers.add_parser(
+        "rebuild-metadata",
+        help="사이트 접속 없이 작품 폴더의 metadata.json 재생성 계획 또는 실행",
+    )
+    rebuild_metadata.add_argument("--job", required=True, help="작업 ID")
+    rebuild_mode = rebuild_metadata.add_mutually_exclusive_group()
+    rebuild_mode.add_argument(
+        "--dry-run", action="store_true", help="파일을 바꾸지 않고 생성 내용을 확인"
+    )
+    rebuild_mode.add_argument("--execute", action="store_true", help="메타데이터 재생성 실행")
+    rebuild_metadata.add_argument("--yes", action="store_true", help="기존 파일 변경 확인")
+    rebuild_metadata.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
@@ -1037,6 +1052,35 @@ def run_cli(args: argparse.Namespace) -> int:
                     if result.get("conflict")
                     else "이동 가능(dry-run)"
                 )
+            )
+        return 0
+    if command == "rebuild-metadata":
+        execute = bool(args.execute)
+        if execute and not args.yes:
+            raise ControlError("실제 메타데이터 재생성에는 --execute --yes가 모두 필요합니다.")
+        if gui_is_running():
+            result = control_request(
+                {
+                    "action": "rebuild_metadata",
+                    "jobId": args.job,
+                    "execute": execute,
+                }
+            )
+        else:
+            result = (
+                rebuild_job_metadata(args.job)
+                if execute
+                else plan_metadata_rebuild(args.job)
+            )
+        if args.json:
+            print_json({"ok": True, **result})
+        else:
+            print(f"메타데이터: {result['metadataPath']}")
+            print(f"백업: {result['backupPath']}")
+            print(
+                "결과: 재생성 완료"
+                if result.get("executed")
+                else "결과: 생성 가능(dry-run)"
             )
         return 0
     if command == "set-output":
