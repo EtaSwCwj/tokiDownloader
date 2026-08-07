@@ -40,8 +40,14 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 JOB_DB_SCHEMA_VERSION = 4
+DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
+FOLDER_TEMPLATE_FIELDS = frozenset({"author", "group", "title", "site", "id"})
+_WINDOWS_RESERVED_SEGMENT = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.IGNORECASE
+)
+_WINDOWS_INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
     2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
@@ -62,6 +68,7 @@ TAG_COLORS = {
 SETTING_KEYS = frozenset(
     {
         "outputDir",
+        "folderNameTemplate",
         "logVisible",
         "showBrowser",
         "workConcurrency",
@@ -315,6 +322,7 @@ def default_config() -> dict[str, Any]:
     return {
         "configVersion": CONFIG_SCHEMA_VERSION,
         "outputDir": str(ROOT_DIR),
+        "folderNameTemplate": DEFAULT_FOLDER_TEMPLATE,
         "window": {
             "x": None,
             "y": None,
@@ -413,6 +421,116 @@ def normalize_window_opacity(value: int | None) -> int:
     return normalized
 
 
+def normalize_folder_name_template(value: str | None) -> str:
+    template = str(value or "").strip()
+    if not template:
+        raise ValueError("작품 폴더명 템플릿을 입력해주세요.")
+    if len(template) > 180:
+        raise ValueError("작품 폴더명 템플릿은 180자 이하여야 합니다.")
+
+    fields: list[str] = []
+
+    def collect_field(match: re.Match[str]) -> str:
+        field = match.group(1)
+        if field not in FOLDER_TEMPLATE_FIELDS:
+            raise ValueError(f"지원하지 않는 폴더명 변수입니다: {{{field}}}")
+        fields.append(field)
+        return ""
+
+    literal = re.sub(r"\{([A-Za-z][A-Za-z0-9_]*)\}", collect_field, template)
+    if "{" in literal or "}" in literal:
+        raise ValueError(
+            "폴더명 변수는 {author}, {group}, {title}, {site}, {id} 형식으로 입력해주세요."
+        )
+    if _WINDOWS_INVALID_SEGMENT.search(literal):
+        raise ValueError(
+            "폴더명 템플릿의 고정 문자에 Windows 금지 문자를 사용할 수 없습니다."
+        )
+    if "title" not in fields:
+        raise ValueError("작품을 구분할 수 있도록 {title} 변수가 필요합니다.")
+    return template
+
+
+def sanitize_windows_path_segment(value: Any, fallback: str = "N／A") -> str:
+    sanitized = _WINDOWS_INVALID_SEGMENT.sub("", str(value or ""))
+    sanitized = sanitized.rstrip(". ").strip() or fallback
+    return f"_{sanitized}" if _WINDOWS_RESERVED_SEGMENT.fullmatch(sanitized) else sanitized
+
+
+def render_folder_name_template(
+    template: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    normalized = normalize_folder_name_template(template or DEFAULT_FOLDER_TEMPLATE)
+    source = metadata if isinstance(metadata, dict) else {}
+    source_metadata = source.get("source")
+    source_metadata = source_metadata if isinstance(source_metadata, dict) else {}
+    values = {
+        "author": sanitize_windows_path_segment(source.get("author")),
+        "group": sanitize_windows_path_segment(source.get("group")),
+        "title": sanitize_windows_path_segment(source.get("title"), "제목 없음"),
+        "site": sanitize_windows_path_segment(
+            source_metadata.get("siteTitle")
+            or source.get("site")
+            or source_metadata.get("site")
+        ),
+        "id": sanitize_windows_path_segment(
+            source_metadata.get("workId") or source.get("id")
+        ),
+    }
+    rendered = re.sub(
+        r"\{([A-Za-z][A-Za-z0-9_]*)\}",
+        lambda match: values[match.group(1)],
+        normalized,
+    )
+    if not rendered or len(rendered) > 240:
+        raise ValueError(
+            "미리보기 폴더명이 비어 있거나 Windows 안전 길이 240자를 초과합니다."
+        )
+    if _WINDOWS_INVALID_SEGMENT.search(rendered) or rendered.endswith((".", " ")):
+        raise ValueError("미리보기 폴더명이 Windows 경로 규칙에 맞지 않습니다.")
+    if _WINDOWS_RESERVED_SEGMENT.fullmatch(rendered):
+        raise ValueError("Windows 예약 장치 이름은 폴더명으로 사용할 수 없습니다.")
+    return rendered
+
+
+def folder_name_template_preview(
+    template: str | None,
+    *,
+    metadata: dict[str, Any] | None = None,
+    output_dir: str | Path | None = None,
+    site_title: str = "마나토끼",
+) -> dict[str, Any]:
+    sample = metadata or {
+        "author": "이요미네 츠쿠",
+        "group": "N／A",
+        "title": "이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건",
+        "source": {"siteTitle": "마나토끼", "workId": "34360"},
+    }
+    normalized = normalize_folder_name_template(template or DEFAULT_FOLDER_TEMPLATE)
+    preview = render_folder_name_template(normalized, sample)
+    candidate = ""
+    exists = False
+    if output_dir:
+        candidate_path = (
+            Path(output_dir).expanduser().resolve()
+            / sanitize_windows_path_segment(site_title, "사이트")
+            / preview
+        )
+        candidate = str(candidate_path)
+        exists = candidate_path.exists()
+    return {
+        "ok": True,
+        "dryRun": True,
+        "template": normalized,
+        "preview": preview,
+        "candidatePath": candidate,
+        "collision": exists,
+        "existingFoldersChanged": False,
+        "allowedFields": sorted(FOLDER_TEMPLATE_FIELDS),
+    }
+
+
 def quick_action_catalog() -> list[dict[str, str]]:
     return [dict(item) for item in QUICK_ACTIONS]
 
@@ -467,6 +585,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         str(output_dir).strip()
         if isinstance(output_dir, str) and str(output_dir).strip()
         else defaults["outputDir"]
+    )
+    normalized["folderNameTemplate"] = _safe_normalize(
+        normalize_folder_name_template,
+        source.get("folderNameTemplate"),
+        defaults["folderNameTemplate"],
     )
     for key in (
         "logVisible",
@@ -709,6 +832,7 @@ def validate_app_setting_updates(
                 raise ValueError(f"{key} 설정은 true 또는 false여야 합니다.")
             validated[key] = updates[key]
     normalizers: dict[str, Callable[[Any], Any]] = {
+        "folderNameTemplate": normalize_folder_name_template,
         "workConcurrency": normalize_work_concurrency,
         "imageConcurrency": normalize_image_concurrency,
         "retryCount": normalize_retry_count,
@@ -3794,18 +3918,28 @@ def cleanup_thumbnail_cache(
     }
 
 
-def build_downloader_args(job: DownloadJob, json_events: bool = True) -> list[str]:
+def build_downloader_args(
+    job: DownloadJob,
+    json_events: bool = True,
+    folder_template: str | None = None,
+) -> list[str]:
     args = [str(DOWNLOADER_PATH), "-url", job.url, "-output", job.output_dir]
+    args.extend(
+        [
+            "-folder-template",
+            normalize_folder_name_template(folder_template or DEFAULT_FOLDER_TEMPLATE),
+        ]
+    )
     if job.start is not None:
         args.extend(["-start", str(job.start)])
     if job.last is not None:
         args.extend(["-last", str(job.last)])
     if job.show_browser:
         args.append("-show-browser")
+    if job.output_path:
+        args.extend(["-content-path", job.output_path])
     if job.metadata_only:
         args.append("-metadata-only")
-        if job.output_path:
-            args.extend(["-content-path", job.output_path])
     else:
         args.extend(["-scan-mode", normalize_scan_mode(job.scan_mode)])
     args.extend(["-image-concurrency", str(normalize_image_concurrency(job.image_concurrency))])

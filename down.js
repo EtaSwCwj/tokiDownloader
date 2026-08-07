@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { selectEpisodeLinks } from './downloader_policy.js';
 import { classifyDownloaderError } from './downloader_errors.js';
+import {
+    DEFAULT_FOLDER_TEMPLATE,
+    renderFolderTemplate,
+    sanitizePathSegment,
+} from './downloader_naming.js';
 
 let info = {
     url: '',
@@ -19,6 +24,7 @@ let info = {
     showBrowser: false,
     metadataOnly: false,
     contentPathOverride: '',
+    folderTemplate: DEFAULT_FOLDER_TEMPLATE,
     imageConcurrency: 5,
     scanMode: ''
 }
@@ -35,7 +41,7 @@ function consoleGrey(val) {
     console.log(`\x1b[100m${val}\x1b[0m`);
 }
 function help() {
-    console.log(`사용법: node down -url "URL" [-scan-mode new|full|range] [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
+    console.log(`사용법: node down -url "URL" [-scan-mode new|full|range] [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-folder-template "[{author}][{group}] {title}"] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
     process.exit();
 }
 function emitEvent(event, data = {}) {
@@ -85,6 +91,12 @@ function analyseArguments() {
         else if (process.argv[i] == '-content-path') {
             if ((i + 1) < argL) {
                 info.contentPathOverride = path.resolve(process.argv[i + 1]);
+                i++;
+            }
+        }
+        else if (process.argv[i] == '-folder-template') {
+            if ((i + 1) < argL) {
+                info.folderTemplate = process.argv[i + 1];
                 i++;
             }
         }
@@ -157,18 +169,8 @@ function analyseArguments() {
         info.lastIndex = 99999;
     }
 }
-function sanitizePathSegment(value, fallback = 'N／A') {
-    const sanitized = String(value ?? '')
-        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
-        .replace(/[. ]+$/g, '')
-        .trim();
-    return sanitized || fallback;
-}
 function buildContentFolderName(metadata) {
-    const author = sanitizePathSegment(metadata.author);
-    const group = sanitizePathSegment(metadata.group);
-    const title = sanitizePathSegment(metadata.title, '제목 없음');
-    return `[${author}][${group}] ${title}`;
+    return renderFolderTemplate(info.folderTemplate, metadata);
 }
 function getContentPath() {
     return info.contentPathOverride || path.join(info.outputDir, info.siteTitle, info.contentFolderName);

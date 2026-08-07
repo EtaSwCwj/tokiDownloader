@@ -53,6 +53,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "down.js",
         ROOT_DIR / "downloader_policy.js",
         ROOT_DIR / "downloader_errors.js",
+        ROOT_DIR / "downloader_naming.js",
         ROOT_DIR / "tokiDownloader.js",
         ROOT_DIR / "package.json",
         ROOT_DIR / "VERSION",
@@ -97,6 +98,7 @@ def _check_node_syntax() -> dict[str, Any]:
         DOWNLOADER_PATH,
         ROOT_DIR / "downloader_policy.js",
         ROOT_DIR / "downloader_errors.js",
+        ROOT_DIR / "downloader_naming.js",
         ROOT_DIR / "tokiDownloader.js",
     ]
     for path in files:
@@ -123,6 +125,7 @@ def _check_node_tests() -> dict[str, Any]:
             "--test",
             str(ROOT_DIR / "tests" / "downloader_policy.test.js"),
             str(ROOT_DIR / "tests" / "downloader_errors.test.js"),
+            str(ROOT_DIR / "tests" / "downloader_naming.test.js"),
         ],
         cwd=str(ROOT_DIR),
         capture_output=True,
@@ -137,7 +140,7 @@ def _check_node_tests() -> dict[str, Any]:
     )
     if completed.returncode:
         raise RuntimeError(output or f"종료 코드 {completed.returncode}")
-    return {"detail": "다운로더 JavaScript 테스트 7건 통과", "tests": 7}
+    return {"detail": "다운로더 JavaScript 테스트 11건 통과", "tests": 11}
 
 
 def _check_unit_tests() -> dict[str, Any]:

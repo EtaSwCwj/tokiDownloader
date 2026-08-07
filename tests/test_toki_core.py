@@ -37,6 +37,7 @@ from toki_core import (
     export_jobs_snapshot,
     find_duplicate_works,
     find_duplicate_images,
+    folder_name_template_preview,
     hydrate_job_metadata,
     import_jobs_snapshot,
     inspect_local_archive,
@@ -60,6 +61,7 @@ from toki_core import (
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_error_category,
+    normalize_folder_name_template,
     normalize_config,
     normalize_work_concurrency,
     move_job_folder,
@@ -71,6 +73,7 @@ from toki_core import (
     rebuild_job_metadata,
     rename_work_collection,
     recover_interrupted_jobs,
+    render_folder_name_template,
     retry_backoff_seconds,
     resolve_cover_path,
     reorder_pending_jobs,
@@ -96,6 +99,28 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_folder_name_template_preserves_requested_rule_and_validates_windows_path(self) -> None:
+        template = "[{author}][{group}] {title}"
+        metadata = {
+            "author": "이요미네 츠쿠",
+            "group": "N／A",
+            "title": "이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건",
+            "source": {"siteTitle": "마나토끼", "workId": "34360"},
+        }
+        self.assertEqual(
+            render_folder_name_template(template, metadata),
+            "[이요미네 츠쿠][N／A] 이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건",
+        )
+        result = folder_name_template_preview(template, metadata=metadata)
+        self.assertTrue(result["dryRun"])
+        self.assertFalse(result["existingFoldersChanged"])
+        with self.assertRaisesRegex(ValueError, "지원하지 않는"):
+            normalize_folder_name_template("{publisher} {title}")
+        with self.assertRaisesRegex(ValueError, "금지 문자"):
+            normalize_folder_name_template("{author}/{title}")
+        with self.assertRaisesRegex(ValueError, "title"):
+            normalize_folder_name_template("[{author}]")
+
     def test_local_zip_archive_inspection_is_read_only_and_flags_unsafe_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -508,6 +533,7 @@ class CoreContractTests(unittest.TestCase):
                 updated = update_app_settings(
                     {
                         "outputDir": str(output),
+                        "folderNameTemplate": "[{site}][{id}] {title}",
                         "showBrowser": True,
                         "logVisible": False,
                         "workConcurrency": 3,
@@ -535,6 +561,9 @@ class CoreContractTests(unittest.TestCase):
                 )
                 self.assertTrue(output.is_dir())
                 self.assertEqual(updated["workConcurrency"], 3)
+                self.assertEqual(
+                    updated["folderNameTemplate"], "[{site}][{id}] {title}"
+                )
                 self.assertEqual(updated["logBackupCount"], 3)
                 self.assertEqual(updated["rowDensity"], "compact")
                 self.assertEqual(updated["theme"], "dark")
@@ -602,6 +631,8 @@ class CoreContractTests(unittest.TestCase):
         self.assertIn(job.output_dir, args)
         self.assertIn("-show-browser", args)
         self.assertIn("-json-events", args)
+        template_index = args.index("-folder-template")
+        self.assertEqual(args[template_index + 1], "[{author}][{group}] {title}")
         concurrency_index = args.index("-image-concurrency")
         self.assertEqual(args[concurrency_index + 1], "5")
         mode_index = args.index("-scan-mode")
@@ -727,6 +758,22 @@ class CoreContractTests(unittest.TestCase):
         content_path_index = args.index("-content-path")
         self.assertEqual(args[content_path_index + 1], job.output_path)
         self.assertEqual(DownloadRun.from_job(job).operation, "metadata_refresh")
+
+    def test_full_rescan_preserves_existing_work_folder_after_template_change(self) -> None:
+        job = DownloadJob(
+            job_id="rescan-existing",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\마나토끼\[기존 작가][기존 그룹] 기존 제목",
+            scan_mode="full",
+        )
+        args = build_downloader_args(
+            job, folder_template="[{site}][{id}] {title}"
+        )
+        content_index = args.index("-content-path")
+        self.assertEqual(args[content_index + 1], job.output_path)
+        template_index = args.index("-folder-template")
+        self.assertEqual(args[template_index + 1], "[{site}][{id}] {title}")
 
     def test_pending_job_and_run_can_be_cancelled_before_start(self) -> None:
         job = DownloadJob(

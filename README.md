@@ -196,6 +196,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd completion-action cancel
 .\toki-cli.cmd clipboard inspect --text "https://newtoki1.org/manhwa/34360" --json
 .\toki-cli.cmd clipboard monitor --state on --json
+.\toki-cli.cmd folder-template --template "[{author}][{group}] {title}" --output "D:\Manga" --json
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -263,6 +264,12 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 키를 전체 DB와 비교하고, 이미 등록된 작품은 건너뛰며 새 작품은 확인 질문 뒤에만 대기열에
 추가합니다. `clipboard inspect --text URL --json`은 추가 없이 판정만 수행하고,
 `clipboard monitor --state on|off`로 감지 설정을 바꿉니다.
+
+일반 설정의 작품 폴더명은 기본적으로 `[작가][그룹] 제목` 규칙을 사용합니다.
+`{author}`, `{group}`, `{title}`, `{site}`, `{id}`를 조합할 수 있고 `{title}`은 필수입니다.
+`folder-template` 명령은 예상 폴더명과 저장 경로 충돌을 dry-run으로 확인하며 파일이나 기존
+폴더를 바꾸지 않습니다. 저장된 작품의 실제 경로가 항상 우선되므로 템플릿 변경은 기존
+다운로드 결과를 자동으로 이름 변경하거나 다른 폴더에 중복 생성하지 않습니다.
 
 `performance audit`은 작품 목록의 갱신일·제목·진행률 정렬과 상태 필터 조합 6가지를
 `EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,

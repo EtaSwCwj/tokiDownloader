@@ -53,6 +53,7 @@ from toki_core import (
     export_jobs_snapshot,
     find_duplicate_works,
     find_duplicate_images,
+    folder_name_template_preview,
     load_config,
     import_app_settings,
     import_jobs_snapshot,
@@ -248,7 +249,14 @@ def run_direct_download(args: argparse.Namespace) -> int:
             config.get("retryBackoffSeconds")
         ),
     )
-    command = [find_node(), *build_downloader_args(job, json_events=False)]
+    command = [
+        find_node(),
+        *build_downloader_args(
+            job,
+            json_events=False,
+            folder_template=str(config.get("folderNameTemplate") or ""),
+        ),
+    ]
     for attempt in range(1, job.retry_limit + 2):
         job.attempt_count = attempt
         append_log(
@@ -835,6 +843,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     set_settings = subparsers.add_parser("set-settings", help="일반 설정 일괄 변경")
     set_settings.add_argument("--output", help="기본 저장 폴더")
+    set_settings.add_argument(
+        "--folder-template",
+        help="작품 폴더명 템플릿 ({author}, {group}, {title}, {site}, {id})",
+    )
     set_settings.add_argument("--works", type=int, help="동시 실행 작품 수 1~4")
     set_settings.add_argument("--images", type=int, help="이미지 연결 수 1~16")
     set_settings.add_argument("--retry-count", type=int, help="재시도 횟수 0~5")
@@ -889,6 +901,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_settings.add_argument("--defaults", action="store_true", help="일반 설정 기본값 복원")
     set_settings.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    folder_template = subparsers.add_parser(
+        "folder-template", help="작품 폴더명 템플릿 미리보기와 경로 검증"
+    )
+    folder_template.add_argument("--template", help="검사할 템플릿; 생략 시 현재 설정")
+    folder_template.add_argument("--author", default="이요미네 츠쿠")
+    folder_template.add_argument("--group", default="N／A")
+    folder_template.add_argument(
+        "--title",
+        default="이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건",
+    )
+    folder_template.add_argument("--site", default="마나토끼")
+    folder_template.add_argument("--id", default="34360")
+    folder_template.add_argument("--output", help="충돌까지 확인할 저장 루트")
+    folder_template.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     completion_action = subparsers.add_parser(
         "completion-action", help="모든 작업 완료 후 동작 조회·설정·미리보기"
@@ -2304,6 +2331,7 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "set-settings":
         mapping = {
             "outputDir": args.output,
+            "folderNameTemplate": args.folder_template,
             "workConcurrency": args.works,
             "imageConcurrency": args.images,
             "retryCount": args.retry_count,
@@ -2350,6 +2378,30 @@ def run_cli(args: argparse.Namespace) -> int:
             print_json(result)
         else:
             print(f"설정 저장 완료: {result['outputDir']}")
+        return 0
+    if command == "folder-template":
+        config = load_config()
+        template = args.template or config.get("folderNameTemplate")
+        result = folder_name_template_preview(
+            template,
+            metadata={
+                "author": args.author,
+                "group": args.group,
+                "title": args.title,
+                "source": {"siteTitle": args.site, "workId": args.id},
+            },
+            output_dir=args.output,
+            site_title=args.site,
+        )
+        if args.json:
+            print_json(result)
+        else:
+            print(f"템플릿: {result['template']}")
+            print(f"미리보기: {result['preview']}")
+            if result["candidatePath"]:
+                print(f"예상 경로: {result['candidatePath']}")
+                print(f"기존 폴더 충돌: {'있음' if result['collision'] else '없음'}")
+            print("기존 폴더 변경: 없음 (dry-run)")
         return 0
     if command == "completion-action":
         subcommand = args.completion_command

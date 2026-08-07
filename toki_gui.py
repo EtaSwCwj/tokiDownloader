@@ -119,6 +119,7 @@ from toki_core import (
     export_jobs_snapshot,
     find_duplicate_works,
     find_duplicate_images,
+    folder_name_template_preview,
     find_node,
     hydrate_job_metadata,
     import_app_settings,
@@ -1748,7 +1749,7 @@ class CompletionCountdownDialog(QDialog):
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
-        "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
+        "일반 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
@@ -1786,6 +1787,14 @@ class SettingsDialog(QDialog):
         output_button.clicked.connect(self._choose_output)
         output_row.addWidget(output_button)
         general_form.addRow("기본 저장 폴더", output_row)
+        self.folder_template_edit = QLineEdit()
+        self.folder_template_edit.setPlaceholderText("[{author}][{group}] {title}")
+        self.folder_template_edit.textChanged.connect(self._update_folder_preview)
+        general_form.addRow("작품 폴더명", self.folder_template_edit)
+        self.folder_template_preview = QLabel("")
+        self.folder_template_preview.setObjectName("mutedLabel")
+        self.folder_template_preview.setWordWrap(True)
+        general_form.addRow("미리보기", self.folder_template_preview)
         self.show_browser_check = QCheckBox(
             "사이트 진단이 필요할 때 자동화 브라우저 창 표시"
         )
@@ -2002,6 +2011,7 @@ class SettingsDialog(QDialog):
 
     def _load_values(self, values: dict[str, Any]) -> None:
         self.output_edit.setText(str(values["outputDir"]))
+        self.folder_template_edit.setText(str(values["folderNameTemplate"]))
         self.show_browser_check.setChecked(bool(values["showBrowser"]))
         self.log_visible_check.setChecked(bool(values["logVisible"]))
         self.tray_enabled_check.setChecked(bool(values["trayEnabled"]))
@@ -2035,6 +2045,22 @@ class SettingsDialog(QDialog):
         self.always_on_top_check.setChecked(bool(values["alwaysOnTop"]))
         self.window_opacity_spin.setValue(int(values["windowOpacity"]))
         self._load_quick_actions(values["quickActions"])
+        self._update_folder_preview()
+
+    def _update_folder_preview(self, _value: str = "") -> None:
+        try:
+            result = folder_name_template_preview(
+                self.folder_template_edit.text(),
+                output_dir=self.output_edit.text(),
+            )
+            collision = " · 기존 폴더 있음" if result["collision"] else ""
+            self.folder_template_preview.setText(
+                f"{result['preview']}{collision}\n기존 폴더는 자동 변경하지 않습니다."
+            )
+            self.folder_template_preview.setStyleSheet("")
+        except ValueError as error:
+            self.folder_template_preview.setText(f"사용할 수 없음: {error}")
+            self.folder_template_preview.setStyleSheet("color: #d84a4a;")
 
     def _load_quick_actions(self, selected: list[str]) -> None:
         catalog = quick_action_catalog()
@@ -2078,10 +2104,12 @@ class SettingsDialog(QDialog):
         )
         if selected:
             self.output_edit.setText(selected)
+            self._update_folder_preview()
 
     def _collect_updates(self) -> dict[str, Any]:
         return {
             "outputDir": self.output_edit.text(),
+            "folderNameTemplate": self.folder_template_edit.text(),
             "showBrowser": self.show_browser_check.isChecked(),
             "logVisible": self.log_visible_check.isChecked(),
             "trayEnabled": self.tray_enabled_check.isChecked(),
@@ -3816,7 +3844,15 @@ class MainWindow(QMainWindow):
 
         process.setWorkingDirectory(str(ROOT_DIR))
         process.setProgram(find_node())
-        process.setArguments(build_downloader_args(context.job, json_events=True))
+        process.setArguments(
+            build_downloader_args(
+                context.job,
+                json_events=True,
+                folder_template=str(
+                    getattr(self, "config", {}).get("folderNameTemplate") or ""
+                ),
+            )
+        )
         process.readyReadStandardOutput.connect(
             lambda job_id=context.job.job_id: self._read_stdout(job_id)
         )

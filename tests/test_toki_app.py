@@ -843,6 +843,7 @@ class CliParserTests(unittest.TestCase):
                 "--thumbnail-size", "large", "--always-on-top", "on",
                 "--opacity", "85",
                 "--quick-actions", "settings.open,folder.open,download.start",
+                "--folder-template", "[{site}][{id}] {title}",
             ]
         )
         with (
@@ -869,6 +870,7 @@ class CliParserTests(unittest.TestCase):
                         "folder.open",
                         "download.start",
                     ],
+                    "folderNameTemplate": "[{site}][{id}] {title}",
                     "showBrowser": True,
                     "logVisible": False,
                     "thumbnailsVisible": False,
