@@ -411,7 +411,7 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 - [x] 단축키 편집·가져오기·내보내기
 - [x] 작업 완료 알림음과 메시지
 - [x] 이미지 형식 변환
-- [ ] 이미지 리사이즈와 파일 유형 제외
+- [x] 이미지 리사이즈와 파일 유형 제외
 - [ ] 압축 파일 연결 프로그램과 미리보기
 - [ ] 자동 저장 주기와 불완전 작업 복구
 - [ ] 페이지 수 제한, 스크롤 속도, 지연 로딩, 저사양 모드
@@ -448,6 +448,17 @@ GUI 중지 버튼과 `cancel-conversion --job ID`를 같은 IPC 동작으로 연
 검증했으며, 메시지 상자만 임시 활성화해 실제 IPC 미리보기·캡처·CLI 닫기를 확인한 뒤
 `sound=none`, 메시지 상자 꺼짐으로 복원했다. 화면은 `logs/notification-settings-gui.png`,
 `logs/notification-message-preview.png`에 보존했고 Python 176건과 Node 16건을 통과했다.
+
+2026-08-07 이미지 리사이즈·파일 유형 제외 구현: 설정 스키마 v8의 최대 너비·높이와 제외
+확장자를 공용 정책으로 정규화하고 `image-processing status|set`, `convert-images` 실행별
+옵션, 고급 설정과 이미지 변환 확인창에 연결했다. 최대 한 방향만 지정해도 되고 Pillow
+LANCZOS가 원본 비율을 유지해 축소하며, 축소 결과는 무축소 결과와 분리된
+`_converted/<형식>-<너비>x<높이>`에 임시 파일 후 원자 교체로 저장한다. JPG/JPEG/PNG/WebP/
+GIF/BMP/AVIF 제외는 후처리 대상 선택에만 적용해 원본과 기존 결과를 지우지 않는다. 임시
+한글·공백 작품 경로에서 128×96·120×80 원본을 실제 처리해 최대 64×64, 제외 1장, 원본
+바이트 불변을 확인했고 사용자 작품에는 파일 생성 없이 dry-run만 실행했다. GUI는
+`logs/image-processing-settings.png`, `logs/image-resize-conversion-plan.png`로 확인했고
+Python 177건과 Node 16건을 통과했다.
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 

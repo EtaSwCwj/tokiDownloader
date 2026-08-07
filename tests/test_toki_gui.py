@@ -7,7 +7,7 @@ from collections import deque
 from pathlib import Path
 from unittest.mock import patch
 
-from toki_core import DownloadJob, DownloadRun
+from toki_core import DownloadJob, DownloadRun, default_config
 from toki_gui import (
     ImageConversionProcessContext,
     JobListModel,
@@ -950,6 +950,7 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness = type("ConversionHarness", (), {})()
         harness.image_conversion_processes = {}
+        harness.config = default_config()
         harness.resource_limits = {"cpuProcesses": 2}
         harness.active_image_conversion_dialog = None
         harness.active_image_conversion_progress_dialog = None
@@ -966,6 +967,9 @@ class WorkSchedulerTests(unittest.TestCase):
                 job.job_id,
                 "webp",
                 82,
+                max_width=1600,
+                max_height=2400,
+                excluded_extensions=["gif"],
                 execute=True,
             )
 
@@ -979,6 +983,55 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(
             process.arguments[process.arguments.index("--quality") + 1], "82"
         )
+        self.assertEqual(
+            process.arguments[process.arguments.index("--max-width") + 1], "1600"
+        )
+        self.assertEqual(
+            process.arguments[process.arguments.index("--max-height") + 1], "2400"
+        )
+        self.assertIn("--exclude-ext", process.arguments)
+        self.assertIn(".gif", process.arguments)
+
+        policy_harness = type("ImagePolicyHarness", (), {})()
+        policy_harness.config = default_config()
+        policy = MainWindow._handle_control_action(
+            policy_harness, {"action": "image_processing_policy"}
+        )
+        self.assertEqual(policy["maxWidth"], 0)
+        self.assertTrue(policy["preservesOriginals"])
+
+        ipc_calls = []
+        ipc_harness = type("ImageConversionIpcHarness", (), {})()
+        ipc_harness.start_image_conversion = lambda *args, **kwargs: (
+            ipc_calls.append((args, kwargs)) or {"started": True}
+        )
+        MainWindow._handle_control_action(
+            ipc_harness,
+            {
+                "action": "convert_images",
+                "jobId": "convert-job",
+                "format": "webp",
+                "quality": 82,
+                "maxWidth": 1600,
+                "maxHeight": 2400,
+                "excludedExtensions": ["gif"],
+            },
+        )
+        self.assertEqual(ipc_calls[0][0], ("convert-job", "webp", 82))
+        self.assertEqual(
+            ipc_calls[0][1],
+            {
+                "max_width": 1600,
+                "max_height": 2400,
+                "excluded_extensions": ["gif"],
+                "execute": False,
+            },
+        )
+        ipc_harness.close_image_conversion_dialog = lambda: True
+        closed = MainWindow._handle_control_action(
+            ipc_harness, {"action": "close_image_conversion"}
+        )
+        self.assertTrue(closed["closed"])
 
     def test_image_conversion_cancel_is_cli_callable_and_idempotent(self) -> None:
         process = _ProcessStub()

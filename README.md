@@ -191,6 +191,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --dry-run --json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --progress-json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --show-gui
+.\toki-cli.cmd convert-images --close
 .\toki-cli.cmd cancel-conversion --job 작업ID
 .\toki-cli.cmd copy-id --job 작업ID
 .\toki-cli.cmd copy-link --job 작업ID
@@ -660,7 +661,10 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 메인 스레드에서 한꺼번에 읽지 않습니다.
 
 `convert-images`는 JPG·PNG·WebP 변환을 지원하며 결과를 작품 폴더 아래
-`_converted\형식\기존 회차 폴더`에 생성합니다. 원본은 덮어쓰거나 삭제하지 않고, 같은
+`_converted\형식\기존 회차 폴더`에 생성합니다. 최대 너비나 높이를 지정하면 가로세로 비율을
+유지해 축소하고 `_converted\형식-너비x높이`를 별도 출력 루트로 사용하므로 기존 무축소
+결과와 섞이지 않습니다. `--exclude-ext`는 지정 확장자를 이번 변환 대상에서만 제외하며
+원본이나 이미 만들어진 결과를 삭제하지 않습니다. 원본은 덮어쓰거나 삭제하지 않고, 같은
 결과 파일이 있으면 건너뛰므로 중단 후 다시 실행할 수 있습니다. 기본 동작은 `dry-run`이고
 실제 대량 파일 생성에는 `--execute --yes`가 모두 필요합니다. GUI도 먼저 대상 수·기존
 결과·출력 경로를 보여준 뒤 `변환 실행...`에서 다시 확인합니다. 실행 중에는 처리 수와
@@ -669,6 +673,20 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 그대로이고, 다음 실행은 남은 임시 파일을 정리한 뒤 기존 완성 결과를 건너뜁니다.
 `--progress-json`은 진행 이벤트와 최종 결과를 한 줄씩 JSON으로 출력하며 사용자 중지는
 종료 코드 3을 사용합니다. 투명 이미지를 JPEG로 변환할 때는 흰 배경 RGB로 합성합니다.
+고급 설정의 기본 최대 너비·높이와 제외 확장자는 `image-processing`으로 동일하게 조회·
+변경할 수 있으며, `convert-images`에 직접 지정한 값이 해당 실행에서만 우선합니다.
+
+```powershell
+.\toki-cli.cmd image-processing status --json
+.\toki-cli.cmd image-processing set --max-width 1600 --max-height 2400 --exclude "gif,bmp,avif" --json
+.\toki-cli.cmd convert-images --job 작업ID --format webp --max-width 1600 --max-height 2400 --exclude-ext gif --dry-run --json
+.\toki-cli.cmd convert-images --job 작업ID --format webp --include-all-types --execute --yes --progress-json
+.\toki-cli.cmd convert-images --close
+```
+
+크기 `0`은 해당 방향 제한 없음이며, 실제 축소값은 64~16384px 범위입니다. 제외 가능한
+유형은 JPG/JPEG/PNG/WebP/GIF/BMP/AVIF이고 `status --json`의 `imageProcessing`에서 현재
+정책과 원본 보존 여부를 확인할 수 있습니다.
 선택 기능이므로 다음 명령으로 Pillow와 ImageHash를 설치합니다.
 
 ```powershell

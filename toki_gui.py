@@ -152,6 +152,7 @@ from toki_core import (
     folder_name_template_preview,
     find_node,
     hydrate_job_metadata,
+    image_processing_policy_snapshot,
     import_app_settings,
     import_jobs_snapshot,
     import_provider_cookies,
@@ -180,6 +181,8 @@ from toki_core import (
     mark_run_cancelled,
     move_job_folder as execute_job_folder_move,
     normalize_image_concurrency,
+    normalize_image_excluded_extensions,
+    normalize_image_resize_dimension,
     normalize_shortcut_overrides,
     normalize_embedded_browser_url,
     normalize_retry_backoff,
@@ -2458,7 +2461,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2701,6 +2704,25 @@ class SettingsDialog(QDialog):
             )
         )
         advanced_form.addRow("알림 확인", notification_preview_button)
+        self.image_resize_width_spin = QSpinBox()
+        self.image_resize_width_spin.setRange(0, 16384)
+        self.image_resize_width_spin.setSingleStep(64)
+        self.image_resize_width_spin.setSpecialValueText("제한 없음")
+        self.image_resize_width_spin.setSuffix(" px")
+        advanced_form.addRow("이미지 최대 너비", self.image_resize_width_spin)
+        self.image_resize_height_spin = QSpinBox()
+        self.image_resize_height_spin.setRange(0, 16384)
+        self.image_resize_height_spin.setSingleStep(64)
+        self.image_resize_height_spin.setSpecialValueText("제한 없음")
+        self.image_resize_height_spin.setSuffix(" px")
+        advanced_form.addRow("이미지 최대 높이", self.image_resize_height_spin)
+        self.image_excluded_extensions_edit = QLineEdit()
+        self.image_excluded_extensions_edit.setPlaceholderText(
+            "사용 안 함 · 예: gif, bmp, avif"
+        )
+        advanced_form.addRow(
+            "변환 제외 유형", self.image_excluded_extensions_edit
+        )
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 알림음과 메시지 상자의 기본값은 꺼짐입니다."
@@ -2859,6 +2881,11 @@ class SettingsDialog(QDialog):
         self.notification_message_box_check.setChecked(
             bool(values["notificationMessageBox"])
         )
+        self.image_resize_width_spin.setValue(int(values["imageResizeMaxWidth"]))
+        self.image_resize_height_spin.setValue(int(values["imageResizeMaxHeight"]))
+        self.image_excluded_extensions_edit.setText(
+            ", ".join(values["imageExcludedExtensions"])
+        )
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3006,6 +3033,15 @@ class SettingsDialog(QDialog):
                 "system" if self.notification_sound_check.isChecked() else "none"
             ),
             "notificationMessageBox": self.notification_message_box_check.isChecked(),
+            "imageResizeMaxWidth": self.image_resize_width_spin.value(),
+            "imageResizeMaxHeight": self.image_resize_height_spin.value(),
+            "imageExcludedExtensions": [
+                part.strip()
+                for part in re.split(
+                    r"[,;]", self.image_excluded_extensions_edit.text()
+                )
+                if part.strip()
+            ],
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -3063,10 +3099,37 @@ class ImageConversionDialog(QDialog):
         controls.addStretch(1)
         layout.addLayout(controls)
 
+        policy_controls = QHBoxLayout()
+        policy_controls.addWidget(QLabel("최대 너비"))
+        self.max_width_spin = QSpinBox()
+        self.max_width_spin.setRange(0, 16384)
+        self.max_width_spin.setSingleStep(64)
+        self.max_width_spin.setSpecialValueText("제한 없음")
+        self.max_width_spin.setSuffix(" px")
+        self.max_width_spin.setValue(int(result.get("maxWidth") or 0))
+        policy_controls.addWidget(self.max_width_spin)
+        policy_controls.addWidget(QLabel("최대 높이"))
+        self.max_height_spin = QSpinBox()
+        self.max_height_spin.setRange(0, 16384)
+        self.max_height_spin.setSingleStep(64)
+        self.max_height_spin.setSpecialValueText("제한 없음")
+        self.max_height_spin.setSuffix(" px")
+        self.max_height_spin.setValue(int(result.get("maxHeight") or 0))
+        policy_controls.addWidget(self.max_height_spin)
+        policy_controls.addWidget(QLabel("제외"))
+        self.excluded_extensions_edit = QLineEdit()
+        self.excluded_extensions_edit.setPlaceholderText("예: gif, bmp")
+        self.excluded_extensions_edit.setText(
+            ", ".join(result.get("excludedExtensions") or [])
+        )
+        policy_controls.addWidget(self.excluded_extensions_edit, 1)
+        layout.addLayout(policy_controls)
+
         dependency = result.get("dependency") or {}
         state = "실행 결과" if result.get("executed") else "변환 계획"
         heading = QLabel(
-            f"{state} · 원본 {result.get('sourceCount', 0)}장 · "
+            f"{state} · 대상 {result.get('sourceCount', 0)}장 · "
+            f"유형 제외 {result.get('excludedSourceCount', 0)}장 · "
             f"기존 결과 {result.get('existingTargetCount', 0)}장 · "
             f"변환 예정 {result.get('pendingCount', 0)}장"
         )
@@ -3089,6 +3152,7 @@ class ImageConversionDialog(QDialog):
             lines.extend(
                 [
                     f"변환 완료: {result.get('convertedCount', 0)}",
+                    f"크기 조절: {result.get('resizedCount', 0)}",
                     f"기존 결과 건너뜀: {result.get('skippedExistingCount', 0)}",
                     f"실패: {result.get('failedCount', 0)}",
                     f"복구한 임시 파일: {result.get('recoveredTemporaryFiles', 0)}",
@@ -3140,12 +3204,16 @@ class ImageConversionDialog(QDialog):
         buttons.addWidget(open_button)
         buttons.addStretch(1)
         self.execute_button = QPushButton("변환 실행...")
+        self.execute_button.setToolTip(
+            "CLI: convert-images --job ID --format FORMAT --execute --yes"
+        )
         self.execute_button.setEnabled(
             bool(dependency.get("available")) and int(result.get("pendingCount") or 0) > 0
         )
         self.execute_button.clicked.connect(self._execute)
         buttons.addWidget(self.execute_button)
         close_button = QPushButton("닫기")
+        close_button.setToolTip("CLI: convert-images --close")
         close_button.clicked.connect(self.close)
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
@@ -3155,6 +3223,9 @@ class ImageConversionDialog(QDialog):
             self.result["jobId"],
             str(self.format_combo.currentData()),
             self.quality_spin.value(),
+            max_width=self.max_width_spin.value(),
+            max_height=self.max_height_spin.value(),
+            excluded_extensions=self._excluded_extensions(),
             execute=False,
         )
 
@@ -3172,8 +3243,35 @@ class ImageConversionDialog(QDialog):
             self.result["jobId"],
             str(self.format_combo.currentData()),
             self.quality_spin.value(),
+            max_width=self.max_width_spin.value(),
+            max_height=self.max_height_spin.value(),
+            excluded_extensions=self._excluded_extensions(),
             execute=True,
         )
+
+    def _excluded_extensions(self) -> list[str]:
+        return [
+            part.strip()
+            for part in re.split(r"[,;]", self.excluded_extensions_edit.text())
+            if part.strip()
+        ]
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "jobId": str(self.result.get("jobId") or ""),
+            "format": str(self.format_combo.currentData() or ""),
+            "quality": self.quality_spin.value(),
+            "maxWidth": self.max_width_spin.value(),
+            "maxHeight": self.max_height_spin.value(),
+            "excludedExtensions": self._excluded_extensions(),
+            "sourceCount": int(self.result.get("sourceCount") or 0),
+            "excludedSourceCount": int(
+                self.result.get("excludedSourceCount") or 0
+            ),
+            "pendingCount": int(self.result.get("pendingCount") or 0),
+            "preservesOriginals": bool(self.result.get("preservesOriginals")),
+        }
 
     def _open_target(self) -> None:
         target = Path(str(self.result.get("targetRoot") or ""))
@@ -3194,7 +3292,7 @@ class ImageConversionProgressDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         layout.addWidget(self.progress)
-        self.summary_label = QLabel("완료 0 · 건너뜀 0 · 실패 0")
+        self.summary_label = QLabel("완료 0 · 크기 조절 0 · 건너뜀 0 · 실패 0")
         layout.addWidget(self.summary_label)
         self.detail_label = QLabel("변환 대상 확인 중…")
         self.detail_label.setWordWrap(True)
@@ -3217,6 +3315,7 @@ class ImageConversionProgressDialog(QDialog):
         self.progress.setFormat(f"{current} / {total} (%p%)")
         self.summary_label.setText(
             f"완료 {event.get('converted', 0)} · "
+            f"크기 조절 {event.get('resized', 0)} · "
             f"건너뜀 {event.get('skipped', 0)} · 실패 {event.get('failed', 0)}"
         )
         source = Path(str(event.get("source") or ""))
@@ -6649,6 +6748,9 @@ class MainWindow(QMainWindow):
         image_format: str = "webp",
         quality: int = 90,
         *,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        excluded_extensions: list[str] | None = None,
         execute: bool = False,
     ) -> dict[str, Any]:
         job = self.selected_job(job_id)
@@ -6668,6 +6770,18 @@ class MainWindow(QMainWindow):
                 "resourceLimit": True,
                 "resources": admission,
             }
+        policy = image_processing_policy_snapshot(self.config)
+        selected_width = normalize_image_resize_dimension(
+            policy["maxWidth"] if max_width is None else max_width
+        )
+        selected_height = normalize_image_resize_dimension(
+            policy["maxHeight"] if max_height is None else max_height
+        )
+        selected_exclusions = normalize_image_excluded_extensions(
+            policy["excludedExtensions"]
+            if excluded_extensions is None
+            else excluded_extensions
+        )
         python = Path(sys.executable).with_name("python.exe")
         arguments = [
             str(ROOT_DIR / "toki_app.py"),
@@ -6678,7 +6792,13 @@ class MainWindow(QMainWindow):
             str(image_format),
             "--quality",
             str(int(quality)),
+            "--max-width",
+            str(selected_width),
+            "--max-height",
+            str(selected_height),
         ]
+        for extension in selected_exclusions:
+            arguments.extend(["--exclude-ext", str(extension)])
         arguments.extend(
             ["--execute", "--yes", "--progress-json"]
             if execute
@@ -6731,6 +6851,9 @@ class MainWindow(QMainWindow):
             "jobId": job.job_id,
             "format": image_format,
             "quality": int(quality),
+            "maxWidth": selected_width,
+            "maxHeight": selected_height,
+            "excludedExtensions": selected_exclusions,
             "execute": execute,
             "resources": admission,
         }
@@ -6817,6 +6940,12 @@ class MainWindow(QMainWindow):
                 job_id,
             )
         return {"cancelled": True, "jobId": job_id, "running": True}
+
+    def close_image_conversion_dialog(self) -> bool:
+        if not self.active_image_conversion_dialog:
+            return False
+        self.active_image_conversion_dialog.close()
+        return True
 
     def _image_conversion_finished(self, job_id: str, exit_code: int) -> None:
         context = self.image_conversion_processes.get(job_id)
@@ -7877,7 +8006,8 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd rebuild-metadata --job ID --execute --yes --json\n"
             "toki-cli.cmd verify-files --job ID [--json|--show-gui]\n"
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
-            "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--dry-run|--execute --yes|--show-gui]\n"
+            "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
+            "toki-cli.cmd image-processing status|set [options]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -8091,6 +8221,12 @@ class MainWindow(QMainWindow):
             "fileVerificationJobs": sorted(self.file_verify_processes),
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
+            "imageProcessing": image_processing_policy_snapshot(self.config),
+            "imageConversionDialog": (
+                self.active_image_conversion_dialog.state_snapshot()
+                if self.active_image_conversion_dialog
+                else {"open": False}
+            ),
             "tray": self.tray_snapshot(),
             "lastSelfTest": self.last_self_test,
             "listFilter": {
@@ -8604,10 +8740,29 @@ class MainWindow(QMainWindow):
                 str(request.get("jobId") or ""),
                 str(request.get("format") or "webp"),
                 int(request.get("quality") or 90),
+                max_width=(
+                    int(request["maxWidth"])
+                    if request.get("maxWidth") is not None
+                    else None
+                ),
+                max_height=(
+                    int(request["maxHeight"])
+                    if request.get("maxHeight") is not None
+                    else None
+                ),
+                excluded_extensions=(
+                    [str(value) for value in request.get("excludedExtensions")]
+                    if isinstance(request.get("excludedExtensions"), list)
+                    else None
+                ),
                 execute=False,
             )
+        if action == "image_processing_policy":
+            return image_processing_policy_snapshot(self.config)
         if action == "cancel_image_conversion":
             return self.cancel_image_conversion(str(request.get("jobId") or ""))
+        if action == "close_image_conversion":
+            return {"closed": self.close_image_conversion_dialog()}
         if action == "open_source":
             return {"opened": self.open_job_source(request.get("jobId"))}
         if action == "open_cover":

@@ -289,6 +289,7 @@ verify-files --job ID --json
 preview --job ID --episode EPISODE
 convert-images --job ID --format FORMAT --dry-run --json
 convert-images --job ID --format FORMAT --execute --yes --progress-json
+convert-images --close
 cancel-conversion --job ID
 ```
 
@@ -423,6 +424,15 @@ CLI가 GUI와 같은 경로를 사용한다. JSON 가져오기는 미리보기 �
 내보내기에는 비밀값이 없다. 실제 GUI에 `Ctrl+Alt+F`를 임시 적용해 상태 조회로 확인한 뒤
 기본값으로 복원했고 `logs/shortcut-editor-gui.png`에서 편집창 대비를 확인했다. Python
 173건과 Node 16건을 통과했다.
+
+2026-08-07 이미지 리사이즈·유형 제외: 설정 스키마 v8에 최대 너비·높이와 변환 제외 확장자를
+추가하고 `image-processing status|set`, `convert-images --max-width|--max-height|--exclude-ext`
+및 GUI 고급 설정·변환 확인창을 같은 정책 서비스에 연결했다. 축소는 Pillow LANCZOS로 비율을
+유지하며 무축소 결과와 다른 `_converted/<형식>-<너비>x<높이>`에 원자 저장한다. 유형 제외는
+후처리 입력만 건너뛰고 원본이나 기존 출력은 삭제하지 않는다. 임시 한글·공백 경로에서 실제
+축소 크기, 제외 수, 원본 바이트 불변을 검증했고 사용자 작품에서는 dry-run GUI만 실행했다.
+`logs/image-processing-settings.png`, `logs/image-resize-conversion-plan.png`에서 고급 설정과
+변환 계획을 확인했으며 Python 177건과 Node 16건을 통과했다.
 
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만

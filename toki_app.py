@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,7 @@ from toki_core import (
     create_work_collection,
     find_node,
     hydrate_job_metadata,
+    image_processing_policy_snapshot,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     count_jobs,
@@ -1277,16 +1279,39 @@ def build_parser() -> argparse.ArgumentParser:
         "convert-images",
         help="원본을 보존하고 _converted 폴더에 이미지 형식 변환",
     )
-    convert_images.add_argument("--job", required=True, help="작업 ID")
+    convert_images.add_argument("--job", help="작업 ID")
     convert_images.add_argument(
-        "--format", required=True, choices=("jpg", "jpeg", "png", "webp"), help="대상 형식"
+        "--format", choices=("jpg", "jpeg", "png", "webp"), help="대상 형식"
     )
     convert_images.add_argument("--quality", type=int, default=90, help="JPG/WebP 품질(1~100)")
+    convert_images.add_argument(
+        "--max-width", type=int, help="비율을 유지할 최대 너비; 0은 제한 없음"
+    )
+    convert_images.add_argument(
+        "--max-height", type=int, help="비율을 유지할 최대 높이; 0은 제한 없음"
+    )
+    conversion_exclusions = convert_images.add_mutually_exclusive_group()
+    conversion_exclusions.add_argument(
+        "--exclude-ext",
+        action="append",
+        help="이번 변환에서 제외할 이미지 확장자; 반복 또는 쉼표 구분",
+    )
+    conversion_exclusions.add_argument(
+        "--include-all-types",
+        action="store_true",
+        help="저장된 확장자 제외 설정을 이번 변환에서 무시",
+    )
     convert_mode = convert_images.add_mutually_exclusive_group()
     convert_mode.add_argument("--dry-run", action="store_true", help="변환 대상과 충돌만 확인")
     convert_mode.add_argument("--execute", action="store_true", help="별도 폴더에 실제 변환")
     convert_images.add_argument("--yes", action="store_true", help="대량 새 파일 생성 확인")
-    convert_images.add_argument("--show-gui", action="store_true", help="GUI 확인/변환 창 표시")
+    conversion_window = convert_images.add_mutually_exclusive_group()
+    conversion_window.add_argument(
+        "--show-gui", action="store_true", help="GUI 확인/변환 창 표시"
+    )
+    conversion_window.add_argument(
+        "--close", action="store_true", help="열린 GUI 변환 계획 창 닫기"
+    )
     convert_images.add_argument("--json", action="store_true", help="JSON으로 출력")
     convert_images.add_argument(
         "--progress-json",
@@ -1294,6 +1319,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="진행 이벤트와 최종 결과를 줄 단위 JSON으로 출력",
     )
     convert_images.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
+
+    image_processing = subparsers.add_parser(
+        "image-processing", help="이미지 리사이즈와 변환 제외 유형 기본값"
+    )
+    image_processing_commands = image_processing.add_subparsers(
+        dest="image_processing_command", required=True
+    )
+    image_processing_status = image_processing_commands.add_parser(
+        "status", help="현재 이미지 후처리 기본값"
+    )
+    image_processing_status.add_argument("--json", action="store_true")
+    image_processing_set = image_processing_commands.add_parser(
+        "set", help="리사이즈 상한과 제외 확장자 저장"
+    )
+    image_processing_set.add_argument("--max-width", type=int)
+    image_processing_set.add_argument("--max-height", type=int)
+    exclusion_update = image_processing_set.add_mutually_exclusive_group()
+    exclusion_update.add_argument(
+        "--exclude", help="제외 확장자를 쉼표 또는 세미콜론으로 구분"
+    )
+    exclusion_update.add_argument(
+        "--clear-exclusions", action="store_true", help="제외 확장자 모두 해제"
+    )
+    image_processing_set.add_argument("--json", action="store_true")
 
     cancel_conversion = subparsers.add_parser(
         "cancel-conversion",
@@ -2521,6 +2570,30 @@ def run_cli(args: argparse.Namespace) -> int:
                 print(f"{image['index']}: {image['name']} ({image['size']} bytes)")
         return 0
     if command == "convert-images":
+        if args.close:
+            ensure_gui_running()
+            print_json(control_request({"action": "close_image_conversion"}))
+            return 0
+        if not args.job or not args.format:
+            raise ControlError("이미지 변환에는 --job과 --format이 필요합니다.")
+        policy = image_processing_policy_snapshot()
+        max_width = (
+            args.max_width if args.max_width is not None else policy["maxWidth"]
+        )
+        max_height = (
+            args.max_height if args.max_height is not None else policy["maxHeight"]
+        )
+        if args.include_all_types:
+            excluded_extensions: list[str] = []
+        elif args.exclude_ext is not None:
+            excluded_extensions = [
+                part.strip()
+                for value in args.exclude_ext
+                for part in re.split(r"[,;]", value)
+                if part.strip()
+            ]
+        else:
+            excluded_extensions = list(policy["excludedExtensions"])
         if args.show_gui:
             ensure_gui_running()
             print_json(
@@ -2530,6 +2603,9 @@ def run_cli(args: argparse.Namespace) -> int:
                         "jobId": args.job,
                         "format": args.format,
                         "quality": args.quality,
+                        "maxWidth": max_width,
+                        "maxHeight": max_height,
+                        "excludedExtensions": excluded_extensions,
                     }
                 )
             )
@@ -2553,10 +2629,20 @@ def run_cli(args: argparse.Namespace) -> int:
                 args.job,
                 args.format,
                 quality=args.quality,
+                max_width=max_width,
+                max_height=max_height,
+                excluded_extensions=excluded_extensions,
                 progress_callback=progress_callback,
             )
             if execute
-            else plan_image_conversion(args.job, args.format, quality=args.quality)
+            else plan_image_conversion(
+                args.job,
+                args.format,
+                quality=args.quality,
+                max_width=max_width,
+                max_height=max_height,
+                excluded_extensions=excluded_extensions,
+            )
         )
         if args.progress_json:
             print(
@@ -2586,6 +2672,38 @@ def run_cli(args: argparse.Namespace) -> int:
         if result.get("cancelled"):
             return 3
         return 0 if result.get("success", True) else 2
+    if command == "image-processing":
+        if args.image_processing_command == "status":
+            result = (
+                control_request({"action": "image_processing_policy"})
+                if gui_is_running()
+                else image_processing_policy_snapshot()
+            )
+        else:
+            updates: dict[str, Any] = {}
+            if args.max_width is not None:
+                updates["imageResizeMaxWidth"] = args.max_width
+            if args.max_height is not None:
+                updates["imageResizeMaxHeight"] = args.max_height
+            if args.exclude is not None:
+                updates["imageExcludedExtensions"] = [
+                    part.strip()
+                    for part in re.split(r"[,;]", args.exclude)
+                    if part.strip()
+                ]
+            elif args.clear_exclusions:
+                updates["imageExcludedExtensions"] = []
+            if not updates:
+                raise ControlError("변경할 이미지 후처리 설정을 하나 이상 지정해주세요.")
+            if gui_is_running():
+                values = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                values = update_app_settings(updates)
+            result = {"saved": True, **image_processing_policy_snapshot(values)}
+        print_json(result)
+        return 0
     if command == "cancel-conversion":
         ensure_gui_running()
         result = control_request(

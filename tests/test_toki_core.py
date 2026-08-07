@@ -49,6 +49,7 @@ from toki_core import (
     find_duplicate_images,
     folder_name_template_preview,
     hydrate_job_metadata,
+    image_processing_policy_snapshot,
     import_jobs_snapshot,
     import_provider_cookies,
     inspect_local_archive,
@@ -2112,8 +2113,8 @@ class JobRepositoryTests(unittest.TestCase):
         episode.mkdir(parents=True)
         png_path = episode / "same.png"
         jpg_path = episode / "same.jpg"
-        Image.new("RGBA", (8, 6), (255, 0, 0, 100)).save(png_path)
-        Image.new("RGB", (7, 5), (0, 255, 0)).save(jpg_path)
+        Image.new("RGBA", (128, 96), (255, 0, 0, 100)).save(png_path)
+        Image.new("RGB", (120, 80), (0, 255, 0)).save(jpg_path)
         original_png = png_path.read_bytes()
         original_jpg = jpg_path.read_bytes()
         job = DownloadJob(
@@ -2146,6 +2147,45 @@ class JobRepositoryTests(unittest.TestCase):
         repeated = convert_job_images(job.job_id, "jpg", quality=85)
         self.assertEqual(repeated["convertedCount"], 0)
         self.assertEqual(repeated["skippedExistingCount"], 2)
+
+        policy_config = default_config()
+        policy_config.update(
+            {
+                "imageResizeMaxWidth": 64,
+                "imageResizeMaxHeight": 64,
+                "imageExcludedExtensions": ["png"],
+            }
+        )
+        policy = image_processing_policy_snapshot(policy_config)
+        self.assertTrue(policy["resizeEnabled"])
+        self.assertEqual(policy["excludedExtensions"], [".png"])
+        resized_plan = plan_image_conversion(
+            job.job_id,
+            "webp",
+            max_width=64,
+            max_height=64,
+            excluded_extensions=["png"],
+        )
+        self.assertEqual(resized_plan["candidateSourceCount"], 2)
+        self.assertEqual(resized_plan["excludedSourceCount"], 1)
+        self.assertEqual(resized_plan["sourceCount"], 1)
+        self.assertIn("webp-64x64", resized_plan["targetRoot"])
+        resized_result = convert_job_images(
+            job.job_id,
+            "webp",
+            max_width=64,
+            max_height=64,
+            excluded_extensions=["png"],
+        )
+        self.assertTrue(resized_result["success"])
+        self.assertEqual(resized_result["resizedCount"], 1)
+        resized_targets = list(Path(resized_result["targetRoot"]).rglob("*.webp"))
+        self.assertEqual(len(resized_targets), 1)
+        with Image.open(resized_targets[0]) as resized_image:
+            self.assertLessEqual(resized_image.width, 64)
+            self.assertLessEqual(resized_image.height, 64)
+        self.assertEqual(png_path.read_bytes(), original_png)
+        self.assertEqual(jpg_path.read_bytes(), original_jpg)
 
         webp_plan = plan_image_conversion(job.job_id, "webp", quality=80)
         stale_temporary = Path(webp_plan["sample"][0]["target"] + ".tmp")

@@ -1785,11 +1785,26 @@ class CliParserTests(unittest.TestCase):
             "executed": False,
         }
         with (
+            patch(
+                "toki_app.image_processing_policy_snapshot",
+                return_value={
+                    "maxWidth": 0,
+                    "maxHeight": 0,
+                    "excludedExtensions": [],
+                },
+            ),
             patch("toki_app.plan_image_conversion", return_value=result) as plan,
             redirect_stdout(StringIO()),
         ):
             self.assertEqual(run_cli(args), 0)
-        plan.assert_called_once_with("job-1", "webp", quality=90)
+        plan.assert_called_once_with(
+            "job-1",
+            "webp",
+            quality=90,
+            max_width=0,
+            max_height=0,
+            excluded_extensions=[],
+        )
 
         unsafe = build_parser().parse_args(
             [
@@ -1803,7 +1818,9 @@ class CliParserTests(unittest.TestCase):
         show_gui = build_parser().parse_args(
             [
                 "convert-images", "--job", "job-1", "--format", "webp",
-                "--quality", "80", "--show-gui",
+                "--quality", "80", "--max-width", "1600",
+                "--max-height", "2400", "--exclude-ext", "gif,bmp",
+                "--show-gui",
             ]
         )
         with (
@@ -1821,6 +1838,9 @@ class CliParserTests(unittest.TestCase):
                 "jobId": "job-1",
                 "format": "webp",
                 "quality": 80,
+                "maxWidth": 1600,
+                "maxHeight": 2400,
+                "excludedExtensions": ["gif", "bmp"],
             }
         )
 
@@ -1855,6 +1875,14 @@ class CliParserTests(unittest.TestCase):
 
         output = StringIO()
         with (
+            patch(
+                "toki_app.image_processing_policy_snapshot",
+                return_value={
+                    "maxWidth": 0,
+                    "maxHeight": 0,
+                    "excludedExtensions": [],
+                },
+            ),
             patch("toki_app.convert_job_images", side_effect=convert_with_progress),
             redirect_stdout(output),
         ):
@@ -1879,6 +1907,72 @@ class CliParserTests(unittest.TestCase):
         cancel_request.assert_called_once_with(
             {"action": "cancel_image_conversion", "jobId": "job-1"}
         )
+
+        close = build_parser().parse_args(["convert-images", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request", return_value={"closed": True}
+            ) as close_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close), 0)
+        close_request.assert_called_once_with({"action": "close_image_conversion"})
+
+        missing = build_parser().parse_args(["convert-images", "--job", "job-1"])
+        with self.assertRaisesRegex(toki_app.ControlError, "--job과 --format"):
+            run_cli(missing)
+
+    def test_image_processing_policy_cli_reports_and_updates_gui(self) -> None:
+        status = build_parser().parse_args(
+            ["image-processing", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={"maxWidth": 0, "maxHeight": 0},
+            ) as status_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status), 0)
+        status_request.assert_called_once_with({"action": "image_processing_policy"})
+
+        update = build_parser().parse_args(
+            [
+                "image-processing", "set", "--max-width", "1600",
+                "--max-height", "2400", "--exclude", "gif; bmp", "--json",
+            ]
+        )
+        saved = default_config()
+        saved.update(
+            {
+                "imageResizeMaxWidth": 1600,
+                "imageResizeMaxHeight": 2400,
+                "imageExcludedExtensions": [".gif", ".bmp"],
+            }
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=saved) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(update), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_settings",
+                "updates": {
+                    "imageResizeMaxWidth": 1600,
+                    "imageResizeMaxHeight": 2400,
+                    "imageExcludedExtensions": ["gif", "bmp"],
+                },
+                "reset": False,
+            }
+        )
+
+        empty = build_parser().parse_args(["image-processing", "set"])
+        with self.assertRaisesRegex(toki_app.ControlError, "하나 이상"):
+            run_cli(empty)
 
     def test_work_and_run_detail_arguments(self) -> None:
         info = build_parser().parse_args(["info", "--job", "job-1", "--json"])

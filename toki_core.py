@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 7
+CONFIG_SCHEMA_VERSION = 8
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -112,6 +112,9 @@ SETTING_KEYS = frozenset(
         "notifyOnError",
         "notificationSound",
         "notificationMessageBox",
+        "imageResizeMaxWidth",
+        "imageResizeMaxHeight",
+        "imageExcludedExtensions",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -392,6 +395,9 @@ def default_config() -> dict[str, Any]:
         "notifyOnError": True,
         "notificationSound": "none",
         "notificationMessageBox": False,
+        "imageResizeMaxWidth": 0,
+        "imageResizeMaxHeight": 0,
+        "imageExcludedExtensions": [],
     }
 
 
@@ -1393,6 +1399,21 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("notificationSound"),
         defaults["notificationSound"],
     )
+    normalized["imageResizeMaxWidth"] = _safe_normalize(
+        normalize_image_resize_dimension,
+        source.get("imageResizeMaxWidth"),
+        defaults["imageResizeMaxWidth"],
+    )
+    normalized["imageResizeMaxHeight"] = _safe_normalize(
+        normalize_image_resize_dimension,
+        source.get("imageResizeMaxHeight"),
+        defaults["imageResizeMaxHeight"],
+    )
+    normalized["imageExcludedExtensions"] = _safe_normalize(
+        normalize_image_excluded_extensions,
+        source.get("imageExcludedExtensions"),
+        defaults["imageExcludedExtensions"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -1575,6 +1596,9 @@ def validate_app_setting_updates(
         "completionAction": normalize_completion_action,
         "completionCountdownSeconds": normalize_completion_countdown,
         "notificationSound": normalize_notification_sound,
+        "imageResizeMaxWidth": normalize_image_resize_dimension,
+        "imageResizeMaxHeight": normalize_image_resize_dimension,
+        "imageExcludedExtensions": normalize_image_excluded_extensions,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -5562,6 +5586,56 @@ def normalize_image_quality(value: int | None) -> int:
     return quality
 
 
+def normalize_image_resize_dimension(value: int | None) -> int:
+    dimension = 0 if value is None else int(value)
+    if dimension != 0 and not 64 <= dimension <= 16384:
+        raise ValueError("이미지 리사이즈 크기는 0(제한 없음) 또는 64~16384px여야 합니다.")
+    return dimension
+
+
+def normalize_image_excluded_extensions(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("제외할 이미지 유형은 확장자 목록이어야 합니다.")
+    normalized: list[str] = []
+    for item in value:
+        extension = str(item or "").strip().lower()
+        if not extension:
+            continue
+        if not extension.startswith("."):
+            extension = f".{extension}"
+        if extension not in IMAGE_EXTENSIONS:
+            raise ValueError(
+                f"지원하지 않는 이미지 제외 확장자입니다: {extension}"
+            )
+        if extension not in normalized:
+            normalized.append(extension)
+    if len(normalized) > 16:
+        raise ValueError("제외할 이미지 유형은 최대 16개까지 지정할 수 있습니다.")
+    return normalized
+
+
+def image_processing_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    width = normalize_image_resize_dimension(source.get("imageResizeMaxWidth"))
+    height = normalize_image_resize_dimension(source.get("imageResizeMaxHeight"))
+    excluded = normalize_image_excluded_extensions(
+        source.get("imageExcludedExtensions")
+    )
+    return {
+        "maxWidth": width,
+        "maxHeight": height,
+        "resizeEnabled": bool(width or height),
+        "excludedExtensions": excluded,
+        "supportedExtensions": sorted(IMAGE_EXTENSIONS),
+        "preservesAspectRatio": True,
+        "preservesOriginals": True,
+    }
+
+
 def _collect_conversion_sources(output_path: Path) -> list[Path]:
     sources: list[Path] = []
     for entry in os.scandir(output_path):
@@ -5697,29 +5771,26 @@ def find_duplicate_images(
     }
 
 
-def plan_image_conversion(
-    job_id: str,
-    image_format: str,
-    *,
-    quality: int | None = None,
-    sample_limit: int = 100,
-) -> dict[str, Any]:
-    job = load_job_by_id(job_id)
-    if job is None:
-        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
-    if job.state in ACTIVE_JOB_STATES:
-        raise ValueError("대기 또는 실행 중인 작품 이미지는 변환할 수 없습니다.")
-    if not job.output_path:
-        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
-    output_path = Path(job.output_path).expanduser().resolve()
-    if not output_path.is_dir():
-        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
-    normalized_format = normalize_image_format(image_format)
-    normalized_quality = normalize_image_quality(quality)
-    clean_sample_limit = max(1, min(1000, int(sample_limit)))
-    target_root = output_path / "_converted" / normalized_format
+def _conversion_source_mappings(
+    output_path: Path,
+    normalized_format: str,
+    max_width: int,
+    max_height: int,
+    excluded_extensions: list[str],
+) -> tuple[Path, list[tuple[Path, Path]], list[Path]]:
+    target_name = normalized_format
+    if max_width or max_height:
+        target_name = f"{normalized_format}-{max_width}x{max_height}"
+    target_root = output_path / "_converted" / target_name
     extension = IMAGE_CONVERSION_FORMATS[normalized_format]["extension"]
-    sources = _collect_conversion_sources(output_path)
+    all_sources = _collect_conversion_sources(output_path)
+    excluded_set = set(excluded_extensions)
+    excluded_sources = [
+        source for source in all_sources if source.suffix.lower() in excluded_set
+    ]
+    sources = [
+        source for source in all_sources if source.suffix.lower() not in excluded_set
+    ]
     used_targets: set[str] = set()
     mappings: list[tuple[Path, Path]] = []
     for source in sources:
@@ -5738,6 +5809,42 @@ def plan_image_conversion(
                 suffix += 1
         used_targets.add(os.path.normcase(str(target)))
         mappings.append((source, target))
+    return target_root, mappings, excluded_sources
+
+
+def plan_image_conversion(
+    job_id: str,
+    image_format: str,
+    *,
+    quality: int | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    excluded_extensions: list[str] | tuple[str, ...] | None = None,
+    sample_limit: int = 100,
+) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if job.state in ACTIVE_JOB_STATES:
+        raise ValueError("대기 또는 실행 중인 작품 이미지는 변환할 수 없습니다.")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    normalized_format = normalize_image_format(image_format)
+    normalized_quality = normalize_image_quality(quality)
+    normalized_width = normalize_image_resize_dimension(max_width)
+    normalized_height = normalize_image_resize_dimension(max_height)
+    normalized_excluded = normalize_image_excluded_extensions(excluded_extensions)
+    clean_sample_limit = max(1, min(1000, int(sample_limit)))
+    target_root, mappings, excluded_sources = _conversion_source_mappings(
+        output_path,
+        normalized_format,
+        normalized_width,
+        normalized_height,
+        normalized_excluded,
+    )
     existing_targets = sum(1 for _source, target in mappings if target.exists())
     try:
         from PIL import __version__ as pillow_version
@@ -5754,6 +5861,13 @@ def plan_image_conversion(
         "targetRoot": str(target_root),
         "format": normalized_format,
         "quality": normalized_quality,
+        "maxWidth": normalized_width,
+        "maxHeight": normalized_height,
+        "resizeEnabled": bool(normalized_width or normalized_height),
+        "preservesAspectRatio": True,
+        "excludedExtensions": normalized_excluded,
+        "candidateSourceCount": len(mappings) + len(excluded_sources),
+        "excludedSourceCount": len(excluded_sources),
         "sourceCount": len(mappings),
         "sourceBytes": sum(source.stat().st_size for source, _target in mappings),
         "existingTargetCount": existing_targets,
@@ -5779,10 +5893,21 @@ def convert_job_images(
     image_format: str,
     *,
     quality: int | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    excluded_extensions: list[str] | tuple[str, ...] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    plan = plan_image_conversion(job_id, image_format, quality=quality, sample_limit=1)
+    plan = plan_image_conversion(
+        job_id,
+        image_format,
+        quality=quality,
+        max_width=max_width,
+        max_height=max_height,
+        excluded_extensions=excluded_extensions,
+        sample_limit=1,
+    )
     if not plan["dependency"]["available"]:
         raise RuntimeError(
             "이미지 변환에는 Pillow가 필요합니다. "
@@ -5794,34 +5919,25 @@ def convert_job_images(
     target_root = Path(plan["targetRoot"])
     normalized_format = str(plan["format"])
     pillow_format = IMAGE_CONVERSION_FORMATS[normalized_format]["pillow"]
-    extension = IMAGE_CONVERSION_FORMATS[normalized_format]["extension"]
-    sources = _collect_conversion_sources(output_path)
-    used_targets: set[str] = set()
+    _target_root, mappings, _excluded_sources = _conversion_source_mappings(
+        output_path,
+        normalized_format,
+        int(plan["maxWidth"]),
+        int(plan["maxHeight"]),
+        list(plan["excludedExtensions"]),
+    )
     converted = 0
+    resized = 0
     skipped_existing = 0
     failures: list[dict[str, str]] = []
     failure_count = 0
     cancelled = False
     recovered_temporary_files = 0
-    total = len(sources)
-    for index, source in enumerate(sources, start=1):
+    total = len(mappings)
+    for index, (source, target) in enumerate(mappings, start=1):
         if cancel_check and cancel_check():
             cancelled = True
             break
-        relative_parent = source.parent.relative_to(output_path)
-        target = target_root / relative_parent / f"{source.stem}{extension}"
-        target_key = os.path.normcase(str(target))
-        if target_key in used_targets:
-            target = target.with_name(
-                f"{source.stem}_{source.suffix.lstrip('.').lower()}{extension}"
-            )
-            suffix = 2
-            while os.path.normcase(str(target)) in used_targets:
-                target = target.with_name(
-                    f"{source.stem}_{source.suffix.lstrip('.').lower()}_{suffix}{extension}"
-                )
-                suffix += 1
-        used_targets.add(os.path.normcase(str(target)))
         temporary = target.with_suffix(target.suffix + ".tmp")
         if temporary.exists():
             temporary.unlink()
@@ -5834,6 +5950,7 @@ def convert_job_images(
                         "current": index,
                         "total": total,
                         "converted": converted,
+                        "resized": resized,
                         "skipped": skipped_existing,
                         "failed": failure_count,
                         "source": str(source),
@@ -5846,6 +5963,14 @@ def convert_job_images(
         try:
             with Image.open(source) as opened:
                 image = ImageOps.exif_transpose(opened)
+                original_size = image.size
+                if plan["resizeEnabled"]:
+                    width_limit = int(plan["maxWidth"]) or image.width
+                    height_limit = int(plan["maxHeight"]) or image.height
+                    image.thumbnail(
+                        (width_limit, height_limit), Image.Resampling.LANCZOS
+                    )
+                was_resized = image.size != original_size
                 if normalized_format == "jpg":
                     if image.mode in {"RGBA", "LA"} or (
                         image.mode == "P" and "transparency" in image.info
@@ -5866,6 +5991,8 @@ def convert_job_images(
                 image.save(temporary, format=pillow_format, **save_options)
             os.replace(temporary, target)
             converted += 1
+            if was_resized:
+                resized += 1
             status = "converted"
         except Exception as error:
             try:
@@ -5882,6 +6009,7 @@ def convert_job_images(
                     "current": index,
                     "total": total,
                     "converted": converted,
+                    "resized": resized,
                     "skipped": skipped_existing,
                     "failed": failure_count,
                     "source": str(source),
@@ -5894,6 +6022,7 @@ def convert_job_images(
         **plan,
         "executed": True,
         "convertedCount": converted,
+        "resizedCount": resized,
         "skippedExistingCount": skipped_existing,
         "failedCount": failure_count,
         "failures": failures,
