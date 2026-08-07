@@ -540,6 +540,57 @@ def browser_launch_policy(show_browser: bool | None = None) -> dict[str, Any]:
     }
 
 
+def embedded_browser_capabilities() -> dict[str, Any]:
+    try:
+        version = importlib.metadata.version("PyQt6-WebEngine")
+    except importlib.metadata.PackageNotFoundError:
+        version = ""
+    return {
+        "available": bool(version),
+        "package": "PyQt6-WebEngine",
+        "version": version,
+        "offTheRecordProfile": True,
+        "persistentCookies": False,
+        "sharesAutomationCookies": False,
+        "personalChromeProfile": False,
+        "defaultPage": "offline",
+    }
+
+
+def normalize_embedded_browser_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > 4096:
+        raise ValueError("내장 브라우저 URL은 4096자 이하여야 합니다.")
+    parsed = urlsplit(raw)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("내장 브라우저는 HTTPS 주소만 열 수 있습니다.")
+    if parsed.username or parsed.password:
+        raise ValueError("내장 브라우저 URL에는 인증 정보를 넣을 수 없습니다.")
+    if any(ord(char) < 32 for char in raw):
+        raise ValueError("내장 브라우저 URL에 제어 문자를 사용할 수 없습니다.")
+    return raw
+
+
+def embedded_browser_navigation_plan(url: str) -> dict[str, Any]:
+    normalized = normalize_embedded_browser_url(url)
+    if not normalized:
+        raise ValueError("열 URL을 입력해주세요.")
+    parsed = urlsplit(normalized)
+    return {
+        "url": normalized,
+        "host": str(parsed.hostname or ""),
+        "requiresNetwork": True,
+        "requiresConfirmation": True,
+        "sendsProviderCookies": False,
+        "offTheRecordProfile": True,
+        "persistentCookies": False,
+        "personalChromeProfile": False,
+        "executed": False,
+    }
+
+
 def normalize_proxy_url(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -1759,6 +1810,7 @@ def dependency_diagnostics() -> dict[str, Any]:
     checks.append(package("py7zr", "py7zr", False))
     checks.append(package("rarfile", "rarfile", False))
     checks.append(package("keyring", "keyring", False))
+    checks.append(package("PyQt6-WebEngine", "PyQt6-WebEngine", False))
     for name, executable, version_argument in (
         ("FFmpeg", "ffmpeg", "-version"),
         ("yt-dlp", "yt-dlp", "--version"),

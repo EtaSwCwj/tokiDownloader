@@ -55,6 +55,8 @@ from toki_core import (
     database_schema_status,
     downloader_event_update_policy,
     downloader_environment_overrides,
+    embedded_browser_capabilities,
+    embedded_browser_navigation_plan,
     error_category_label,
     export_diagnostics,
     export_app_settings,
@@ -80,6 +82,7 @@ from toki_core import (
     move_job_folder,
     network_policy_snapshot,
     normalize_image_concurrency,
+    normalize_embedded_browser_url,
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_scan_request,
@@ -211,6 +214,9 @@ def ensure_gui_running(timeout_seconds: float = 12.0) -> None:
 def run_gui() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+    QCoreApplication.setAttribute(
+        Qt.ApplicationAttribute.AA_ShareOpenGLContexts
     )
     app = QApplication(sys.argv)
     app.setApplicationName("tokiDownloader")
@@ -976,6 +982,34 @@ def build_parser() -> argparse.ArgumentParser:
     browser_mode_set = browser_mode_commands.add_parser("set", help="기본 정책 변경")
     browser_mode_set.add_argument("mode", choices=("headless", "visible"))
     browser_mode_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    embedded_browser = subparsers.add_parser(
+        "embedded-browser", help="선택형 메모리 전용 내장 브라우저"
+    )
+    embedded_browser_commands = embedded_browser.add_subparsers(
+        dest="embedded_browser_command", required=True
+    )
+    embedded_capabilities = embedded_browser_commands.add_parser(
+        "capabilities", help="설치 및 격리 상태"
+    )
+    embedded_capabilities.add_argument("--json", action="store_true", help="JSON으로 출력")
+    embedded_plan = embedded_browser_commands.add_parser(
+        "plan", help="외부 연결 없이 URL 이동 계획만 검사"
+    )
+    embedded_plan.add_argument("--url", required=True)
+    embedded_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
+    embedded_manage = embedded_browser_commands.add_parser(
+        "manage", help="GUI 내장 브라우저 창 제어"
+    )
+    embedded_manage_window = embedded_manage.add_mutually_exclusive_group(required=True)
+    embedded_manage_window.add_argument("--show-gui", action="store_true")
+    embedded_manage_window.add_argument("--close", action="store_true")
+    embedded_manage.add_argument("--url", default="", help="주소창에 넣을 HTTPS URL")
+    embedded_manage.add_argument(
+        "--navigate", action="store_true", help="창을 열면서 실제 URL로 이동"
+    )
+    embedded_manage.add_argument("--yes", action="store_true", help="외부 네트워크 요청 확인")
+    embedded_manage.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     network_policy = subparsers.add_parser(
         "network-policy", help="프록시·속도 제한·공급자별 요청 정책"
@@ -2627,6 +2661,40 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             print(f"브라우저 모드: {result['mode']}")
             print("개인 Chrome 프로필 사용: 안 함")
+        return 0
+    if command == "embedded-browser":
+        subcommand = args.embedded_browser_command
+        if subcommand == "capabilities":
+            result = embedded_browser_capabilities()
+        elif subcommand == "plan":
+            result = embedded_browser_navigation_plan(args.url)
+        else:
+            if args.close:
+                ensure_gui_running()
+                result = control_request({"action": "close_embedded_browser"})
+            else:
+                normalized_url = normalize_embedded_browser_url(args.url)
+                if args.navigate:
+                    if not normalized_url:
+                        raise ControlError("--navigate에는 --url이 필요합니다.")
+                    if not args.yes:
+                        raise ControlError(
+                            "내장 브라우저 URL 이동은 외부 네트워크 요청입니다. 실행하려면 --yes가 필요합니다."
+                        )
+                    embedded_browser_navigation_plan(normalized_url)
+                ensure_gui_running()
+                result = control_request(
+                    {
+                        "action": "show_embedded_browser",
+                        "url": normalized_url,
+                        "navigate": bool(args.navigate),
+                        "confirmed": bool(args.yes),
+                    }
+                )
+        if args.json:
+            print_json(result)
+        else:
+            print_json(result)
         return 0
     if command == "network-policy":
         if gui_is_running():

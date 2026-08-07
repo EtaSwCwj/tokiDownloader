@@ -39,6 +39,8 @@ from toki_core import (
     delete_job_records,
     downloader_event_update_policy,
     downloader_environment_overrides,
+    embedded_browser_capabilities,
+    embedded_browser_navigation_plan,
     export_diagnostics,
     export_jobs_snapshot,
     export_provider_cookies,
@@ -70,6 +72,7 @@ from toki_core import (
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_error_category,
+    normalize_embedded_browser_url,
     normalize_folder_name_template,
     normalize_background_image,
     normalize_font_family,
@@ -121,6 +124,25 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_embedded_browser_defaults_offline_and_plans_https_navigation(self) -> None:
+        capability = embedded_browser_capabilities()
+        self.assertEqual(capability["defaultPage"], "offline")
+        self.assertTrue(capability["offTheRecordProfile"])
+        self.assertFalse(capability["persistentCookies"])
+        self.assertFalse(capability["sharesAutomationCookies"])
+        plan = embedded_browser_navigation_plan(
+            "https://newtoki1.org/manhwa/34360"
+        )
+        self.assertTrue(plan["requiresNetwork"])
+        self.assertTrue(plan["requiresConfirmation"])
+        self.assertFalse(plan["sendsProviderCookies"])
+        self.assertFalse(plan["executed"])
+        self.assertEqual(plan["host"], "newtoki1.org")
+        with self.assertRaises(ValueError):
+            normalize_embedded_browser_url("http://example.test")
+        with self.assertRaises(ValueError):
+            normalize_embedded_browser_url("https://user:secret@example.test/")
+
     def test_proxy_credentials_use_injected_vault_and_only_reach_matching_runtime(self) -> None:
         class MemoryCredentialBackend:
             def __init__(self) -> None:
@@ -443,7 +465,9 @@ class CoreContractTests(unittest.TestCase):
 
         self.assertIn("[switch]$CheckOnly", script)
         self.assertIn("[switch]$WithArchiveTools", script)
+        self.assertIn("[switch]$WithBrowserTools", script)
         self.assertIn("requirements-archive-tools.txt", script)
+        self.assertIn("requirements-browser-tools.txt", script)
         self.assertIn("'ci', '--no-audit', '--no-fund'", script)
         self.assertIn("toki_app.py') doctor --json", script)
         self.assertNotIn(
@@ -471,6 +495,7 @@ class CoreContractTests(unittest.TestCase):
         self.assertTrue(checks["puppeteer-real-browser"]["available"])
         self.assertEqual(checks["Pillow"]["kind"], "optional")
         self.assertEqual(checks["FFmpeg"]["kind"], "optional")
+        self.assertEqual(checks["PyQt6-WebEngine"]["kind"], "optional")
         self.assertEqual(checks["yt-dlp"]["kind"], "optional")
 
     def test_bounded_text_keeps_utf8_tail_and_reports_dropped_bytes(self) -> None:

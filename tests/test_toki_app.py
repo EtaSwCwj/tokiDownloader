@@ -16,6 +16,50 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_embedded_browser_cli_plans_offline_and_guards_navigation(self) -> None:
+        plan = build_parser().parse_args(
+            [
+                "embedded-browser", "plan", "--url",
+                "https://newtoki1.org/manhwa/34360", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running") as ensure_gui,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(plan), 0)
+        ensure_gui.assert_not_called()
+
+        guarded = build_parser().parse_args(
+            [
+                "embedded-browser", "manage", "--show-gui", "--url",
+                "https://newtoki1.org/manhwa/34360", "--navigate", "--json",
+            ]
+        )
+        with self.assertRaisesRegex(toki_app.ControlError, "--yes"):
+            run_cli(guarded)
+
+        offline = build_parser().parse_args(
+            [
+                "embedded-browser", "manage", "--show-gui", "--url",
+                "https://newtoki1.org/manhwa/34360", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(offline), 0)
+        request.assert_called_once_with(
+            {
+                "action": "show_embedded_browser",
+                "url": "https://newtoki1.org/manhwa/34360",
+                "navigate": False,
+                "confirmed": False,
+            }
+        )
+
     def test_proxy_auth_cli_guards_secrets_and_supports_noninteractive_stdin(self) -> None:
         status = build_parser().parse_args(["proxy-auth", "status", "--json"])
         with self.assertRaisesRegex(toki_app.ControlError, "--yes"):

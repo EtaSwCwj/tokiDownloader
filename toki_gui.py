@@ -87,6 +87,24 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+WEBENGINE_IMPORT_ERROR = ""
+try:
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+except ImportError as error:
+    WEBENGINE_IMPORT_ERROR = str(error)
+    QWebEnginePage = None
+    QWebEngineProfile = None
+    QWebEngineView = None
+
+
+def webengine_runtime_status() -> dict[str, Any]:
+    available = all((QWebEnginePage, QWebEngineProfile, QWebEngineView))
+    return {
+        "available": bool(available),
+        "importError": WEBENGINE_IMPORT_ERROR,
+    }
+
 from toki_core import (
     APP_VERSION,
     ACTIVE_JOB_STATES,
@@ -122,6 +140,8 @@ from toki_core import (
     dependency_diagnostics,
     downloader_event_update_policy,
     downloader_environment_overrides,
+    embedded_browser_capabilities,
+    embedded_browser_navigation_plan,
     error_category_label,
     export_diagnostics,
     export_jobs_snapshot,
@@ -158,6 +178,7 @@ from toki_core import (
     mark_run_cancelled,
     move_job_folder as execute_job_folder_move,
     normalize_image_concurrency,
+    normalize_embedded_browser_url,
     normalize_retry_backoff,
     normalize_retry_count,
     normalize_scan_request,
@@ -1766,6 +1787,202 @@ class CompletionCountdownDialog(QDialog):
         }
 
 
+class EmbeddedBrowserDialog(QDialog):
+    OFFLINE_HTML = """
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<style>
+body{font-family:'Malgun Gothic',sans-serif;background:#20242b;color:#eef2f7;margin:0;padding:48px}
+.card{max-width:760px;margin:auto;background:#292f38;border:1px solid #475262;border-radius:12px;padding:32px}
+h1{font-size:26px;margin:0 0 16px}.muted{color:#b8c4d4;line-height:1.7}
+.safe{display:inline-block;background:#234b37;color:#b8f3d0;padding:6px 10px;border-radius:6px;margin-top:14px}
+</style></head><body><div class="card"><h1>tokiDownloader 내장 브라우저</h1>
+<p class="muted">현재는 네트워크를 사용하지 않는 오프라인 시작 화면입니다. 주소를 입력하고 이동을 누르면 외부 연결 전에 확인합니다.</p>
+<p class="muted">개인 Chrome 프로필 및 자동화 브라우저 쿠키와 분리된 메모리 전용 프로필을 사용합니다. 창을 닫으면 세션 데이터는 보존하지 않습니다.</p>
+<span class="safe">오프라인 · 외부 요청 없음</span></div></body></html>
+"""
+
+    def __init__(
+        self,
+        owner: "MainWindow",
+        initial_url: str = "",
+        *,
+        navigate: bool = False,
+        confirmed: bool = False,
+    ) -> None:
+        super().__init__(owner)
+        runtime = webengine_runtime_status()
+        if not runtime["available"]:
+            raise RuntimeError(
+                "내장 브라우저가 설치되지 않았습니다. setup-gui.cmd -WithBrowserTools를 실행해주세요."
+                + (f" ({runtime['importError']})" if runtime["importError"] else "")
+            )
+        self.owner = owner
+        self._allowed_url = ""
+        self._last_network_approved = False
+        self._loading = False
+        self.setWindowTitle("메모리 전용 내장 브라우저")
+        self.resize(1100, 760)
+        layout = QVBoxLayout(self)
+        notice = QLabel(
+            "개인 Chrome·자동화 쿠키와 분리된 메모리 전용 프로필입니다. HTTPS 이동마다 외부 연결을 확인합니다."
+        )
+        notice.setObjectName("mutedLabel")
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        toolbar = QHBoxLayout()
+        back_button = QPushButton("뒤로")
+        forward_button = QPushButton("앞으로")
+        reload_button = QPushButton("새로고침")
+        stop_button = QPushButton("중지")
+        self.address_edit = QLineEdit()
+        self.address_edit.setPlaceholderText("HTTPS 주소")
+        self.address_edit.setText(normalize_embedded_browser_url(initial_url))
+        go_button = QPushButton("이동...")
+        go_button.setToolTip(
+            "CLI: embedded-browser manage --show-gui --url URL --navigate --yes"
+        )
+        toolbar.addWidget(back_button)
+        toolbar.addWidget(forward_button)
+        toolbar.addWidget(reload_button)
+        toolbar.addWidget(stop_button)
+        toolbar.addWidget(self.address_edit, 1)
+        toolbar.addWidget(go_button)
+        layout.addLayout(toolbar)
+
+        self.profile = QWebEngineProfile(self)
+        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+        self.profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies
+        )
+        self.profile.downloadRequested.connect(lambda download: download.cancel())
+
+        owner_dialog = self
+
+        class GuardedPage(QWebEnginePage):
+            def acceptNavigationRequest(
+                page_self,
+                url: QUrl,
+                navigation_type: Any,
+                is_main_frame: bool,
+            ) -> bool:
+                target = url.toString()
+                if not is_main_frame or url.scheme().lower() not in {"http", "https"}:
+                    return super().acceptNavigationRequest(
+                        url, navigation_type, is_main_frame
+                    )
+                if owner_dialog._allowed_url == target:
+                    owner_dialog._allowed_url = ""
+                    return True
+                QTimer.singleShot(
+                    0,
+                    lambda requested=target: owner_dialog.request_navigation(requested),
+                )
+                return False
+
+            def createWindow(page_self, _window_type: Any) -> Any:
+                return None
+
+        self.page = GuardedPage(self.profile, self)
+        self.page.featurePermissionRequested.connect(
+            lambda origin, feature: self.page.setFeaturePermission(
+                origin,
+                feature,
+                QWebEnginePage.PermissionPolicy.PermissionDeniedByUser,
+            )
+        )
+        self.view = QWebEngineView()
+        self.view.setPage(self.page)
+        self.view.setHtml(self.OFFLINE_HTML, QUrl("about:blank"))
+        layout.addWidget(self.view, 1)
+        footer = QHBoxLayout()
+        self.status_label = QLabel("오프라인 시작 화면 · 외부 요청 없음")
+        footer.addWidget(self.status_label, 1)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.close)
+        footer.addWidget(close_button)
+        layout.addLayout(footer)
+
+        back_button.clicked.connect(self.view.back)
+        forward_button.clicked.connect(self.view.forward)
+        reload_button.clicked.connect(
+            lambda: self.request_navigation(self.view.url().toString())
+            if self.view.url().scheme().lower() in {"http", "https"}
+            else self.view.setHtml(self.OFFLINE_HTML, QUrl("about:blank"))
+        )
+        stop_button.clicked.connect(self.view.stop)
+        go_button.clicked.connect(lambda: self.request_navigation(self.address_edit.text()))
+        self.address_edit.returnPressed.connect(
+            lambda: self.request_navigation(self.address_edit.text())
+        )
+        self.view.urlChanged.connect(self._url_changed)
+        self.view.loadStarted.connect(self._load_started)
+        self.view.loadProgress.connect(
+            lambda progress: self.status_label.setText(f"불러오는 중 · {progress}%")
+        )
+        self.view.loadFinished.connect(self._load_finished)
+        if navigate:
+            QTimer.singleShot(
+                0,
+                lambda: self.request_navigation(initial_url, confirmed=confirmed),
+            )
+
+    def request_navigation(self, url: str, *, confirmed: bool = False) -> bool:
+        try:
+            plan = embedded_browser_navigation_plan(url)
+        except ValueError as error:
+            QMessageBox.warning(self, "주소를 열 수 없음", str(error))
+            return False
+        if not confirmed:
+            answer = QMessageBox.question(
+                self,
+                "외부 HTTPS 연결",
+                f"메모리 전용 내장 브라우저로 다음 호스트에 연결할까요?\n\n{plan['host']}\n\n"
+                "공급자 쿠키와 개인 Chrome 프로필은 사용하지 않습니다.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        self._allowed_url = plan["url"]
+        self._last_network_approved = True
+        self.address_edit.setText(plan["url"])
+        self.view.setUrl(QUrl(plan["url"]))
+        return True
+
+    def _url_changed(self, url: QUrl) -> None:
+        if url.scheme().lower() in {"http", "https"}:
+            self.address_edit.setText(url.toString())
+
+    def _load_started(self) -> None:
+        self._loading = True
+        self.status_label.setText("불러오는 중...")
+
+    def _load_finished(self, ok: bool) -> None:
+        self._loading = False
+        if self.view.url().scheme().lower() not in {"http", "https"}:
+            self.status_label.setText("오프라인 시작 화면 · 외부 요청 없음")
+        else:
+            self.status_label.setText("불러오기 완료" if ok else "불러오기 실패 또는 차단")
+
+    def state_snapshot(self) -> dict[str, Any]:
+        current_url = self.view.url().toString()
+        return {
+            "open": self.isVisible(),
+            "available": True,
+            "url": current_url if current_url.startswith(("http://", "https://")) else "",
+            "address": self.address_edit.text(),
+            "loading": self._loading,
+            "networkApproved": self._last_network_approved,
+            "offTheRecordProfile": bool(self.profile.isOffTheRecord()),
+            "persistentCookies": False,
+            "sharesAutomationCookies": False,
+        }
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.view.stop()
+        self.page.deleteLater()
+        self.profile.clearHttpCache()
+        super().closeEvent(event)
+
+
 class ProxyCredentialDialog(QDialog):
     def __init__(self, owner: "MainWindow") -> None:
         super().__init__(owner)
@@ -2309,6 +2526,12 @@ class SettingsDialog(QDialog):
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
+        embedded_capability = embedded_browser_capabilities()
+        embedded_button = QPushButton("메모리 전용 내장 브라우저...")
+        embedded_button.setToolTip("CLI: embedded-browser manage --show-gui")
+        embedded_button.clicked.connect(lambda: owner.show_embedded_browser())
+        embedded_button.setEnabled(bool(embedded_capability["available"]))
+        provider_form.addRow("선택형 브라우저", embedded_button)
         credential = credential_store_status()
         credential_label = QLabel(
             "Windows 보안 저장소 사용 가능"
@@ -2938,6 +3161,7 @@ class MainWindow(QMainWindow):
             ImageConversionProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
+        self.active_embedded_browser_dialog: EmbeddedBrowserDialog | None = None
         self.active_proxy_credential_dialog: ProxyCredentialDialog | None = None
         self.active_cookie_manager_dialog: CookieManagerDialog | None = None
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
@@ -3127,6 +3351,14 @@ class MainWindow(QMainWindow):
         self.doctor_action = QAction("설치 및 선택 기능 진단...", self)
         self.doctor_action.triggered.connect(self.show_dependency_diagnostics)
 
+        self.embedded_browser_action = QAction("메모리 전용 내장 브라우저...", self)
+        self.embedded_browser_action.setEnabled(
+            bool(embedded_browser_capabilities()["available"])
+        )
+        self.embedded_browser_action.triggered.connect(
+            lambda: self.show_embedded_browser()
+        )
+
         self.export_diagnostics_action = QAction("오류 보고용 진단 묶음 내보내기", self)
         self.export_diagnostics_action.triggered.connect(
             lambda: self.export_diagnostic_bundle()
@@ -3233,6 +3465,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.settings_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.screenshot_action)
+        tools_menu.addAction(self.embedded_browser_action)
         tools_menu.addAction(self.doctor_action)
         tools_menu.addAction(self.export_diagnostics_action)
         tools_menu.addAction(self.self_test_action)
@@ -4940,6 +5173,37 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        return True
+
+    def show_embedded_browser(
+        self,
+        url: str = "",
+        *,
+        navigate: bool = False,
+        confirmed: bool = False,
+    ) -> bool:
+        if self.active_embedded_browser_dialog:
+            self.active_embedded_browser_dialog.close()
+        dialog = EmbeddedBrowserDialog(
+            self,
+            url,
+            navigate=navigate,
+            confirmed=confirmed,
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(
+            lambda _object=None: setattr(self, "active_embedded_browser_dialog", None)
+        )
+        self.active_embedded_browser_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_embedded_browser(self) -> bool:
+        if not self.active_embedded_browser_dialog:
+            return False
+        self.active_embedded_browser_dialog.close()
         return True
 
     def show_proxy_credential_manager(self) -> bool:
@@ -6780,6 +7044,11 @@ class MainWindow(QMainWindow):
         elif self.active_performance_dialog and self.active_performance_dialog.isVisible():
             screenshot = self.active_performance_dialog.grab()
         elif (
+            self.active_embedded_browser_dialog
+            and self.active_embedded_browser_dialog.isVisible()
+        ):
+            screenshot = self.active_embedded_browser_dialog.grab()
+        elif (
             self.active_proxy_credential_dialog
             and self.active_proxy_credential_dialog.isVisible()
         ):
@@ -7490,6 +7759,22 @@ class MainWindow(QMainWindow):
                     "passwordExposed": False,
                 }
             ),
+            "embeddedBrowser": (
+                self.active_embedded_browser_dialog.state_snapshot()
+                if self.active_embedded_browser_dialog
+                else {
+                    "open": False,
+                    "available": bool(webengine_runtime_status()["available"]),
+                    "importError": str(webengine_runtime_status()["importError"]),
+                    "url": "",
+                    "address": "",
+                    "loading": False,
+                    "networkApproved": False,
+                    "offTheRecordProfile": True,
+                    "persistentCookies": False,
+                    "sharesAutomationCookies": False,
+                }
+            ),
             "jobsSnapshotDialogOpen": bool(
                 self.active_jobs_snapshot_dialog
                 and self.active_jobs_snapshot_dialog.isVisible()
@@ -7802,6 +8087,16 @@ class MainWindow(QMainWindow):
             return {"shown": self.show_proxy_credential_manager()}
         if action == "close_proxy_credential_manager":
             return {"closed": self.close_proxy_credential_manager()}
+        if action == "show_embedded_browser":
+            return {
+                "shown": self.show_embedded_browser(
+                    str(request.get("url") or ""),
+                    navigate=bool(request.get("navigate")),
+                    confirmed=bool(request.get("confirmed")),
+                )
+            }
+        if action == "close_embedded_browser":
+            return {"closed": self.close_embedded_browser()}
         if action == "preview_completion_action":
             return self.preview_completion_action(
                 str(request.get("completionAction") or "exit"),

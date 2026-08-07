@@ -338,7 +338,7 @@ GUI를 동일하게 검증한다. 시스템 종료 미리보기는 `executed: fa
 ### 단계 E. 네트워크·브라우저·쿠키
 
 - [x] 기본 headless 브라우저와 진단용 표시 모드
-- [ ] 선택형 내장 브라우저
+- [x] 선택형 내장 브라우저
 - [x] 쿠키 보기·가져오기·내보내기·초기화
 - [x] 전역 작품 동시 수와 작업별 이미지 연결 수
 - [x] HTTP/SOCKS 프록시와 선택적 인증
@@ -355,6 +355,19 @@ GUI를 동일하게 검증한다. 시스템 종료 미리보기는 `executed: fa
 프로필의 창을 표시하며 개인 Chrome 프로필을 사용하지 않는다. 공용
 `browser_launch_policy`와 `browser-mode status|set` CLI, 기존 일반 설정 체크박스가 같은
 값을 사용하고 실제 설정을 다시 headless로 복원했다.
+
+2026-08-07 선택형 내장 브라우저 구현: `PyQt6-WebEngine`을 별도
+`requirements-browser-tools.txt`와 `setup-gui.cmd -WithBrowserTools`로 설치하는 선택 기능으로
+추가했다. 도구 메뉴·공급자 설정 버튼과 `embedded-browser capabilities|plan|manage` CLI가 같은
+창을 제어한다. 기본 페이지는 네트워크를 쓰지 않는 오프라인 HTML이며 URL을 주소창에 미리
+채워도 자동 이동하지 않는다. 실제 HTTPS 이동은 GUI 호스트 확인 또는 CLI `--navigate --yes`가
+필요하다. 이름 없는 off-the-record `QWebEngineProfile`, 메모리 캐시, 영구 쿠키 금지, 다운로드
+취소와 새 창 차단을 적용해 개인 Chrome 및 자동화 쿠키와 분리했다. QApplication보다 먼저
+`AA_ShareOpenGLContexts`를 설정해야 하는 Qt 초기화 오류도 실제 GUI 로그로 발견해 수정했다.
+외부 이동 없이 `https://newtoki1.org/manhwa/34360`을 주소창에만 넣어
+`logs/embedded-browser-offline-gui.png`를 자체 캡처했고 상태가 `url: ""`,
+`networkApproved: false`, `offTheRecordProfile: true`, `persistentCookies: false`임을 확인했다.
+Python 170건과 Node 16건을 통과했다.
 
 2026-08-07 네트워크 정책 구현: 설정 스키마 v5에 인증 정보가 없는 HTTP/HTTPS/SOCKS
 프록시, 전체 이미지 속도 제한과 마나토끼·뉴토끼·북토끼별 요청 간격·백오프를 추가했다.

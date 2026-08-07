@@ -3,6 +3,7 @@ param(
     [switch]$CheckOnly,
     [switch]$WithImageTools,
     [switch]$WithArchiveTools,
+    [switch]$WithBrowserTools,
     [switch]$WithSecurityTools
 )
 
@@ -47,6 +48,7 @@ $requiredFiles = @(
     'package-lock.json',
     'requirements-gui.txt',
     'requirements-archive-tools.txt',
+    'requirements-browser-tools.txt',
     'requirements-security.txt',
     'toki_app.py',
     'toki_gui.py',
@@ -89,6 +91,12 @@ if (-not $CheckOnly) {
         Invoke-Checked -Program $venvPython -Arguments @(
             '-m', 'pip', 'install', '--disable-pip-version-check',
             '-r', (Join-Path $projectRoot 'requirements-archive-tools.txt')
+        )
+    }
+    if ($WithBrowserTools) {
+        Invoke-Checked -Program $venvPython -Arguments @(
+            '-m', 'pip', 'install', '--disable-pip-version-check',
+            '-r', (Join-Path $projectRoot 'requirements-browser-tools.txt')
         )
     }
     if ($WithSecurityTools) {

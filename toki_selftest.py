@@ -60,6 +60,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "package.json",
         ROOT_DIR / "VERSION",
         ROOT_DIR / "requirements-image-tools.txt",
+        ROOT_DIR / "requirements-browser-tools.txt",
         ROOT_DIR / "requirements-security.txt",
         ROOT_DIR / "setup-gui.ps1",
         ROOT_DIR / "scripts" / "clean-install-smoke.ps1",

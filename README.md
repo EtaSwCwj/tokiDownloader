@@ -68,6 +68,7 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 이미지 변환·유사 이미지 해시용 Pillow와 ImageHash까지 함께 설치하려면
 `setup-gui.cmd -WithImageTools`를 사용합니다.
 7Z/RAR 작품 검사 모듈까지 설치하려면 `setup-gui.cmd -WithArchiveTools`를 사용합니다.
+메모리 전용 내장 브라우저를 사용하려면 `setup-gui.cmd -WithBrowserTools`를 사용합니다.
 Windows 자격 증명 저장소 기반 쿠키 관리까지 사용하려면
 `setup-gui.cmd -WithSecurityTools`를 사용합니다.
 
@@ -206,6 +207,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd language set ko --json
 .\toki-cli.cmd browser-mode status --json
 .\toki-cli.cmd browser-mode set headless --json
+.\toki-cli.cmd embedded-browser capabilities --json
+.\toki-cli.cmd embedded-browser plan --url "https://newtoki1.org/manhwa/34360" --json
+.\toki-cli.cmd embedded-browser manage --show-gui --url "https://newtoki1.org/manhwa/34360" --json
+.\toki-cli.cmd embedded-browser manage --show-gui --url "https://newtoki1.org/manhwa/34360" --navigate --yes --json
+.\toki-cli.cmd embedded-browser manage --close --json
 .\toki-cli.cmd network-policy status --url "https://newtoki1.org/manhwa/34360" --json
 .\toki-cli.cmd network-policy set --speed-limit-kib 2048 --provider manatoki --request-delay-ms 250 --backoff 4 --json
 .\toki-cli.cmd proxy-auth capabilities --json
@@ -302,6 +308,14 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 진단 모드이며 개인 Chrome 계정·프로필을 연결하지 않습니다. 확인 후
 `browser-mode set headless`로 되돌리면 다음 실행부터 다시 백그라운드로 동작합니다.
 
+선택형 내장 브라우저는 `PyQt6-WebEngine`을 설치한 경우에만 활성화됩니다. 기본 화면은
+외부 요청이 없는 오프라인 안내 페이지이고, 주소를 입력해 실제 HTTPS 사이트로 이동할 때
+GUI에서 매번 호스트를 확인합니다. 개인 Chrome·자동화 브라우저와 분리된 메모리 전용
+프로필을 사용하며 영구 쿠키를 저장하지 않고 파일 다운로드와 새 팝업 창도 차단합니다.
+`embedded-browser plan`은 네트워크 없이 URL과 전송 경계를 검사합니다. `manage --show-gui
+--url URL`은 주소만 미리 채우고 이동하지 않으며, CLI에서 실제 이동하려면 `--navigate
+--yes`가 함께 필요합니다.
+
 `network-policy`는 HTTP/HTTPS/SOCKS4/SOCKS5 프록시, 전체 이미지 대역폭 제한과
 마나토끼·뉴토끼·북토끼별 최소 요청 간격·지수 백오프를 관리합니다. 속도 0은 무제한이고
 그 외에는 32~1048576 KiB/s입니다. 대역폭 제한기는 동시 이미지 스레드 전체가 하나의
@@ -377,7 +391,7 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 `장시간·강제 종료 복구 검증` 버튼과 같은 경로를 실행합니다.
 
 `doctor`는 Python 3.10+, PyQt6, psutil, Node.js와 `puppeteer-real-browser`를 필수 실행
-환경으로 검사합니다. npm은 설치 도구로, Pillow·ImageHash·py7zr·rarfile·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
+환경으로 검사합니다. npm은 설치 도구로, Pillow·ImageHash·py7zr·rarfile·PyQt6-WebEngine·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
 분리해 설치 여부·버전·실제 경로를 표시합니다. `--show-gui`와 도구 메뉴의
 `설치 및 선택 기능 진단...`은 같은 보고서를 표로 보여주며 `--close`로 닫을 수 있습니다.
 

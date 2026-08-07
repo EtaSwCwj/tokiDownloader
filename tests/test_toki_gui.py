@@ -398,6 +398,43 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(closed, {"closed": True})
         self.assertEqual(calls, [("show",), ("close",)])
 
+    def test_embedded_browser_ipc_preserves_offline_navigation_contract(self) -> None:
+        calls = []
+        harness = type("EmbeddedBrowserIpcHarness", (), {})()
+        harness.show_embedded_browser = (
+            lambda url, navigate, confirmed: calls.append(
+                ("show", url, navigate, confirmed)
+            )
+            or True
+        )
+        harness.close_embedded_browser = lambda: calls.append(("close",)) or True
+        shown = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "show_embedded_browser",
+                "url": "https://newtoki1.org/manhwa/34360",
+                "navigate": False,
+                "confirmed": False,
+            },
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_embedded_browser"}
+        )
+        self.assertEqual(shown, {"shown": True})
+        self.assertEqual(closed, {"closed": True})
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "show",
+                    "https://newtoki1.org/manhwa/34360",
+                    False,
+                    False,
+                ),
+                ("close",),
+            ],
+        )
+
     def test_settings_import_ipc_applies_executed_values_to_live_gui(self) -> None:
         applied = []
         harness = type("SettingsImportHarness", (), {})()
