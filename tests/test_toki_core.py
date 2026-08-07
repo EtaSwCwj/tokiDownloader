@@ -20,6 +20,7 @@ from toki_core import (
     available_work_slots,
     DownloadJob,
     DownloadRun,
+    SleepPreventionController,
     build_downloader_args,
     build_job_list_view_state,
     build_work_key,
@@ -126,6 +127,7 @@ from toki_core import (
     settings_snapshot,
     shortcut_import_plan,
     shortcut_settings_snapshot,
+    sleep_prevention_policy_snapshot,
     store_proxy_credentials,
     thumbnail_cache_path,
     update_app_settings,
@@ -137,6 +139,47 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_sleep_prevention_policy_uses_thread_request_and_releases_cleanly(self) -> None:
+        config = default_config()
+        self.assertFalse(config["preventSleepDuringDownloads"])
+        config["preventSleepDuringDownloads"] = True
+        calls: list[int] = []
+        controller = SleepPreventionController(
+            platform_name="nt",
+            execution_state_setter=lambda flags: calls.append(flags) or 1,
+        )
+
+        active = controller.set_required(True)
+        self.assertTrue(active["active"])
+        self.assertEqual(
+            calls,
+            [
+                SleepPreventionController.ES_CONTINUOUS
+                | SleepPreventionController.ES_SYSTEM_REQUIRED
+            ],
+        )
+        controller.set_required(True)
+        self.assertEqual(len(calls), 1)
+        policy = sleep_prevention_policy_snapshot(
+            config, active_downloads=2, controller=controller
+        )
+        self.assertTrue(policy["requested"])
+        self.assertTrue(policy["active"])
+        self.assertTrue(policy["preventsSystemSleepOnly"])
+        self.assertFalse(policy["preventsDisplaySleep"])
+
+        released = controller.close()
+        self.assertFalse(released["active"])
+        self.assertEqual(calls[-1], SleepPreventionController.ES_CONTINUOUS)
+        self.assertEqual(released["transitionCount"], 2)
+
+        failed = SleepPreventionController(
+            platform_name="nt", execution_state_setter=lambda _flags: 0
+        ).set_required(True)
+        self.assertFalse(failed["ok"])
+        self.assertFalse(failed["active"])
+        self.assertIn("거부", failed["lastError"])
+
     def test_notification_plans_separate_enablement_sound_and_message_box(self) -> None:
         config = default_config()
         default_status = notification_settings_snapshot(config)

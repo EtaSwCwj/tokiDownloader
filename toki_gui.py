@@ -118,6 +118,7 @@ from toki_core import (
     TAG_COLORS,
     DownloadJob,
     DownloadRun,
+    SleepPreventionController,
     append_bounded_text,
     available_ui_languages,
     assign_job_to_collection,
@@ -217,6 +218,7 @@ from toki_core import (
     save_runs,
     settings_snapshot,
     shortcut_settings_snapshot,
+    sleep_prevention_policy_snapshot,
     store_proxy_credentials,
     set_job_pause_state,
     set_process_tree_paused,
@@ -2588,7 +2590,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2942,12 +2944,24 @@ class SettingsDialog(QDialog):
             "CLI: list-performance set --low-spec on|off"
         )
         advanced_form.addRow("저사양 모드", self.low_spec_mode_check)
+        self.prevent_sleep_check = QCheckBox(
+            "다운로드가 실행되는 동안 Windows 시스템 절전만 방지"
+        )
+        self.prevent_sleep_check.setToolTip(
+            "CLI: sleep-prevention set --state on|off"
+        )
+        advanced_form.addRow("다운로드 중 절전 방지", self.prevent_sleep_check)
+        self.sleep_prevention_status_label = QLabel("")
+        self.sleep_prevention_status_label.setObjectName("mutedLabel")
+        self.sleep_prevention_status_label.setWordWrap(True)
+        advanced_form.addRow("현재 전원 요청", self.sleep_prevention_status_label)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
             "방법만 정하며 Windows 시스템 연결은 변경하지 않습니다. 자동 저장은 변경된 작업만 "
             "묶어서 저장하고 복구는 다운로드 파일을 수정하지 않습니다. 저사양 모드는 원래 "
-            "설정값을 지우지 않고 실행 중 유효 상한과 썸네일 비용만 낮춥니다."
+            "설정값을 지우지 않고 실행 중 유효 상한과 썸네일 비용만 낮춥니다. 절전 방지는 "
+            "화면을 계속 켜지 않고 실제 다운로드가 실행되는 동안에만 시스템 절전을 막습니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -3059,6 +3073,7 @@ class SettingsDialog(QDialog):
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
         targets = (
+            (("절전", "전원"), self.prevent_sleep_check),
             (("저사양",), self.low_spec_mode_check),
             (("지연",), self.list_lazy_loading_check),
             (("스크롤",), self.list_scroll_lines_spin),
@@ -3079,6 +3094,19 @@ class SettingsDialog(QDialog):
         )
         if target is not None:
             self.advanced_scroll.ensureWidgetVisible(target, 20, 40)
+
+    def _update_sleep_prevention_status(self) -> None:
+        snapshot_method = getattr(self.owner, "sleep_prevention_status_snapshot", None)
+        snapshot = snapshot_method() if callable(snapshot_method) else {}
+        if snapshot.get("active"):
+            text = f"활성 · 실행 다운로드 {int(snapshot.get('activeDownloads') or 0)}개"
+        elif not snapshot.get("available", os.name == "nt"):
+            text = "현재 운영체제에서는 Windows 전원 요청을 사용할 수 없습니다."
+        elif snapshot.get("lastError"):
+            text = f"요청 오류 · {snapshot['lastError']}"
+        else:
+            text = "유휴 · 다운로드가 시작될 때만 활성화됩니다."
+        self.sleep_prevention_status_label.setText(text)
 
     def state_snapshot(self) -> dict[str, Any]:
         index = self.tabs.currentIndex()
@@ -3155,6 +3183,10 @@ class SettingsDialog(QDialog):
         self.list_scroll_lines_spin.setValue(int(values["listScrollLines"]))
         self.list_lazy_loading_check.setChecked(bool(values["listLazyLoading"]))
         self.low_spec_mode_check.setChecked(bool(values["lowSpecMode"]))
+        self.prevent_sleep_check.setChecked(
+            bool(values["preventSleepDuringDownloads"])
+        )
+        self._update_sleep_prevention_status()
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3344,6 +3376,7 @@ class SettingsDialog(QDialog):
             "listScrollLines": self.list_scroll_lines_spin.value(),
             "listLazyLoading": self.list_lazy_loading_check.isChecked(),
             "lowSpecMode": self.low_spec_mode_check.isChecked(),
+            "preventSleepDuringDownloads": self.prevent_sleep_check.isChecked(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -3727,6 +3760,8 @@ class MainWindow(QMainWindow):
         self.history_filter_timer.timeout.connect(self.apply_history_filters)
         self.pending_jobs: deque[DownloadJob] = deque()
         self.active_contexts: dict[str, ProcessContext] = {}
+        self.sleep_prevention_controller = SleepPreventionController()
+        self.last_sleep_prevention: dict[str, Any] = {}
         self.self_test_process: QProcess | None = None
         self.performance_benchmark_process: QProcess | HiddenProcess | None = None
         self.stability_test_process: QProcess | HiddenProcess | None = None
@@ -5577,6 +5612,7 @@ class MainWindow(QMainWindow):
         context.paused = True
         save_runs([context.run])
         self._update_job_card(context.job)
+        self._update_active_summary()
         self.log(
             f"작업 일시정지: PID {pid}, 프로세스 {len(affected)}개",
             job_id=context.job.job_id,
@@ -5595,6 +5631,7 @@ class MainWindow(QMainWindow):
         context.paused = False
         save_runs([context.run])
         self._update_job_card(context.job)
+        self._update_active_summary()
         self.log(
             f"작업 계속: PID {pid}, 프로세스 {len(affected)}개",
             job_id=context.job.job_id,
@@ -5623,6 +5660,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _update_active_summary(self) -> None:
+        self._sync_sleep_prevention()
         contexts = list(self.active_contexts.values())
         if not contexts:
             self.status_label.setText("준비")
@@ -6150,6 +6188,45 @@ class MainWindow(QMainWindow):
             },
         }
 
+    def _running_download_count(self) -> int:
+        return sum(
+            1
+            for context in self.active_contexts.values()
+            if context.job.state == "실행 중" and not context.paused
+        )
+
+    def _sync_sleep_prevention(self) -> dict[str, Any]:
+        running = self._running_download_count()
+        required = bool(self.config.get("preventSleepDuringDownloads", False)) and running > 0
+        before = self.sleep_prevention_controller.snapshot()
+        runtime = self.sleep_prevention_controller.set_required(required)
+        snapshot = sleep_prevention_policy_snapshot(
+            self.config,
+            active_downloads=running,
+            controller=runtime,
+        )
+        previous_error = str(self.last_sleep_prevention.get("lastError") or "")
+        if bool(before.get("active")) != bool(runtime.get("active")):
+            self.log(
+                "다운로드 중 시스템 절전 방지 활성화"
+                if runtime.get("active")
+                else "다운로드 중 시스템 절전 방지 해제"
+            )
+        if snapshot.get("lastError") and snapshot["lastError"] != previous_error:
+            self.log(
+                f"시스템 절전 방지 요청 실패: {snapshot['lastError']}",
+                "ERROR",
+            )
+        self.last_sleep_prevention = snapshot
+        return snapshot
+
+    def sleep_prevention_status_snapshot(self) -> dict[str, Any]:
+        return sleep_prevention_policy_snapshot(
+            self.config,
+            active_downloads=self._running_download_count(),
+            controller=self.sleep_prevention_controller,
+        )
+
     def show_recovery_dialog(self) -> bool:
         result = self.recover_interrupted_records(execute=False)
         if self.active_recovery_dialog:
@@ -6484,6 +6561,9 @@ class MainWindow(QMainWindow):
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self._apply_style()
         self._apply_display_preferences(result)
+        sync_sleep = getattr(self, "_sync_sleep_prevention", None)
+        if callable(sync_sleep):
+            sync_sleep()
         if {
             "listPageSize",
             "listLoadedLimit",
@@ -8570,6 +8650,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd archive-viewer status|set|open [options]\n"
             "toki-cli.cmd persistence status|set|recover [options]\n"
             "toki-cli.cmd list-performance status|set [options]\n"
+            "toki-cli.cmd sleep-prevention status|set|plan [options]\n"
             "toki-cli.cmd duplicates works [--json|--show-gui|--close]\n"
             "toki-cli.cmd duplicates images --job ID [--algorithm sha256|phash --json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
@@ -8751,6 +8832,7 @@ class MainWindow(QMainWindow):
                 "lowSpecMode": bool(self.config.get("lowSpecMode", False)),
             },
             "listPerformance": self.list_performance_status_snapshot(),
+            "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),
             "clipboard": {
@@ -9253,6 +9335,8 @@ class MainWindow(QMainWindow):
             return self.persistence_status_snapshot()
         if action == "list_performance_status":
             return self.list_performance_status_snapshot()
+        if action == "sleep_prevention_status":
+            return self.sleep_prevention_status_snapshot()
         if action == "recover_interrupted":
             return self.recover_interrupted_records(
                 execute=bool(request.get("execute"))
@@ -9554,6 +9638,7 @@ class MainWindow(QMainWindow):
         self._flush_job_card_updates()
         self.persist_timer.stop()
         self._flush_job_history()
+        self.sleep_prevention_controller.close()
         self.control_server.close()
         if self.tray_icon:
             self.tray_icon.hide()

@@ -117,6 +117,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd persistence recover --close
 .\toki-cli.cmd list-performance status --json
 .\toki-cli.cmd list-performance set --page-size 200 --loaded-limit 2000 --scroll-lines 3 --lazy-loading on --low-spec off --json
+.\toki-cli.cmd sleep-prevention status --json
+.\toki-cli.cmd sleep-prevention set --state on --json
+.\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
 .\toki-cli.cmd duplicates works --json
 .\toki-cli.cmd duplicates works --show-gui
 .\toki-cli.cmd duplicates works --close
@@ -653,6 +656,15 @@ GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `�
 숨긴 뒤 메모리 썸네일 캐시도 32개로 줄입니다. 모드를 끄면 원래 설정으로 돌아갑니다.
 `list-performance status --json`과 `status --json`의 `listPerformance`에서 설정값,
 유효값, 현재 적재 수와 픽셀 스크롤 단계를 함께 확인할 수 있습니다.
+
+다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
+--state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows
+`SetThreadExecutionState`의 시스템 절전 요청을 유지합니다. 모니터 화면을 계속 켜지는
+않으며, 일시정지·재시도 대기·모든 작업 완료·GUI 종료에서는 즉시 요청을 해제합니다.
+Windows 전원 관리 옵션이나 레지스트리는 변경하지 않습니다. `sleep-prevention status`와
+`status --json`의 `sleepPrevention`에서 설정, 실행 다운로드 수, 요청·활성 상태와 오류를
+확인할 수 있습니다. `sleep-prevention plan --active-downloads N`은 Windows API를 호출하지
+않고 가정한 작업 수에 따른 정책만 계산하므로 자동화 검증에 사용할 수 있습니다.
 
 `set-retry-policy --count N --backoff S`는 프로세스 실패 후 자동 재시도 횟수와
 기본 대기 초를 설정합니다. 기본값은 2회·2초이고, 대기는 2초→4초→8초처럼 2배씩

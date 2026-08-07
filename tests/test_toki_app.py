@@ -16,6 +16,60 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_sleep_prevention_cli_reports_sets_and_plans_without_power_call(self) -> None:
+        status = {
+            "ok": True,
+            "configured": True,
+            "activeDownloads": 1,
+            "requested": True,
+            "active": True,
+        }
+        status_args = build_parser().parse_args(
+            ["sleep-prevention", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=status) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        request.assert_called_once_with({"action": "sleep_prevention_status"})
+
+        set_args = build_parser().parse_args(
+            ["sleep-prevention", "set", "--state", "on", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=status) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[0].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"preventSleepDuringDownloads": True},
+                "reset": False,
+            },
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {"action": "sleep_prevention_status"},
+        )
+
+        plan_args = build_parser().parse_args(
+            ["sleep-prevention", "plan", "--active-downloads", "2", "--json"]
+        )
+        with (
+            patch(
+                "toki_app.sleep_prevention_policy_snapshot",
+                return_value={"ok": True, "requested": False},
+            ) as planner,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(plan_args), 0)
+        planner.assert_called_once_with(active_downloads=2)
+
     def test_notification_cli_reports_sets_and_previews_via_gui(self) -> None:
         status_args = build_parser().parse_args(["notifications", "status", "--json"])
         status_values = {

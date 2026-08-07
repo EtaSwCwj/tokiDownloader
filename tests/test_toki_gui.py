@@ -8,7 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import toki_gui
-from toki_core import DownloadJob, DownloadRun, default_config
+from toki_core import (
+    DownloadJob,
+    DownloadRun,
+    SleepPreventionController,
+    default_config,
+)
 from toki_gui import (
     ImageConversionProcessContext,
     JobListModel,
@@ -399,6 +404,47 @@ class WorkSchedulerTests(unittest.TestCase):
         policy_harness.list_performance_policy["effective"]["lazyLoading"] = False
         self.assertEqual(MainWindow._initial_history_load_limit(policy_harness), 400)
         MainWindow._maybe_load_more_history(policy_harness, 999)
+
+    def test_sleep_prevention_follows_running_not_paused_downloads_and_ipc(self) -> None:
+        calls: list[int] = []
+        job = DownloadJob(
+            job_id="power",
+            url="https://newtoki1.org/manhwa/8000",
+            output_dir=r"C:\Manga",
+        )
+        job.state = "실행 중"
+        context = type("PowerContext", (), {"job": job, "paused": False})()
+        harness = type("PowerHarness", (), {})()
+        harness.config = default_config()
+        harness.config["preventSleepDuringDownloads"] = True
+        harness.active_contexts = {job.job_id: context}
+        harness._running_download_count = lambda: MainWindow._running_download_count(
+            harness
+        )
+        harness.sleep_prevention_controller = SleepPreventionController(
+            platform_name="nt",
+            execution_state_setter=lambda flags: calls.append(flags) or 1,
+        )
+        harness.last_sleep_prevention = {}
+        harness.log = lambda *_args, **_kwargs: None
+
+        active = MainWindow._sync_sleep_prevention(harness)
+        self.assertTrue(active["active"])
+        self.assertEqual(active["activeDownloads"], 1)
+        harness.sleep_prevention_status_snapshot = lambda: active
+        self.assertEqual(
+            MainWindow._handle_control_action(
+                harness, {"action": "sleep_prevention_status"}
+            ),
+            active,
+        )
+
+        context.paused = True
+        job.state = "일시정지"
+        released = MainWindow._sync_sleep_prevention(harness)
+        self.assertFalse(released["active"])
+        self.assertEqual(released["activeDownloads"], 0)
+        self.assertEqual(calls[-1], SleepPreventionController.ES_CONTINUOUS)
 
     def test_group_ipc_routes_all_manager_and_assignment_actions(self) -> None:
         calls = []

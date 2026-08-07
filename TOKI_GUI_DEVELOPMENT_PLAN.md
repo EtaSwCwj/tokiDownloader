@@ -460,6 +460,16 @@ status|set` CLI, 고급 설정, 실행 중 GUI 재로딩과 상태 JSON이 같�
 정책을 확인하고 `logs/list-performance-low-spec.png`를 캡처한 뒤 기본값으로 복원했다.
 Python 187건과 Node 16건을 통과했다.
 
+2026-08-07 다운로드 중 절전 방지: 설정 스키마 v12의 기본 꺼짐 값을 공용 Windows 전원
+요청 컨트롤러와 연결했다. 실제 실행 다운로드가 있을 때만
+`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`를 호출하고 일시정지,
+재시도 대기, 유휴, 설정 끄기와 GUI 종료에서는 `ES_CONTINUOUS`로 해제한다. 화면 절전,
+전원 관리 옵션과 레지스트리는 변경하지 않는다. `sleep-prevention status|set|plan` CLI,
+고급 설정과 상태 JSON은 같은 정책을 사용하며 `plan`은 실제 API 없이 계산만 한다. 주입
+콜백으로 성공·실패·중복 호출·해제를 검증하고 실제 GUI는 활성 작업 0개에서만 설정을 켜
+`logs/sleep-prevention-settings.png`를 캡처한 뒤 기본 꺼짐으로 복원했다. 실제 Windows
+전원 요청 전이는 0회였으며 Python 190건과 Node 16건을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

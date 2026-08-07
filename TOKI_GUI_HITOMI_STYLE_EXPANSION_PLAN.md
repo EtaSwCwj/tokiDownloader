@@ -415,7 +415,7 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 - [x] 압축 파일 연결 프로그램과 미리보기
 - [x] 자동 저장 주기와 불완전 작업 복구
 - [x] 페이지 수 제한, 스크롤 속도, 지연 로딩, 저사양 모드
-- [ ] 다운로드 중 절전 방지
+- [x] 다운로드 중 절전 방지
 - [ ] PDF 생성
 - [ ] 메모리 사용량 표시
 - [ ] 로컬 HTTP API
@@ -491,6 +491,16 @@ Python 177건과 Node 16건을 통과했다.
 실제 GUI에 800/5,000/20/eager 값을 임시 적용해 저사양 유효값과 한 화면의 다섯 설정을
 `logs/list-performance-low-spec.png`에서 확인한 뒤 기본값으로 복원했다. Python 187건과
 Node 16건을 통과했다.
+
+2026-08-07 다운로드 중 절전 방지 구현: 설정 스키마 v12에 기본 꺼짐 선택을 추가하고
+Windows 전용 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` 호출을 공용
+컨트롤러로 분리했다. 화면 절전은 막지 않고 전원 관리 옵션·레지스트리를 변경하지 않는다.
+실행 상태인 다운로드가 하나 이상일 때만 요청하며 일시정지, 재시도 대기, 유휴, 설정 끄기와
+GUI 종료에서 `ES_CONTINUOUS`로 해제한다. `sleep-prevention status|set|plan`, 상태 JSON과
+고급 설정이 같은 서비스에 연결되고 `plan`은 Windows API를 호출하지 않는다. 성공·실패와
+중복 호출 방지를 주입 콜백으로 검증했으며 실제 GUI는 활성 작업 0개에서만 설정을 임시로
+켜 `logs/sleep-prevention-settings.png`를 캡처했다. 전원 API 전이는 0회였고 기본 꺼짐으로
+복원했다. Python 190건과 Node 16건을 통과했다.
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 

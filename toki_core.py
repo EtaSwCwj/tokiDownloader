@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 11
+CONFIG_SCHEMA_VERSION = 12
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -124,6 +124,7 @@ SETTING_KEYS = frozenset(
         "listScrollLines",
         "listLazyLoading",
         "lowSpecMode",
+        "preventSleepDuringDownloads",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -416,6 +417,7 @@ def default_config() -> dict[str, Any]:
         "listScrollLines": 3,
         "listLazyLoading": True,
         "lowSpecMode": False,
+        "preventSleepDuringDownloads": False,
     }
 
 
@@ -1381,6 +1383,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "recoverInterruptedOnStartup",
         "listLazyLoading",
         "lowSpecMode",
+        "preventSleepDuringDownloads",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1664,6 +1667,7 @@ def validate_app_setting_updates(
         "recoverInterruptedOnStartup",
         "listLazyLoading",
         "lowSpecMode",
+        "preventSleepDuringDownloads",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -2132,6 +2136,121 @@ def list_performance_policy_snapshot(
         "databasePagination": True,
         "visibleOnlyThumbnailDecode": True,
         "eagerLoadingOptIn": not configured_lazy and not low_spec,
+    }
+
+
+class SleepPreventionController:
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_CONTINUOUS = 0x80000000
+
+    def __init__(
+        self,
+        *,
+        platform_name: str | None = None,
+        execution_state_setter: Callable[[int], int] | None = None,
+    ) -> None:
+        self.platform_name = str(platform_name or os.name)
+        self.available = self.platform_name == "nt"
+        self._execution_state_setter = execution_state_setter
+        self.requested = False
+        self.active = False
+        self.last_flags = 0
+        self.last_error = ""
+        self.transition_count = 0
+
+    @staticmethod
+    def _windows_set_execution_state(flags: int) -> int:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        setter = kernel32.SetThreadExecutionState
+        setter.argtypes = [ctypes.c_uint]
+        setter.restype = ctypes.c_uint
+        result = int(setter(int(flags)))
+        if result == 0:
+            error_code = int(ctypes.get_last_error())
+            raise OSError(error_code, "Windows 절전 방지 요청에 실패했습니다.")
+        return result
+
+    def set_required(self, required: bool) -> dict[str, Any]:
+        target = bool(required)
+        self.requested = target
+        if not self.available:
+            self.active = False
+            self.last_flags = 0
+            self.last_error = ""
+            return self.snapshot()
+        if target == self.active:
+            return self.snapshot()
+        flags = self.ES_CONTINUOUS | (self.ES_SYSTEM_REQUIRED if target else 0)
+        setter = self._execution_state_setter or self._windows_set_execution_state
+        try:
+            result = int(setter(flags))
+            if result == 0:
+                raise OSError("Windows 절전 방지 요청이 거부되었습니다.")
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self.last_flags = flags
+            self.last_error = str(error)
+            return self.snapshot()
+        self.active = target
+        self.last_flags = flags
+        self.last_error = ""
+        self.transition_count += 1
+        return self.snapshot()
+
+    def close(self) -> dict[str, Any]:
+        return self.set_required(False)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "ok": not bool(self.last_error),
+            "available": self.available,
+            "platform": self.platform_name,
+            "requested": self.requested,
+            "active": self.active,
+            "lastFlags": self.last_flags,
+            "lastError": self.last_error,
+            "transitionCount": self.transition_count,
+            "mechanism": "SetThreadExecutionState" if self.available else "unsupported",
+            "preventsSystemSleepOnly": True,
+            "preventsDisplaySleep": False,
+        }
+
+
+def sleep_prevention_policy_snapshot(
+    config: dict[str, Any] | None = None,
+    *,
+    active_downloads: int = 0,
+    controller: SleepPreventionController | dict[str, Any] | None = None,
+    platform_name: str | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    active_count = max(0, int(active_downloads))
+    configured = bool(source["preventSleepDuringDownloads"])
+    if isinstance(controller, SleepPreventionController):
+        runtime = controller.snapshot()
+    elif isinstance(controller, dict):
+        runtime = dict(controller)
+    else:
+        selected_platform = str(platform_name or os.name)
+        runtime = SleepPreventionController(
+            platform_name=selected_platform
+        ).snapshot()
+    requested = configured and active_count > 0
+    return {
+        "ok": bool(runtime.get("ok", True)),
+        "configured": configured,
+        "activeDownloads": active_count,
+        "requested": requested,
+        "active": bool(runtime.get("active", False)),
+        "available": bool(runtime.get("available", False)),
+        "platform": str(runtime.get("platform") or platform_name or os.name),
+        "mechanism": str(runtime.get("mechanism") or "unsupported"),
+        "preventsSystemSleepOnly": True,
+        "preventsDisplaySleep": False,
+        "lastFlags": int(runtime.get("lastFlags") or 0),
+        "lastError": str(runtime.get("lastError") or ""),
+        "transitionCount": int(runtime.get("transitionCount") or 0),
     }
 
 

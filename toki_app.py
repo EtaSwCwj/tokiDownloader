@@ -123,6 +123,7 @@ from toki_core import (
     settings_snapshot,
     shortcut_import_plan,
     shortcut_settings_snapshot,
+    sleep_prevention_policy_snapshot,
     store_proxy_credentials,
     should_auto_retry,
     update_app_settings,
@@ -642,6 +643,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--low-spec", choices=("on", "off"), help="저사양 목록 프로필"
     )
     list_performance_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    sleep_prevention = subparsers.add_parser(
+        "sleep-prevention", help="다운로드 중 Windows 시스템 절전 방지 정책"
+    )
+    sleep_prevention_commands = sleep_prevention.add_subparsers(
+        dest="sleep_prevention_command", required=True
+    )
+    sleep_prevention_status = sleep_prevention_commands.add_parser(
+        "status", help="저장 설정과 실행 중 절전 방지 상태 조회"
+    )
+    sleep_prevention_status.add_argument(
+        "--json", action="store_true", help="JSON으로 출력"
+    )
+    sleep_prevention_set = sleep_prevention_commands.add_parser(
+        "set", help="다운로드 중 절전 방지 설정 변경"
+    )
+    sleep_prevention_set.add_argument(
+        "--state", choices=("on", "off"), required=True, help="절전 방지 사용 여부"
+    )
+    sleep_prevention_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    sleep_prevention_plan = sleep_prevention_commands.add_parser(
+        "plan", help="Windows API 호출 없이 활성 다운로드 수에 따른 정책 계산"
+    )
+    sleep_prevention_plan.add_argument(
+        "--active-downloads", type=int, required=True, help="가정할 실행 다운로드 수(0 이상)"
+    )
+    sleep_prevention_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -1916,6 +1943,33 @@ def run_cli(args: argparse.Namespace) -> int:
             else:
                 saved = update_app_settings(updates)
                 result = {"ok": True, **list_performance_policy_snapshot(saved)}
+        print_json(result)
+        return 0 if result.get("ok", True) else 2
+    if command == "sleep-prevention":
+        if args.sleep_prevention_command == "plan":
+            if args.active_downloads < 0:
+                raise ValueError("활성 다운로드 수는 0 이상이어야 합니다.")
+            result = sleep_prevention_policy_snapshot(
+                active_downloads=args.active_downloads
+            )
+        elif args.sleep_prevention_command == "status":
+            result = (
+                control_request({"action": "sleep_prevention_status"})
+                if gui_is_running()
+                else sleep_prevention_policy_snapshot()
+            )
+        else:
+            updates = {
+                "preventSleepDuringDownloads": args.state == "on"
+            }
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request({"action": "sleep_prevention_status"})
+            else:
+                saved = update_app_settings(updates)
+                result = sleep_prevention_policy_snapshot(saved)
         print_json(result)
         return 0 if result.get("ok", True) else 2
     if command == "duplicates":
