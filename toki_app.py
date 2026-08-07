@@ -79,6 +79,7 @@ from toki_core import (
     assign_job_to_collection,
     build_job_list_view_state,
     build_downloader_args,
+    build_youtube_worker_args,
     clear_proxy_credentials,
     browser_launch_policy,
     clear_log_file,
@@ -86,6 +87,7 @@ from toki_core import (
     cleanup_run_history,
     config_schema_status,
     create_work_collection,
+    detect_download_provider,
     find_node,
     hydrate_job_metadata,
     image_processing_policy_snapshot,
@@ -390,7 +392,17 @@ def print_json(value: Any) -> None:
 def run_direct_download(args: argparse.Namespace) -> int:
     config = load_config()
     output = str(Path(args.output or config.get("outputDir") or ROOT_DIR).resolve())
-    scan_mode, start, last = normalize_scan_request(args.mode, args.start, args.last)
+    provider = detect_download_provider(args.url)
+    simulation = bool(getattr(args, "simulate", False))
+    external_request_confirmed = bool(getattr(args, "confirm_external", False))
+    if simulation and provider != "youtube":
+        raise ValueError("--simulate은 YouTube 작업에서만 사용할 수 있습니다.")
+    if provider == "youtube" and not simulation and not external_request_confirmed:
+        raise ValueError("YouTube 외부 요청 실행에는 --confirm-external이 필요합니다.")
+    if provider == "youtube":
+        scan_mode, start, last = "new", None, None
+    else:
+        scan_mode, start, last = normalize_scan_request(args.mode, args.start, args.last)
     job = DownloadJob(
         job_id="direct",
         url=args.url,
@@ -404,18 +416,29 @@ def run_direct_download(args: argparse.Namespace) -> int:
         retry_backoff_seconds=normalize_retry_backoff(
             config.get("retryBackoffSeconds")
         ),
+        provider=provider,
+        simulation=simulation,
+        external_request_confirmed=external_request_confirmed,
     )
-    command = [
-        find_node(),
-        *build_downloader_args(
-            job,
-            json_events=False,
-            folder_template=str(config.get("folderNameTemplate") or ""),
-            network_config=config,
-        ),
-    ]
+    command = (
+        [sys.executable, *build_youtube_worker_args(job, config)]
+        if provider == "youtube"
+        else [
+            find_node(),
+            *build_downloader_args(
+                job,
+                json_events=False,
+                folder_template=str(config.get("folderNameTemplate") or ""),
+                network_config=config,
+            ),
+        ]
+    )
     runtime_environment = dict(os.environ)
     runtime_environment.update(downloader_environment_overrides(config))
+    if provider == "youtube":
+        runtime_environment.update(
+            {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        )
     for attempt in range(1, job.retry_limit + 2):
         job.attempt_count = attempt
         append_log(
@@ -1268,6 +1291,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="자동화 Chrome 창을 표시(기본값은 백그라운드 실행)",
     )
     download.add_argument("--direct", action="store_true", help="GUI 없이 직접 실행")
+    download.add_argument(
+        "--confirm-external",
+        action="store_true",
+        help="YouTube 외부 조회·다운로드 실행을 명시적으로 확인",
+    )
+    download.add_argument(
+        "--simulate",
+        action="store_true",
+        help="YouTube 진행률·이력 통합을 외부 요청 없이 모의 실행",
+    )
 
     stop = subparsers.add_parser("stop", help="현재 실행 작업 중지")
     stop.add_argument("--job", help="현재 실행 중인지 확인할 작업 ID")
@@ -2133,7 +2166,15 @@ def build_parser() -> argparse.ArgumentParser:
 def run_cli(args: argparse.Namespace) -> int:
     command = args.command
     if command == "download":
-        scan_mode, start, last = normalize_scan_request(args.mode, args.start, args.last)
+        provider = detect_download_provider(args.url)
+        if args.simulate and provider != "youtube":
+            raise ValueError("--simulate은 YouTube 작업에서만 사용할 수 있습니다.")
+        if provider == "youtube" and not args.simulate and not args.confirm_external:
+            raise ValueError("YouTube 외부 요청 실행에는 --confirm-external이 필요합니다.")
+        if provider == "youtube":
+            scan_mode, start, last = "new", None, None
+        else:
+            scan_mode, start, last = normalize_scan_request(args.mode, args.start, args.last)
         if args.direct:
             return run_direct_download(args)
         ensure_gui_running()
@@ -2147,6 +2188,8 @@ def run_cli(args: argparse.Namespace) -> int:
                 "output": args.output or config.get("outputDir") or str(ROOT_DIR),
                 "showBrowser": args.show_browser,
                 "scanMode": scan_mode,
+                "simulation": args.simulate,
+                "externalRequestConfirmed": args.confirm_external,
             }
         )
         print(f"작업 추가: {result['job_id']}")

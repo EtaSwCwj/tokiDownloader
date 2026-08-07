@@ -71,6 +71,8 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 메모리 전용 내장 브라우저를 사용하려면 `setup-gui.cmd -WithBrowserTools`를 사용합니다.
 Windows 자격 증명 저장소 기반 쿠키 관리까지 사용하려면
 `setup-gui.cmd -WithSecurityTools`를 사용합니다.
+YouTube 선택 공급자를 사용하려면 `setup-gui.cmd -WithYouTube`로 yt-dlp를 설치하고,
+영상·오디오 병합이나 포함 기능에는 FFmpeg도 PATH에서 사용할 수 있게 준비합니다.
 
 ### GUI 제어 CLI
 
@@ -180,6 +182,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd youtube mtime set --state on --json
 .\toki-cli.cmd youtube mtime plan --file "D:\Videos\video.mp4" --upload-date 20260807 --json
 .\toki-cli.cmd youtube mtime apply --file "D:\Videos\video.mp4" --upload-date 20260807 --state on --yes --json
+.\toki-cli.cmd download --url "https://www.youtube.com/watch?v=VIDEO_ID" --output "D:\Videos" --confirm-external
+.\toki-cli.cmd download --url "https://www.youtube.com/playlist?list=PLAYLIST_ID" --output "D:\Videos" --simulate
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -858,8 +862,9 @@ GUI 설정을 켜 로컬 픽스처의 `日本語タイトル` 선택을 확인�
 `--format-sort` 선호+폴백이며, 지정 컨테이너는 병합·리먹스가 필요하므로 FFmpeg가 필요합니다.
 `youtube format status|set|plan`과 공급자 설정 탭이 같은 정책을 사용합니다. `plan --input URL`
 은 HTTPS YouTube 주소와 동영상/재생목록 ID를 로컬에서만 검사하고 실행 예정 인자를 보여줄
-뿐 외부 요청이나 다운로드를 하지 않습니다. 실제 YouTube 다운로드 실행은 아직 활성화하지
-않았습니다. 화면은 `logs\youtube-format-settings.png`에 있습니다.
+뿐 외부 요청이나 다운로드를 하지 않습니다. 실제 실행은 GUI의 확인 대화상자 또는 CLI
+`download --confirm-external`을 거쳐야 합니다. 화면은 `logs\youtube-format-settings.png`에
+있습니다.
 
 YouTube 파일명은 기본 `%(title)s [%(id)s].%(ext)s`이며 `title`, `id`, `uploader`, `channel`,
 `upload_date`, `playlist`, `playlist_index`, `ext` 변수만 허용합니다. 경로 구분자, Windows 금지
@@ -873,9 +878,8 @@ YouTube 언어·자막·오디오 정책의 기본값은 선호 언어 `ko,en,ja
 제작+자동 자막을 선택해 SRT/VTT/ASS/최적 형식으로 저장할 수 있으며, 지원 컨테이너에
 자막을 포함하는 경우 FFmpeg가 필요합니다. 모든 오디오 트랙은 yt-dlp의 `mergeall` 선택자와
 `--audio-multistreams`를 명시해 보존합니다. `youtube tracks status|set|plan`과 GUI가 같은
-정책을 사용하고 `plan`은 URL과 실행 예정 인자만 오프라인으로 계산합니다. 실제 네트워크
-요청과 YouTube 다운로드 실행은 아직 활성화하지 않았습니다. 화면은
-`logs\youtube-language-subtitle-audio.png`에 있습니다.
+정책을 사용하고 `plan`은 URL과 실행 예정 인자만 오프라인으로 계산합니다. 실제 실행에는
+별도 확인이 필요합니다. 화면은 `logs\youtube-language-subtitle-audio.png`에 있습니다.
 
 YouTube 썸네일·메타데이터 부가 산출물은 기본적으로 모두 꺼져 있습니다. 필요할 때 대표
 썸네일 파일 저장, 미디어 표지 포함, 정리된 `.info.json`, `.description`, 제목·업로더 등의
@@ -895,8 +899,8 @@ YouTube 채널·재생목록 순서는 사이트 기본 순서 또는 역순을 
 `--playlist-items ::`, 역순은 `--no-lazy-playlist --playlist-items ::-1`로 명시하며 역순은
 다운로드 전에 전체 목록을 확인해야 하므로 큰 채널에서 시작이 느릴 수 있습니다.
 `youtube collection status|set|plan`과 GUI가 같은 정책을 사용하고 `plan`은 채널이나
-재생목록에 접속하지 않고 범위와 인자만 계산합니다. 실제 다운로드 실행은 아직
-활성화하지 않았습니다. 화면은 `logs\youtube-channel-playlist-order.png`에 있습니다.
+재생목록에 접속하지 않고 범위와 인자만 계산합니다. 실제 실행에는 별도 확인이 필요합니다.
+화면은 `logs\youtube-channel-playlist-order.png`에 있습니다.
 
 YouTube 챕터 마커는 기본적으로 꺼져 있으며 영상 원본이 제공한 챕터만 미디어 파일에
 포함합니다. 새 챕터를 제목이나 설명에서 추측해 만들지 않습니다. 켜면
@@ -910,9 +914,33 @@ YouTube 업로드 날짜 파일 시간 적용은 기본적으로 꺼져 있습�
 Last-Modified 값을 쓰므로 이 기능에는 사용하지 않습니다. 검증된 `upload_date` 8자리를 UTC
 자정으로 변환해 파일 수정 시각만 바꾸고 기존 접근 시각은 보존합니다. 한국 시간에서는 같은
 날짜 오전 9시로 표시됩니다. 심볼릭 링크는 거부하고 `youtube mtime plan`은 파일을 바꾸지
-않으며, `apply`는 기존 파일과 명시적인 `--yes`가 있어야만 실행됩니다. 자동 다운로드가
-활성화되면 같은 서비스가 완료 후 작업으로 연결되며 현재 형식 계획의 `postDownloadActions`
-에서도 확인할 수 있습니다. 화면은 `logs\youtube-upload-date-mtime.png`에 있습니다.
+않으며, `apply`는 기존 파일과 명시적인 `--yes`가 있어야만 실행됩니다. 확인된 YouTube
+다운로드에서 이 설정을 켠 경우 같은 서비스가 완료 후 작업으로 연결되며 현재 형식 계획의
+`postDownloadActions`에서도 확인할 수 있습니다. 화면은
+`logs\youtube-upload-date-mtime.png`에 있습니다.
+
+YouTube 실행은 toki 작품과 같은 작업 스케줄러에 연결됩니다. 영상·재생목록·채널을 서로
+다른 작품 키로 관리하고, 진행률·현재 항목·중지·자동/수동 재시도·작품별 실행 이력과 로그를
+공유합니다. 작업자는 숨김 Python 프로세스에서 yt-dlp를 실행하고 0.2초 간격의 구조화 이벤트만
+GUI에 전달합니다. 완료 미디어는 기본적으로 덮어쓰지 않고 부분 다운로드는 이어받으며,
+HTTP Last-Modified 값을 쓰는 yt-dlp `--mtime`은 명시적으로 끕니다. GUI의 다운로드 버튼은
+실제 외부 요청 전 확인 대화상자를 표시하고 CLI는 다음처럼 확인 플래그가 필요합니다.
+
+```powershell
+.\toki-cli.cmd download --url "https://www.youtube.com/watch?v=VIDEO_ID" --output "D:\Videos" --confirm-external
+.\toki-cli.cmd stop --job 작업ID
+.\toki-cli.cmd retry --job 작업ID
+.\toki-cli.cmd runs --job 작업ID --json
+```
+
+외부 요청 없이 전체 실행 경로를 점검하려면 `--simulate`을 사용합니다. 모의 실행도 실제 작업
+행과 실행 이력을 만들지만 yt-dlp, YouTube 네트워크, 미디어 파일 생성은 수행하지 않습니다.
+
+```powershell
+.\toki-cli.cmd download --url "https://www.youtube.com/playlist?list=PLAYLIST_ID" --output "D:\Videos" --simulate
+```
+
+검증 화면은 `logs\youtube-execution-integration.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

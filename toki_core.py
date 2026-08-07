@@ -38,6 +38,8 @@ from hitomi_provider import (
     normalize_hitomi_server_priority,
 )
 from youtube_provider import (
+    YOUTUBE_HOSTS,
+    inspect_youtube_url,
     normalize_youtube_audio_codec,
     normalize_youtube_collection_order,
     normalize_youtube_container,
@@ -49,6 +51,7 @@ from youtube_provider import (
     normalize_youtube_subtitle_format,
     normalize_youtube_audio_track_mode,
     normalize_youtube_video_codec,
+    youtube_execution_config_snapshot,
 )
 
 
@@ -60,6 +63,7 @@ APP_VERSION = (
     else "0.0.0-dev"
 )
 DOWNLOADER_PATH = ROOT_DIR / "down.js"
+YOUTUBE_WORKER_PATH = ROOT_DIR / "youtube_worker.py"
 CONFIG_PATH = ROOT_DIR / "config.json"
 LOG_DIR = ROOT_DIR / "logs"
 LOG_PATH = LOG_DIR / "gui.log"
@@ -269,13 +273,16 @@ JOB_QUERY_INDEXES = {
         "state, pinned DESC, progress DESC, updated_at DESC, job_id DESC"
     ),
 }
-COALESCED_DOWNLOADER_EVENTS = frozenset({"image_saved"})
+COALESCED_DOWNLOADER_EVENTS = frozenset({"image_saved", "youtube_progress"})
 PERSISTED_DOWNLOADER_EVENTS = frozenset(
     {
         "work_metadata",
         "queue_ready",
         "episode_started",
         "episode_completed",
+        "youtube_started",
+        "youtube_item",
+        "youtube_item_completed",
         "completed",
         "error",
     }
@@ -290,6 +297,8 @@ ERROR_CATEGORIES = frozenset(
         "network",
         "site_structure",
         "filesystem",
+        "dependency",
+        "source",
         "process",
         "unknown",
     }
@@ -300,11 +309,13 @@ ERROR_CATEGORY_LABELS = {
     "network": "네트워크",
     "site_structure": "사이트 구조 변경",
     "filesystem": "파일 시스템",
+    "dependency": "의존성",
+    "source": "원본 상태",
     "process": "프로세스",
     "unknown": "기타",
 }
 NON_RETRYABLE_ERROR_CATEGORIES = frozenset(
-    {"authentication_required", "site_structure", "filesystem"}
+    {"authentication_required", "site_structure", "filesystem", "dependency", "source"}
 )
 KEYBOARD_SHORTCUTS = (
     {
@@ -2413,7 +2424,6 @@ def dependency_diagnostics() -> dict[str, Any]:
     checks.append(package("PyQt6-WebEngine", "PyQt6-WebEngine", False))
     for name, executable, version_argument in (
         ("FFmpeg", "ffmpeg", "-version"),
-        ("yt-dlp", "yt-dlp", "--version"),
     ):
         path = shutil.which(executable) or ""
         checks.append(
@@ -2425,6 +2435,29 @@ def dependency_diagnostics() -> dict[str, Any]:
                 "path": path,
             }
         )
+    ytdlp_path = shutil.which("yt-dlp") or ""
+    adjacent_ytdlp = Path(sys.executable).with_name(
+        "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
+    )
+    if not ytdlp_path and adjacent_ytdlp.is_file():
+        ytdlp_path = str(adjacent_ytdlp)
+    try:
+        ytdlp_version = importlib.metadata.version("yt-dlp")
+    except importlib.metadata.PackageNotFoundError:
+        ytdlp_version = ""
+    checks.append(
+        {
+            "name": "yt-dlp",
+            "kind": "optional",
+            "available": bool(ytdlp_path or ytdlp_version),
+            "version": (
+                _command_version(ytdlp_path, "--version")
+                if ytdlp_path
+                else ytdlp_version
+            ),
+            "path": ytdlp_path or (str(Path(sys.executable).resolve()) if ytdlp_version else ""),
+        }
+    )
     checks.append(package("PyInstaller", "PyInstaller", False))
     required = [item for item in checks if item["kind"] == "required"]
     missing_required = [item["name"] for item in required if not item["available"]]
@@ -2461,7 +2494,27 @@ def validate_url(url: str) -> str:
         raise ValueError("URL을 입력해주세요.")
     if not re.match(r"^https://", value, re.IGNORECASE):
         raise ValueError("https://로 시작하는 작품 목록 URL을 입력해주세요.")
+    parsed = urlsplit(value)
+    if str(parsed.hostname or "").lower() in YOUTUBE_HOSTS:
+        inspect_youtube_url(value)
     return value
+
+
+def detect_download_provider(url: str) -> str:
+    value = str(url or "").strip()
+    parsed = urlsplit(value)
+    if str(parsed.hostname or "").lower() in YOUTUBE_HOSTS:
+        inspect_youtube_url(value)
+        return "youtube"
+    match = re.search(r"/(novel|webtoon|comic|manhwa)/(\d+)", value, re.IGNORECASE)
+    if match:
+        return {
+            "novel": "booktoki",
+            "webtoon": "newtoki",
+            "comic": "manatoki",
+            "manhwa": "manatoki",
+        }[match.group(1).lower()]
+    return "toki"
 
 
 def normalize_range(start: int | None, last: int | None) -> tuple[int | None, int | None]:
@@ -3609,6 +3662,7 @@ class DownloadJob:
     author: str = ""
     group: str = ""
     site: str = ""
+    provider: str = ""
     metadata_path: str = ""
     user_note: str = ""
     pinned: bool = False
@@ -3630,11 +3684,17 @@ class DownloadJob:
     error: str = ""
     error_category: str = ""
     retryable_error: bool | None = None
+    simulation: bool = False
+    external_request_confirmed: bool = False
     created_at: str = field(
         default_factory=lambda: datetime.now().astimezone().isoformat(timespec="seconds")
     )
 
     def __post_init__(self) -> None:
+        if not self.provider:
+            self.provider = detect_download_provider(self.url)
+        if not self.site and self.provider == "youtube":
+            self.site = "youtube"
         if not self.work_key:
             self.work_key = build_work_key(self.url)
         self.scan_mode = normalize_scan_mode(self.scan_mode)
@@ -3687,9 +3747,17 @@ class DownloadRun:
             requested_start=job.start,
             requested_last=job.last,
             operation=(
-                "metadata_refresh"
-                if job.metadata_only
-                else f"download_{normalize_scan_mode(job.scan_mode)}"
+                "youtube_simulation"
+                if job.provider == "youtube" and job.simulation
+                else (
+                    "youtube_download"
+                    if job.provider == "youtube"
+                    else (
+                        "metadata_refresh"
+                        if job.metadata_only
+                        else f"download_{normalize_scan_mode(job.scan_mode)}"
+                    )
+                )
             ),
             state=job.state,
             selected_episodes=job.episode_total,
@@ -3709,6 +3777,14 @@ class DownloadRun:
 
 def build_work_key(url: str) -> str:
     value = str(url or "").strip()
+    parsed = urlsplit(value)
+    if str(parsed.hostname or "").lower() in YOUTUBE_HOSTS:
+        reference = inspect_youtube_url(value)
+        if reference["referenceType"] == "video":
+            return f"youtube:video:{reference['videoId']}"
+        if reference["referenceType"] == "playlist":
+            return f"youtube:playlist:{reference['playlistId']}"
+        return f"youtube:channel:{str(reference['channelPath']).casefold()}"
     match = re.search(r"/(novel|webtoon|comic|manhwa)/(\d+)", value, re.IGNORECASE)
     if match:
         content_type = match.group(1).lower()
@@ -3719,7 +3795,6 @@ def build_work_key(url: str) -> str:
             "manhwa": "manatoki",
         }[content_type]
         return f"{site}:{match.group(2)}"
-    parsed = urlsplit(value)
     normalized_path = parsed.path.rstrip("/").lower()
     return f"url:{parsed.hostname or ''}{normalized_path}"
 
@@ -6047,8 +6122,45 @@ def build_downloader_args(
     return args
 
 
+def build_youtube_worker_args(
+    job: DownloadJob,
+    config: dict[str, Any] | None = None,
+    *,
+    simulation_delay_ms: int = 0,
+) -> list[str]:
+    if job.provider != "youtube":
+        raise ValueError("YouTube 작업만 YouTube 실행기로 시작할 수 있습니다.")
+    if not job.simulation and not job.external_request_confirmed:
+        raise ValueError("YouTube 외부 요청 실행에는 명시적 확인이 필요합니다.")
+    arguments = [
+        str(YOUTUBE_WORKER_PATH),
+        "--url",
+        job.url,
+        "--output",
+        job.output_dir,
+        "--config-json",
+        json.dumps(youtube_execution_config_snapshot(config), ensure_ascii=False),
+    ]
+    if job.simulation:
+        arguments.append("--simulate")
+        if simulation_delay_ms:
+            arguments.extend(("--simulate-delay-ms", str(max(0, int(simulation_delay_ms)))))
+    return arguments
+
+
 def retry_job_parameters(source: DownloadJob) -> dict[str, Any]:
     """Return the shared full-rescan contract used by GUI and CLI retries."""
+    if source.provider == "youtube":
+        return {
+            "url": source.url,
+            "start": None,
+            "last": None,
+            "output_dir": source.output_dir,
+            "show_browser": False,
+            "scan_mode": "new",
+            "simulation": source.simulation,
+            "external_request_confirmed": source.external_request_confirmed,
+        }
     return rescan_job_parameters(source, "full")
 
 

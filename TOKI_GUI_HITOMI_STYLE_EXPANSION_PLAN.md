@@ -672,7 +672,7 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 - [x] 채널/재생목록 순서
 - [x] 챕터 마커
 - [x] 업로드 날짜를 파일 수정 날짜로 적용
-- [ ] 진행률, 중지, 재시도와 실행 이력 통합
+- [x] 진행률, 중지, 재시도와 실행 이력 통합
 
 YouTube 공급자는 별도 optional dependency이며 기본 toki 설치와 테스트를 느리게 만들지
 않는다. 사용자는 다운로드 권한이 있는 콘텐츠만 대상으로 해야 한다.
@@ -756,6 +756,23 @@ Python 243건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 파일과 외부 API는 건드리지 않았다.
 Python 244건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
+2026-08-07 YouTube 실행 통합 구현: `youtube_worker.py`가 yt-dlp를 별도 숨김 프로세스로
+실행하고 기계 판독 가능한 `youtube_started`, `youtube_item`, `youtube_progress`,
+`youtube_item_completed`, `completed`, `error` 이벤트로 정규화한다. 공식
+`--progress-template`과 `before_dl`/`after_move` 출력 훅을 쓰고 0.2초 간격으로 이벤트를
+제한해 Qt 메인 스레드와 실행 이력 DB를 과도하게 갱신하지 않는다. 작업 키는 영상 ID,
+재생목록 ID, 채널 경로별로 분리해 서로 다른 영상이 `/watch` 하나로 합쳐지던 문제를 막았다.
+기존 작품 스케줄러에 연결했으므로 작업 동시성, 중지 시 프로세스 트리 종료, 지수 백오프
+자동 재시도, 수동 재시도, 작품별 누적 실행 이력과 로그가 toki 작업과 동일하게 동작한다.
+GUI 다운로드 버튼은 실제 YouTube 조회 전에 범위와 업로드 날짜 파일 시간 변경 여부를
+다시 확인하고, CLI는 `download --confirm-external` 없이는 실제 요청을 거부한다.
+`download --simulate`는 yt-dlp·네트워크·파일 생성 없이 같은 진행률·중지·재시도·이력 경로를
+검증한다. 중지된 모의 재생목록을 CLI `retry`로 다시 시작해 완료하고 작품 행 하나에 실행
+기록이 2개 누적되는 것을 확인했다. 화면은 `logs/youtube-execution-integration.png`에
+보존했다. 선택 설치는 `requirements-youtube.txt`와 `setup-gui.cmd -WithYouTube`로 분리했으며
+yt-dlp 2026.7.4를 진단에서 확인했다. 실제 YouTube 외부 요청이나 미디어 다운로드는 실행하지
+않았다. Python 257건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
 ## 6. 기능별 안전 경계
 
 다음 작업은 항상 실행 전에 확인한다.
@@ -767,6 +784,7 @@ Python 244건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 - 사용자 스크립트 실행
 - 관리자 권한 요청
 - 외부 네트워크에 HTTP API 공개
+- Hitomi·YouTube 같은 선택 공급자의 실제 외부 요청
 - 대량 폴더명 변경과 이동
 
 휴지통 이동, 기록만 제거, 설정 미리보기와 dry-run은 명확히 구분한다.

@@ -933,8 +933,12 @@ class CoreContractTests(unittest.TestCase):
         self.assertIn("[switch]$CheckOnly", script)
         self.assertIn("[switch]$WithArchiveTools", script)
         self.assertIn("[switch]$WithBrowserTools", script)
+        self.assertIn("[switch]$WithYouTube", script)
         self.assertIn("requirements-archive-tools.txt", script)
         self.assertIn("requirements-browser-tools.txt", script)
+        self.assertIn("requirements-youtube.txt", script)
+        self.assertIn("'youtube_worker.py'", script)
+        self.assertIn("Run setup-gui.cmd -WithYouTube", script)
         self.assertIn("'ci', '--no-audit', '--no-fund'", script)
         self.assertIn("toki_app.py') doctor --json", script)
         self.assertNotIn(
@@ -1584,6 +1588,58 @@ class CoreContractTests(unittest.TestCase):
         self.assertIsNone(retry["start"])
         self.assertIsNone(retry["last"])
         self.assertEqual(retry["scan_mode"], "full")
+
+    def test_youtube_work_identity_and_retry_contract_are_provider_scoped(self) -> None:
+        first = toki_core.build_work_key(
+            "https://www.youtube.com/watch?v=video-one&list=playlist-one"
+        )
+        second = toki_core.build_work_key(
+            "https://youtu.be/video-two"
+        )
+        playlist = toki_core.build_work_key(
+            "https://www.youtube.com/playlist?list=playlist-one"
+        )
+        self.assertEqual(first, "youtube:video:video-one")
+        self.assertEqual(second, "youtube:video:video-two")
+        self.assertEqual(playlist, "youtube:playlist:playlist-one")
+        self.assertEqual(
+            toki_core.build_work_key("https://www.youtube.com/@OpenAI/Videos"),
+            "youtube:channel:/@openai/videos",
+        )
+        source = DownloadJob(
+            job_id="youtube-old",
+            url="https://www.youtube.com/watch?v=video-one",
+            output_dir=r"C:\Video",
+            simulation=True,
+        )
+        retry = toki_core.retry_job_parameters(source)
+        self.assertTrue(retry["simulation"])
+        self.assertFalse(retry["external_request_confirmed"])
+        self.assertEqual(DownloadRun.from_job(source).operation, "youtube_simulation")
+
+    def test_youtube_worker_arguments_require_confirmation_and_exclude_unrelated_config(self) -> None:
+        live = DownloadJob(
+            job_id="youtube-live",
+            url="https://www.youtube.com/watch?v=video-one",
+            output_dir=r"C:\Video",
+        )
+        with self.assertRaisesRegex(ValueError, "명시적 확인"):
+            toki_core.build_youtube_worker_args(live, default_config())
+        live.external_request_confirmed = True
+        arguments = toki_core.build_youtube_worker_args(
+            live,
+            {**default_config(), "proxyUrl": "https://secret.invalid"},
+        )
+        self.assertEqual(Path(arguments[0]).name, "youtube_worker.py")
+        config = json.loads(arguments[arguments.index("--config-json") + 1])
+        self.assertNotIn("proxyUrl", config)
+        simulated = DownloadJob(
+            job_id="youtube-sim",
+            url="https://www.youtube.com/watch?v=video-one",
+            output_dir=r"C:\Video",
+            simulation=True,
+        )
+        self.assertIn("--simulate", toki_core.build_youtube_worker_args(simulated, default_config()))
 
     def test_run_log_filters_current_and_rotated_files(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

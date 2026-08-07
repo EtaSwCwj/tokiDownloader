@@ -19,6 +19,8 @@ cd tokiDownloader
 메모리 전용 내장 브라우저도 사용할 경우 `setup-gui.cmd -WithBrowserTools`를 실행한다.
 공급자 쿠키를 Windows 자격 증명 저장소에 보관하려면
 `setup-gui.cmd -WithSecurityTools`를 실행한다.
+YouTube 선택 공급자까지 사용할 경우 `setup-gui.cmd -WithYouTube`를 실행하고,
+병합·리먹스·미디어 포함 기능에는 별도로 FFmpeg를 PATH에 설치한다.
 
 ## 실행
 

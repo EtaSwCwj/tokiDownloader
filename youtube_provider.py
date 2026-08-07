@@ -17,6 +17,9 @@ YOUTUBE_SUBTITLE_MODES = ("none", "manual", "manual_auto")
 YOUTUBE_SUBTITLE_FORMATS = ("best", "srt", "vtt", "ass")
 YOUTUBE_AUDIO_TRACK_MODES = ("preferred_single", "all")
 YOUTUBE_COLLECTION_ORDERS = ("site", "reverse")
+YOUTUBE_PROGRESS_PREFIX = "@@TOKI_YTDLP_PROGRESS@@"
+YOUTUBE_ITEM_PREFIX = "@@TOKI_YTDLP_ITEM@@"
+YOUTUBE_COMPLETE_PREFIX = "@@TOKI_YTDLP_COMPLETE@@"
 YOUTUBE_HOSTS = frozenset(
     {
         "youtube.com",
@@ -364,6 +367,14 @@ def inspect_youtube_url(url: str) -> dict[str, Any]:
         parts = [part for part in parsed.path.split("/") if part]
         video_id = parts[1] if len(parts) > 1 else ""
     playlist_id = str(parse_qs(parsed.query).get("list", [""])[0]).strip()
+    if video_id and not re.fullmatch(r"[A-Za-z0-9_-]{3,128}", video_id):
+        raise YouTubePolicyError(
+            "youtube.video_id_invalid", "YouTube 동영상 식별자 형식이 잘못되었습니다."
+        )
+    if playlist_id and not re.fullmatch(r"[A-Za-z0-9_-]{3,256}", playlist_id):
+        raise YouTubePolicyError(
+            "youtube.playlist_id_invalid", "YouTube 재생목록 식별자 형식이 잘못되었습니다."
+        )
     path_parts = [part for part in parsed.path.split("/") if part]
     channel_scope = ""
     channel_path = ""
@@ -568,4 +579,102 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         "externalRequestRequiresConfirmation": True,
         "networkRequested": False,
         "downloadExecuted": False,
+    }
+
+
+def plan_youtube_execution(
+    url: str,
+    output_dir: str | Path,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the deterministic yt-dlp CLI contract without starting a request."""
+    format_plan = plan_youtube_format(url, config)
+    output = Path(os.path.abspath(os.fspath(Path(output_dir).expanduser())))
+    if not str(output).strip():
+        raise ValueError("YouTube 저장 폴더를 입력해주세요.")
+    format_arguments = list(format_plan["arguments"])
+    source_url = format_arguments.pop()
+    progress_template = (
+        f"download:{YOUTUBE_PROGRESS_PREFIX}"
+        '{"videoId":%(info.id|null)j,"itemIndex":%(info.playlist_index|0)j,'
+        '"itemTotal":%(info.n_entries|0)j,"status":%(progress.status|null)j,'
+        '"percent":%(progress._percent_str|0%)j,'
+        '"speed":%(progress._speed_str|null)j,"eta":%(progress._eta_str|null)j}'
+    )
+    item_template = (
+        f"before_dl:{YOUTUBE_ITEM_PREFIX}"
+        '{"videoId":%(id|null)j,"itemIndex":%(playlist_index|0)j,'
+        '"itemTotal":%(n_entries|0)j,"videoTitle":%(title|null)j,'
+        '"collectionTitle":%(playlist_title|null)j,"channel":%(channel|null)j}'
+    )
+    complete_template = (
+        f"after_move:{YOUTUBE_COMPLETE_PREFIX}"
+        '{"videoId":%(id|null)j,"itemIndex":%(playlist_index|0)j,'
+        '"itemTotal":%(n_entries|0)j,"uploadDate":%(upload_date|null)j,'
+        '"outputPath":%(filepath|null)j}'
+    )
+    arguments = [
+        "--ignore-config",
+        "--no-color",
+        "--windows-filenames",
+        "--newline",
+        "--progress",
+        "--progress-delta",
+        "0.2",
+        "--continue",
+        "--no-overwrites",
+        "--no-mtime",
+        "--paths",
+        str(output),
+        "--progress-template",
+        progress_template,
+        "--print",
+        item_template,
+        "--print",
+        complete_template,
+        *format_arguments,
+        source_url,
+    ]
+    return {
+        **format_plan,
+        "outputDir": str(output),
+        "arguments": arguments,
+        "progressPrefix": YOUTUBE_PROGRESS_PREFIX,
+        "itemPrefix": YOUTUBE_ITEM_PREFIX,
+        "completePrefix": YOUTUBE_COMPLETE_PREFIX,
+        "progressEventIntervalSeconds": 0.2,
+        "continuesPartialDownloads": True,
+        "overwritesCompletedMedia": False,
+        "usesHttpLastModifiedMtime": False,
+        "networkRequested": False,
+        "downloadExecuted": False,
+    }
+
+
+def youtube_execution_config_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return only normalized YouTube settings safe to pass to the worker."""
+    source = config if isinstance(config, dict) else {}
+    policy = youtube_format_policy_snapshot(source)
+    return {
+        "youtubeFormatMode": policy["mode"],
+        "youtubeMaxHeight": policy["maxHeight"],
+        "youtubeContainer": policy["container"],
+        "youtubeVideoCodec": policy["videoCodec"],
+        "youtubeAudioCodec": policy["audioCodec"],
+        "youtubeFilenameTemplate": policy["filenameTemplate"],
+        "youtubePreferredLanguages": list(policy["preferredLanguages"]),
+        "youtubeSubtitleMode": policy["subtitleMode"],
+        "youtubeSubtitleFormat": policy["subtitleFormat"],
+        "youtubeEmbedSubtitles": policy["embedSubtitles"],
+        "youtubeAudioTrackMode": policy["audioTrackMode"],
+        "youtubeWriteThumbnail": policy["writeThumbnail"],
+        "youtubeEmbedThumbnail": policy["embedThumbnail"],
+        "youtubeWriteInfoJson": policy["writeInfoJson"],
+        "youtubeWriteDescription": policy["writeDescription"],
+        "youtubeEmbedMetadata": policy["embedMetadata"],
+        "youtubeCollectionOrder": policy["collectionOrder"],
+        "youtubeEmbedChapters": policy["embedChapters"],
+        "youtubeApplyUploadDateMtime": policy["applyUploadDateMtime"],
     }

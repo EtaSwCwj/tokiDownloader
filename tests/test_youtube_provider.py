@@ -9,10 +9,12 @@ from youtube_provider import (
     YouTubePolicyError,
     apply_youtube_upload_date_mtime,
     inspect_youtube_url,
+    plan_youtube_execution,
     plan_youtube_format,
     plan_youtube_upload_date_mtime,
     preview_youtube_filename,
     youtube_format_policy_snapshot,
+    youtube_execution_config_snapshot,
 )
 
 
@@ -67,6 +69,28 @@ class YouTubeProviderTests(unittest.TestCase):
         self.assertTrue(plan["requiresFfmpeg"])
         self.assertFalse(plan["networkRequested"])
         self.assertFalse(plan["downloadExecuted"])
+
+    def test_execution_plan_adds_machine_progress_and_bounded_output_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plan = plan_youtube_execution(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                temp_dir,
+                {**default_config(), "proxyUrl": "https://secret.invalid"},
+            )
+        arguments = plan["arguments"]
+        self.assertEqual(arguments[0], "--ignore-config")
+        self.assertIn("--progress-template", arguments)
+        self.assertTrue(any("@@TOKI_YTDLP_PROGRESS@@" in value for value in arguments))
+        self.assertIn("--no-mtime", arguments)
+        self.assertIn("--no-overwrites", arguments)
+        self.assertEqual(arguments[-1], "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertFalse(plan["networkRequested"])
+        self.assertFalse(plan["downloadExecuted"])
+        worker_config = youtube_execution_config_snapshot(
+            {**default_config(), "proxyUrl": "https://secret.invalid"}
+        )
+        self.assertNotIn("proxyUrl", worker_config)
+        self.assertEqual(worker_config["youtubeFormatMode"], "video_audio")
 
     def test_audio_video_modes_and_playlist_reference_stay_explicit(self) -> None:
         audio = plan_youtube_format(

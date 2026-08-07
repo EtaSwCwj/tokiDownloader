@@ -4,7 +4,8 @@ param(
     [switch]$WithImageTools,
     [switch]$WithArchiveTools,
     [switch]$WithBrowserTools,
-    [switch]$WithSecurityTools
+    [switch]$WithSecurityTools,
+    [switch]$WithYouTube
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,8 +51,10 @@ $requiredFiles = @(
     'requirements-archive-tools.txt',
     'requirements-browser-tools.txt',
     'requirements-security.txt',
+    'requirements-youtube.txt',
     'toki_app.py',
     'toki_gui.py',
+    'youtube_worker.py',
     'down.js'
 )
 $missingFiles = @(
@@ -105,6 +108,12 @@ if (-not $CheckOnly) {
             '-r', (Join-Path $projectRoot 'requirements-security.txt')
         )
     }
+    if ($WithYouTube) {
+        Invoke-Checked -Program $venvPython -Arguments @(
+            '-m', 'pip', 'install', '--disable-pip-version-check',
+            '-r', (Join-Path $projectRoot 'requirements-youtube.txt')
+        )
+    }
 
     Write-Host '[3/4] Restoring Node.js dependencies from package-lock.json.'
     Invoke-Checked -Program $npm -Arguments @('ci', '--no-audit', '--no-fund')
@@ -126,6 +135,12 @@ if ($LASTEXITCODE -ne 0) {
 $doctor = $doctorOutput | ConvertFrom-Json
 if (-not $doctor.ok) {
     throw "Required dependency checks failed: $($doctor.required.missing -join ', ')"
+}
+if ($WithYouTube) {
+    $youtubeCheck = $doctor.checks | Where-Object { $_.name -eq 'yt-dlp' } | Select-Object -First 1
+    if (-not $youtubeCheck -or -not $youtubeCheck.available) {
+        throw 'yt-dlp is missing. Run setup-gui.cmd -WithYouTube.'
+    }
 }
 
 Write-Output $doctorOutput

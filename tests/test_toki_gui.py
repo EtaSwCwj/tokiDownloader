@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import unittest
 from collections import deque
 from pathlib import Path
@@ -166,10 +167,13 @@ class _ProcessStub:
         pass
 
     def setProgram(self, _program: str) -> None:
-        pass
+        self.program = _program
 
     def setArguments(self, arguments: list[str]) -> None:
         self.arguments = arguments
+
+    def setProcessEnvironment(self, environment) -> None:
+        self.environment = environment
 
     def start(self) -> None:
         self.started_called = True
@@ -1876,6 +1880,86 @@ class WorkSchedulerTests(unittest.TestCase):
             harness.active_contexts["job-0"].process,
             harness.active_contexts["job-1"].process,
         )
+
+    def test_youtube_context_uses_hidden_python_worker_and_normalized_progress(self) -> None:
+        job = DownloadJob(
+            job_id="youtube-sim",
+            url="https://www.youtube.com/playlist?list=playlist-one",
+            output_dir=r"C:\Video",
+            simulation=True,
+        )
+        context = ProcessContext(job=job, run=DownloadRun.from_job(job))
+        harness = type("YouTubeHarness", (), {})()
+        harness.config = default_config()
+        harness.active_contexts = {job.job_id: context}
+        harness._update_job_card = lambda _job: None
+        harness._read_stdout = lambda _job_id: None
+        harness._read_stderr = lambda _job_id: None
+        harness._process_started = lambda _job_id: None
+        harness._process_error = lambda _job_id, _error: None
+        harness._process_finished = lambda _job_id, _code, _status: None
+        harness._schedule_job_card_update = lambda _job, _event: None
+        harness.log = lambda *_args, **_kwargs: None
+        _ProcessStub.instances = []
+
+        with patch("toki_gui.create_background_process", _ProcessStub):
+            MainWindow._launch_context(harness, context)
+
+        process = _ProcessStub.instances[0]
+        self.assertEqual(process.program, sys.executable)
+        self.assertTrue(process.arguments[0].endswith("youtube_worker.py"))
+        self.assertIn("--simulate", process.arguments)
+        self.assertEqual(context.run.operation, "youtube_simulation")
+
+        with patch("toki_gui.save_runs"):
+            MainWindow._handle_downloader_event(
+                harness,
+                job.job_id,
+                {
+                    "event": "youtube_item",
+                    "title": "목록의 두 번째 영상",
+                    "itemIndex": 2,
+                    "itemTotal": 4,
+                },
+            )
+            MainWindow._handle_downloader_event(
+                harness,
+                job.job_id,
+                {
+                    "event": "youtube_progress",
+                    "itemIndex": 2,
+                    "itemTotal": 4,
+                    "itemProgress": 50,
+                    "progress": 37,
+                },
+            )
+        self.assertEqual(job.title, "목록의 두 번째 영상")
+        self.assertEqual(job.progress, 37)
+        self.assertEqual(job.episode_index, 2)
+        self.assertEqual(context.run.selected_episodes, 4)
+        self.assertEqual(context.run.processed_episodes, 1)
+        self.assertEqual(context.run.progress, 37)
+
+    def test_youtube_manual_retry_requeues_same_provider_instead_of_manga_rescan(self) -> None:
+        source = DownloadJob(
+            job_id="youtube-old",
+            url="https://www.youtube.com/watch?v=video-one",
+            output_dir=r"C:\Video",
+            state="오류",
+            simulation=True,
+        )
+        captured = {}
+        harness = type("YouTubeRetryHarness", (), {})()
+        harness.selected_job = lambda _job_id=None: source
+        harness.enqueue_download = lambda **kwargs: captured.update(kwargs) or source
+        harness.log = lambda *_args, **_kwargs: None
+
+        result = MainWindow.retry_job(harness, source.job_id)
+
+        self.assertIs(result, source)
+        self.assertTrue(captured["simulation"])
+        self.assertEqual(captured["url"], source.url)
+        self.assertEqual(captured["scan_mode"], "new")
 
     def test_failed_process_enters_retry_wait_without_leaving_active_context(self) -> None:
         job = DownloadJob(

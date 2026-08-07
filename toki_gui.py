@@ -129,6 +129,7 @@ from youtube_provider import (
     YOUTUBE_SUBTITLE_FORMATS,
     YOUTUBE_AUDIO_TRACK_MODES,
     YOUTUBE_COLLECTION_ORDERS,
+    inspect_youtube_url,
     youtube_format_policy_snapshot,
     preview_youtube_filename,
 )
@@ -162,6 +163,7 @@ from toki_core import (
     build_job_list_view_state,
     build_work_key,
     build_downloader_args,
+    build_youtube_worker_args,
     clear_proxy_credentials,
     completion_action_plan,
     cookie_import_plan,
@@ -175,6 +177,7 @@ from toki_core import (
     create_work_collection,
     delete_job_record,
     delete_job_records,
+    detect_download_provider,
     dependency_diagnostics,
     downloader_event_update_policy,
     downloader_environment_overrides,
@@ -251,6 +254,7 @@ from toki_core import (
     rename_work_collection,
     recover_interrupted_jobs,
     rescan_job_parameters,
+    retry_job_parameters,
     resource_admission,
     resource_budget,
     reset_app_settings,
@@ -875,11 +879,16 @@ class JobItemDelegate(QStyledItemDelegate):
         if job.state == "대기" and job.queue_position:
             details.append(f"대기열 {job.queue_position}번")
         if job.episode_total:
-            details.append(f"회차 {job.episode_index}/{job.episode_total}")
+            unit = "항목" if job.provider == "youtube" else "회차"
+            details.append(f"{unit} {job.episode_index}/{job.episode_total}")
         if job.episode_number:
-            details.append(f"현재 {job.episode_number}화")
+            suffix = "번" if job.provider == "youtube" else "화"
+            details.append(f"현재 {job.episode_number}{suffix}")
         if job.image_total:
-            details.append(f"이미지 {job.image_current}/{job.image_total}")
+            if job.provider == "youtube":
+                details.append(f"항목 진행 {job.image_current}%")
+            else:
+                details.append(f"이미지 {job.image_current}/{job.image_total}")
         if job.error_category:
             details.append(f"분류 {error_category_label(job.error_category)}")
         if job.attempt_count:
@@ -6181,13 +6190,42 @@ class MainWindow(QMainWindow):
     def start_from_form(self) -> None:
         try:
             scan_mode = str(self.scan_mode_combo.currentData() or "new")
+            url = validate_url(self.url_edit.text())
+            provider = detect_download_provider(url)
+            external_request_confirmed = False
+            if provider == "youtube":
+                reference = inspect_youtube_url(url)
+                scope = {
+                    "video": "동영상 1개",
+                    "playlist": "재생목록",
+                    "channel": "채널",
+                }[reference["referenceType"]]
+                timestamp_note = (
+                    "\n완료 파일의 수정 시각을 업로드 날짜로 변경합니다."
+                    if self.config.get("youtubeApplyUploadDateMtime", False)
+                    else ""
+                )
+                answer = QMessageBox.question(
+                    self,
+                    "YouTube 외부 요청 확인",
+                    f"{scope}를 yt-dlp로 조회하고 다운로드합니다.\n"
+                    f"주소: {url}{timestamp_note}\n"
+                    "다운로드 권한이 있는 콘텐츠에만 사용하세요.\n\n계속할까요?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    self.log("YouTube 실행 확인을 취소했습니다.")
+                    return
+                external_request_confirmed = True
             self.enqueue_download(
-                self.url_edit.text(),
+                url,
                 self.start_spin.value() or None if scan_mode == "range" else None,
                 self.last_spin.value() or None if scan_mode == "range" else None,
                 self.output_edit.text(),
                 self.show_browser_check.isChecked(),
                 scan_mode=scan_mode,
+                external_request_confirmed=external_request_confirmed,
             )
         except (ValueError, OSError, RuntimeError) as error:
             QMessageBox.warning(self, "다운로드를 시작할 수 없음", str(error))
@@ -6205,8 +6243,13 @@ class MainWindow(QMainWindow):
         scan_mode: str = "new",
         retry_count: int | None = None,
         retry_backoff: int | None = None,
+        simulation: bool = False,
+        external_request_confirmed: bool = False,
     ) -> DownloadJob:
         valid_url = validate_url(url)
+        provider = detect_download_provider(valid_url)
+        if provider == "youtube" and not simulation and not external_request_confirmed:
+            raise ValueError("YouTube 외부 요청 실행에는 명시적 확인이 필요합니다.")
         queue_admission = resource_admission(
             "download_queue",
             queued_count=len(self.pending_jobs),
@@ -6216,12 +6259,16 @@ class MainWindow(QMainWindow):
             raise ValueError(
                 f"다운로드 대기열 상한 {queue_admission['limit']:,}개에 도달했습니다."
             )
-        scan_mode_value, start_value, last_value = normalize_scan_request(
-            scan_mode, start, last
-        )
+        if provider == "youtube":
+            scan_mode_value, start_value, last_value = "new", None, None
+        else:
+            scan_mode_value, start_value, last_value = normalize_scan_request(
+                scan_mode, start, last
+            )
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
-        find_node()
+        if provider != "youtube":
+            find_node()
 
         work_key = build_work_key(valid_url)
         existing = self.jobs_by_work.get(work_key)
@@ -6237,13 +6284,20 @@ class MainWindow(QMainWindow):
             work_key=work_key,
             start=start_value,
             last=last_value,
-            title=existing.title if existing else "메타데이터 확인 중",
+            title=(
+                existing.title
+                if existing
+                else ("YouTube 모의 실행 준비 중" if simulation else "YouTube 작업 준비 중")
+                if provider == "youtube"
+                else "메타데이터 확인 중"
+            ),
             output_path=existing.output_path if existing else "",
             cover_url=existing.cover_url if existing else "",
             cover_path=existing.cover_path if existing else "",
             author=existing.author if existing else "",
             group=existing.group if existing else "",
-            site=existing.site if existing else "",
+            site=existing.site if existing else ("youtube" if provider == "youtube" else ""),
+            provider=provider,
             metadata_path=existing.metadata_path if existing else "",
             user_note=existing.user_note if existing else "",
             pinned=existing.pinned if existing else False,
@@ -6266,6 +6320,8 @@ class MainWindow(QMainWindow):
                 if retry_backoff is not None
                 else self.retry_backoff_spin.value()
             ),
+            simulation=bool(simulation),
+            external_request_confirmed=bool(external_request_confirmed),
         )
         run = DownloadRun.from_job(job)
         save_runs([run])
@@ -7079,20 +7135,34 @@ class MainWindow(QMainWindow):
         self._update_job_card(context.job)
 
         process.setWorkingDirectory(str(ROOT_DIR))
-        process.setProgram(find_node())
-        process.setArguments(
-            build_downloader_args(
-                context.job,
-                json_events=True,
-                folder_template=str(
-                    getattr(self, "config", {}).get("folderNameTemplate") or ""
-                ),
-                network_config=getattr(self, "config", {}),
+        if context.job.provider == "youtube":
+            process.setProgram(sys.executable)
+            process.setArguments(
+                build_youtube_worker_args(
+                    context.job,
+                    getattr(self, "config", {}),
+                    simulation_delay_ms=500 if context.job.simulation else 0,
+                )
             )
-        )
-        environment_overrides = downloader_environment_overrides(
-            getattr(self, "config", {})
-        )
+            environment_overrides = {
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            }
+        else:
+            process.setProgram(find_node())
+            process.setArguments(
+                build_downloader_args(
+                    context.job,
+                    json_events=True,
+                    folder_template=str(
+                        getattr(self, "config", {}).get("folderNameTemplate") or ""
+                    ),
+                    network_config=getattr(self, "config", {}),
+                )
+            )
+            environment_overrides = downloader_environment_overrides(
+                getattr(self, "config", {})
+            )
         if isinstance(process, HiddenProcess):
             process.setEnvironmentOverrides(environment_overrides)
         elif environment_overrides:
@@ -7196,7 +7266,36 @@ class MainWindow(QMainWindow):
             return
         job = context.job
         event_name = event.get("event")
-        if event_name == "work_metadata":
+        if event_name == "youtube_started":
+            job.site = "youtube"
+            job.provider = "youtube"
+            job.output_path = job.output_dir
+            reference = event.get("reference") or {}
+            item_total = 1 if reference.get("referenceType") == "video" else 0
+            job.episode_total = item_total
+            job.progress = int(event.get("progress") or 0)
+        elif event_name == "youtube_item":
+            job.title = str(event.get("title") or job.title)
+            job.episode_index = int(event.get("itemIndex") or 1)
+            job.episode_total = int(event.get("itemTotal") or job.episode_total or 1)
+            job.episode_number = job.episode_index
+            job.image_current = 0
+            job.image_total = 0
+        elif event_name == "youtube_progress":
+            job.episode_index = int(event.get("itemIndex") or job.episode_index or 1)
+            job.episode_total = int(event.get("itemTotal") or job.episode_total or 1)
+            job.episode_number = job.episode_index
+            job.image_current = int(event.get("itemProgress") or 0)
+            job.image_total = 100
+            job.progress = min(99, max(0, int(event.get("progress") or 0)))
+        elif event_name == "youtube_item_completed":
+            job.episode_index = int(event.get("itemIndex") or job.episode_index or 1)
+            job.episode_total = int(event.get("itemTotal") or job.episode_total or 1)
+            job.episode_number = job.episode_index
+            job.image_current = 100
+            job.image_total = 100
+            job.output_path = job.output_dir
+        elif event_name == "work_metadata":
             metadata = event.get("metadata") or {}
             job.title = metadata.get("folderName") or metadata.get("title") or job.title
             job.output_path = str(event.get("outputPath") or "")
@@ -7240,7 +7339,7 @@ class MainWindow(QMainWindow):
             job.error_category = str(event.get("category") or "unknown")
             job.retryable_error = bool(event.get("retryable", True))
 
-        if job.episode_total:
+        if job.provider != "youtube" and job.episode_total:
             fraction = job.image_current / job.image_total if job.image_total else 0.0
             completed_before = max(0, job.episode_index - 1)
             job.progress = min(99, int(((completed_before + fraction) / job.episode_total) * 100))
@@ -7260,6 +7359,16 @@ class MainWindow(QMainWindow):
         elif event_name in {"episode_started", "episode_completed"}:
             run.processed_episodes = int(event.get("index") or run.processed_episodes)
             run.last_episode_number = int(event.get("number") or job.episode_number)
+        elif event_name in {"youtube_item", "youtube_progress", "youtube_item_completed"}:
+            run.discovered_episodes = int(event.get("itemTotal") or run.discovered_episodes)
+            run.selected_episodes = int(event.get("itemTotal") or run.selected_episodes)
+            item_index = int(event.get("itemIndex") or 0)
+            run.processed_episodes = (
+                item_index
+                if event_name == "youtube_item_completed"
+                else max(0, item_index - 1)
+            )
+            run.last_episode_number = item_index or run.last_episode_number
         policy = downloader_event_update_policy(str(event_name or ""))
         if policy["persistRun"]:
             save_runs([run])
@@ -7361,7 +7470,11 @@ class MainWindow(QMainWindow):
             self.active_detail_dialog.refresh()
         self._update_active_summary()
         self._notify_job_result(job)
-        if job.state == "완료" and self.config.get("pdfGenerationEnabled", False):
+        if (
+            job.state == "완료"
+            and job.provider != "youtube"
+            and self.config.get("pdfGenerationEnabled", False)
+        ):
             self._queue_automatic_pdf_generation(job.job_id)
         QTimer.singleShot(250, self._start_next_job)
 
@@ -7564,7 +7677,11 @@ class MainWindow(QMainWindow):
         return next(reversed(self.jobs.values()), None) if self.jobs else None
 
     def retry_job(self, job_id: str | None = None) -> DownloadJob | None:
-        return self.rescan_job(job_id, "full")
+        source = self.selected_job(job_id)
+        if not source:
+            self.log("재시도할 작업을 선택해주세요.")
+            return None
+        return self.enqueue_download(**retry_job_parameters(source))
 
     def rescan_job(
         self,
@@ -7577,6 +7694,8 @@ class MainWindow(QMainWindow):
         if not source:
             self.log("재검사할 작품을 선택해주세요.")
             return None
+        if source.provider == "youtube":
+            raise ValueError("YouTube 작업은 회차 재검사 대신 재시도를 사용해주세요.")
         parameters = rescan_job_parameters(source, mode, start, last)
         return self.enqueue_download(**parameters)
 
@@ -11481,6 +11600,10 @@ class MainWindow(QMainWindow):
                 metadata_only=bool(request.get("metadataOnly", False)),
                 image_concurrency=request.get("imageConcurrency"),
                 scan_mode=str(request.get("scanMode") or "new"),
+                simulation=bool(request.get("simulation", False)),
+                external_request_confirmed=bool(
+                    request.get("externalRequestConfirmed", False)
+                ),
             )
             return job.to_dict()
         if action == "stop":

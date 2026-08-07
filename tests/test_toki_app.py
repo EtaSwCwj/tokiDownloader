@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import argparse
 import re
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -2665,6 +2666,64 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_direct_download(args), 0)
         self.assertEqual(runner.call_count, 3)
         self.assertEqual([call.args[0] for call in sleeper.call_args_list], [2, 4])
+
+    def test_youtube_download_requires_confirmation_or_offline_simulation(self) -> None:
+        live = build_parser().parse_args(
+            ["download", "--url", "https://www.youtube.com/watch?v=video-one"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running") as ensure_gui,
+            self.assertRaisesRegex(ValueError, "--confirm-external"),
+        ):
+            run_cli(live)
+        ensure_gui.assert_not_called()
+
+        simulated = build_parser().parse_args(
+            [
+                "download",
+                "--url",
+                "https://www.youtube.com/watch?v=video-one",
+                "--simulate",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.load_config", return_value={"outputDir": r"C:\Video"}),
+            patch(
+                "toki_app.control_request",
+                return_value={"job_id": "youtube-sim"},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(simulated), 0)
+        payload = request.call_args.args[0]
+        self.assertTrue(payload["simulation"])
+        self.assertFalse(payload["externalRequestConfirmed"])
+        self.assertEqual(payload["scanMode"], "new")
+
+    def test_direct_youtube_simulation_launches_python_worker_not_node(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "download",
+                "--direct",
+                "--simulate",
+                "--url",
+                "https://www.youtube.com/watch?v=video-one",
+            ]
+        )
+        completed = type("Completed", (), {"returncode": 0})()
+        with (
+            patch("toki_app.load_config", return_value=default_config()),
+            patch("toki_app.find_node") as find_node,
+            patch("toki_app.subprocess.run", return_value=completed) as runner,
+            patch("toki_app.append_log"),
+        ):
+            self.assertEqual(run_direct_download(args), 0)
+        find_node.assert_not_called()
+        command = runner.call_args.args[0]
+        self.assertEqual(command[0], sys.executable)
+        self.assertTrue(str(command[1]).endswith("youtube_worker.py"))
+        self.assertIn("--simulate", command)
 
     def test_list_query_arguments(self) -> None:
         args = build_parser().parse_args(
