@@ -116,6 +116,7 @@ from toki_core import (
     export_diagnostics,
     export_jobs_snapshot,
     find_duplicate_works,
+    find_duplicate_images,
     find_node,
     hydrate_job_metadata,
     import_app_settings,
@@ -1535,6 +1536,52 @@ class DuplicateWorksDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class DuplicateImagesDialog(QDialog):
+    def __init__(self, result: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("중복 이미지 검사")
+        self.resize(760, 540)
+        layout = QVBoxLayout(self)
+        heading = QLabel("중복 이미지 해시 검사")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        summary = QLabel(
+            f"{result.get('title')} · {str(result.get('algorithm')).upper()} · "
+            f"검사 {result.get('scannedImages', 0)}장 · 중복 그룹 "
+            f"{result.get('duplicateGroupCount', 0)}개 · 관련 이미지 "
+            f"{result.get('duplicateImageCount', 0)}장"
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        pool = result.get("pool") or {}
+        pool_label = QLabel(
+            f"{pool.get('kind', '-')} 풀 {pool.get('workers', 0)}개 · "
+            f"실패 {result.get('failedImages', 0)}장 · {result.get('durationMs', 0)} ms"
+        )
+        pool_label.setObjectName("mutedLabel")
+        layout.addWidget(pool_label)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        lines: list[str] = []
+        for index, group in enumerate(result.get("groups") or [], 1):
+            lines.append(f"[{index}] {group.get('count')}장 · {group.get('hash')}")
+            lines.extend(f"  {path}" for path in group.get("paths") or [])
+            lines.append("")
+        for failure in result.get("failures") or []:
+            lines.append(f"[실패] {failure.get('path')}\n  {failure.get('error')}")
+        if not lines:
+            lines.append("같은 해시로 판정된 이미지가 없습니다.")
+        details.setPlainText("\n".join(lines))
+        layout.addWidget(details, 1)
+        note = QLabel("읽기 전용 검사입니다. 이미지 파일을 변경하거나 삭제하지 않습니다.")
+        note.setObjectName("mutedLabel")
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
@@ -2083,6 +2130,7 @@ class MainWindow(QMainWindow):
         self.file_verify_processes: dict[str, ServiceTask] = {}
         self.image_preview_processes: dict[str, ServiceTask] = {}
         self.image_conversion_processes: dict[str, ImageConversionProcessContext] = {}
+        self.duplicate_image_tasks: dict[str, ServiceTask] = {}
         self.io_thread_pool = QThreadPool(self)
         self.io_thread_pool.setMaxThreadCount(int(self.resource_limits["ioThreads"]))
         self.image_thread_pool = self.io_thread_pool
@@ -2125,6 +2173,7 @@ class MainWindow(QMainWindow):
         self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
         self.active_archive_inspection_dialog: ArchiveInspectionDialog | None = None
         self.active_duplicate_works_dialog: DuplicateWorksDialog | None = None
+        self.active_duplicate_images_dialog: DuplicateImagesDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -4201,6 +4250,89 @@ class MainWindow(QMainWindow):
         self.active_duplicate_works_dialog.close()
         return True
 
+    def start_duplicate_images(
+        self, job_id: str | None = None, algorithm: str = "sha256"
+    ) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("이미지 중복을 검사할 작품을 선택해주세요.")
+        if job.job_id in self.duplicate_image_tasks:
+            return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
+        tracked = (
+            len(self.file_verify_processes)
+            + len(self.image_preview_processes)
+            + len(self.duplicate_image_tasks)
+        )
+        active = self.io_thread_pool.activeThreadCount()
+        admission = resource_admission(
+            "io",
+            active_count=active,
+            queued_count=max(0, tracked - active),
+            budget=self.resource_limits,
+        )
+        if not admission["allowed"]:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "resourceLimit": True,
+                "resources": admission,
+            }
+        selected_algorithm = str(algorithm or "sha256").lower()
+        task = ServiceTask(
+            job.job_id,
+            lambda: find_duplicate_images(job.job_id, algorithm=selected_algorithm),
+        )
+        task.signals.finished.connect(self._duplicate_images_finished)
+        self.duplicate_image_tasks[job.job_id] = task
+        self.io_thread_pool.start(task)
+        self.log(
+            f"중복 이미지 검사 시작({selected_algorithm}, 자원 풀)", job_id=job.job_id
+        )
+        self.statusBar().showMessage(f"{job.title} 중복 이미지 검사 중…")
+        return {
+            "started": True,
+            "jobId": job.job_id,
+            "algorithm": selected_algorithm,
+            "resources": admission,
+        }
+
+    def _duplicate_images_finished(
+        self, job_id: str, result: dict[str, Any], error: str
+    ) -> None:
+        task = self.duplicate_image_tasks.pop(job_id, None)
+        if task is None:
+            return
+        if error:
+            self.log(f"중복 이미지 검사 실패: {error}", "ERROR", job_id)
+            QMessageBox.critical(self, "중복 이미지 검사 실패", error)
+            return
+        if self.active_duplicate_images_dialog:
+            self.active_duplicate_images_dialog.close()
+        dialog = DuplicateImagesDialog(result, self)
+        self.active_duplicate_images_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_duplicate_images_dialog", None)
+                if self.active_duplicate_images_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log(
+            f"중복 이미지 검사 완료: 그룹 {result['duplicateGroupCount']}개, "
+            f"관련 이미지 {result['duplicateImageCount']}장",
+            job_id=job_id,
+        )
+
+    def close_duplicate_images(self) -> bool:
+        if not self.active_duplicate_images_dialog:
+            return False
+        self.active_duplicate_images_dialog.close()
+        return True
+
     def close_settings_dialog(self) -> bool:
         if not self.active_settings_dialog:
             return False
@@ -5103,6 +5235,18 @@ class MainWindow(QMainWindow):
             and bool(job.output_path)
             and job.job_id not in self.image_conversion_processes
         )
+        duplicate_images_menu = menu.addMenu("중복 이미지 검사")
+        duplicate_exact_action = duplicate_images_menu.addAction("정확히 같은 파일 (SHA-256)")
+        duplicate_exact_action.triggered.connect(
+            lambda: self.start_duplicate_images(job.job_id, "sha256")
+        )
+        duplicate_phash_action = duplicate_images_menu.addAction("시각적으로 유사 (pHash)")
+        duplicate_phash_action.triggered.connect(
+            lambda: self.start_duplicate_images(job.job_id, "phash")
+        )
+        duplicate_images_menu.setEnabled(
+            bool(job.output_path) and job.job_id not in self.duplicate_image_tasks
+        )
         menu.addSeparator()
         menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
         menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
@@ -5449,6 +5593,11 @@ class MainWindow(QMainWindow):
             and self.active_duplicate_works_dialog.isVisible()
         ):
             screenshot = self.active_duplicate_works_dialog.grab()
+        elif (
+            self.active_duplicate_images_dialog
+            and self.active_duplicate_images_dialog.isVisible()
+        ):
+            screenshot = self.active_duplicate_images_dialog.grab()
         elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
@@ -5880,6 +6029,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd group list|create|rename|assign|unassign|manage [options]\n"
             "toki-cli.cmd local inspect [--path ARCHIVE --json|--show-gui|--close]\n"
             "toki-cli.cmd duplicates works [--json|--show-gui|--close]\n"
+            "toki-cli.cmd duplicates images --job ID [--algorithm sha256|phash --json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
@@ -6103,6 +6253,11 @@ class MainWindow(QMainWindow):
                 self.active_duplicate_works_dialog
                 and self.active_duplicate_works_dialog.isVisible()
             ),
+            "duplicateImagesOpen": bool(
+                self.active_duplicate_images_dialog
+                and self.active_duplicate_images_dialog.isVisible()
+            ),
+            "duplicateImageJobs": sorted(self.duplicate_image_tasks),
             "window": {
                 **self.window_snapshot(),
                 "restorePlan": getattr(self, "window_restore_plan", None),
@@ -6374,6 +6529,13 @@ class MainWindow(QMainWindow):
             return {"shown": self.show_duplicate_works()}
         if action == "close_duplicate_works":
             return {"closed": self.close_duplicate_works()}
+        if action == "show_duplicate_images":
+            return self.start_duplicate_images(
+                str(request.get("jobId") or ""),
+                str(request.get("algorithm") or "sha256"),
+            )
+        if action == "close_duplicate_images":
+            return {"closed": self.close_duplicate_images()}
         if action == "tray":
             return self.handle_tray_command(
                 str(request.get("command") or "status"),

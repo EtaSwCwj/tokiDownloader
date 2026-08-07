@@ -107,6 +107,31 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_duplicate_images_ipc_starts_algorithm_and_closes_report(self) -> None:
+        calls = []
+        harness = type("DuplicateImagesHarness", (), {})()
+        harness.start_duplicate_images = (
+            lambda job_id, algorithm: calls.append(("start", job_id, algorithm))
+            or {"started": True}
+        )
+        harness.close_duplicate_images = lambda: calls.append(("close",)) or True
+
+        started = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "show_duplicate_images",
+                "jobId": "j1",
+                "algorithm": "phash",
+            },
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_duplicate_images"}
+        )
+
+        self.assertTrue(started["started"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(calls, [("start", "j1", "phash"), ("close",)])
+
     def test_duplicate_works_ipc_can_show_and_close_report(self) -> None:
         calls = []
         harness = type("DuplicateWorksHarness", (), {})()

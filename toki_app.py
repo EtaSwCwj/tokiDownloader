@@ -50,6 +50,7 @@ from toki_core import (
     export_app_settings,
     export_jobs_snapshot,
     find_duplicate_works,
+    find_duplicate_images,
     load_config,
     import_app_settings,
     import_jobs_snapshot,
@@ -478,6 +479,15 @@ def build_parser() -> argparse.ArgumentParser:
     duplicate_works_window.add_argument("--show-gui", action="store_true", help="GUI 결과 표시")
     duplicate_works_window.add_argument("--close", action="store_true", help="GUI 결과 닫기")
     duplicate_works.add_argument("--json", action="store_true", help="JSON으로 출력")
+    duplicate_images = duplicates_commands.add_parser("images", help="작품 이미지 해시 중복 검사")
+    duplicate_images.add_argument("--job", help="작업 ID")
+    duplicate_images.add_argument(
+        "--algorithm", choices=("sha256", "phash"), default="sha256", help="해시 방식"
+    )
+    duplicate_images_window = duplicate_images.add_mutually_exclusive_group()
+    duplicate_images_window.add_argument("--show-gui", action="store_true", help="GUI 결과 표시")
+    duplicate_images_window.add_argument("--close", action="store_true", help="GUI 결과 닫기")
+    duplicate_images.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -1246,22 +1256,48 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "duplicates":
         if args.close:
             ensure_gui_running()
-            result = control_request({"action": "close_duplicate_works"})
+            action = (
+                "close_duplicate_works"
+                if args.duplicates_command == "works"
+                else "close_duplicate_images"
+            )
+            result = control_request({"action": action})
             print_json(result)
             return 0
+        if args.duplicates_command == "images" and not args.job:
+            raise ValueError("이미지 중복 검사 작업 ID를 --job으로 지정하세요.")
         if args.show_gui:
             ensure_gui_running()
-            result = control_request({"action": "show_duplicate_works"})
+            request = (
+                {"action": "show_duplicate_works"}
+                if args.duplicates_command == "works"
+                else {
+                    "action": "show_duplicate_images",
+                    "jobId": args.job,
+                    "algorithm": args.algorithm,
+                }
+            )
+            result = control_request(request)
             print_json(result)
             return 0
-        result = find_duplicate_works()
+        result = (
+            find_duplicate_works()
+            if args.duplicates_command == "works"
+            else find_duplicate_images(args.job, algorithm=args.algorithm)
+        )
         if args.json:
             print_json(result)
         else:
-            print(
-                f"검사 {result['scannedWorks']} · 중복 그룹 {result['duplicateGroupCount']} · "
-                f"관련 작품 {result['duplicateWorkCount']}"
-            )
+            if args.duplicates_command == "works":
+                print(
+                    f"검사 {result['scannedWorks']} · 중복 그룹 {result['duplicateGroupCount']} · "
+                    f"관련 작품 {result['duplicateWorkCount']}"
+                )
+            else:
+                print(
+                    f"검사 {result['scannedImages']} · 중복 그룹 {result['duplicateGroupCount']} · "
+                    f"관련 이미지 {result['duplicateImageCount']}"
+                )
         return 0 if result.get("ok") else 2
     if command == "shortcuts":
         if args.show_gui or args.close:

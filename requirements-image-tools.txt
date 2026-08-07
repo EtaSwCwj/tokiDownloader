@@ -1,1 +1,2 @@
 Pillow>=11,<13
+ImageHash>=4.3,<5

@@ -14,6 +14,45 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_duplicate_images_cli_supports_hash_gui_and_close(self) -> None:
+        report = {
+            "ok": True,
+            "scannedImages": 20,
+            "duplicateGroupCount": 2,
+            "duplicateImageCount": 4,
+        }
+        args = build_parser().parse_args(
+            ["duplicates", "images", "--job", "j1", "--algorithm", "sha256", "--json"]
+        )
+        with (
+            patch("toki_app.find_duplicate_images", return_value=report) as scan,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 0)
+        scan.assert_called_once_with("j1", algorithm="sha256")
+
+        show = build_parser().parse_args(
+            ["duplicates", "images", "--job", "j1", "--algorithm", "phash", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show), 0)
+        request.assert_called_once_with(
+            {"action": "show_duplicate_images", "jobId": "j1", "algorithm": "phash"}
+        )
+
+        close = build_parser().parse_args(["duplicates", "images", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close), 0)
+        request.assert_called_once_with({"action": "close_duplicate_images"})
+
     def test_duplicate_works_cli_supports_json_gui_and_close(self) -> None:
         report = {
             "ok": True,

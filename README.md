@@ -65,7 +65,8 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 ```
 
 `-CheckOnly`는 다운로드나 재설치 없이 `.venv`, Puppeteer와 공용 `doctor` 결과만 검증합니다.
-이미지 변환용 Pillow까지 함께 설치하려면 `setup-gui.cmd -WithImageTools`를 사용합니다.
+이미지 변환·유사 이미지 해시용 Pillow와 ImageHash까지 함께 설치하려면
+`setup-gui.cmd -WithImageTools`를 사용합니다.
 7Z/RAR 작품 검사 모듈까지 설치하려면 `setup-gui.cmd -WithArchiveTools`를 사용합니다.
 
 ### GUI 제어 CLI
@@ -103,6 +104,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd duplicates works --json
 .\toki-cli.cmd duplicates works --show-gui
 .\toki-cli.cmd duplicates works --close
+.\toki-cli.cmd duplicates images --job 작업ID --algorithm sha256 --json
+.\toki-cli.cmd duplicates images --job 작업ID --algorithm phash --show-gui
+.\toki-cli.cmd duplicates images --close
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
@@ -272,7 +276,7 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 `장시간·강제 종료 복구 검증` 버튼과 같은 경로를 실행합니다.
 
 `doctor`는 Python 3.10+, PyQt6, psutil, Node.js와 `puppeteer-real-browser`를 필수 실행
-환경으로 검사합니다. npm은 설치 도구로, Pillow·py7zr·rarfile·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
+환경으로 검사합니다. npm은 설치 도구로, Pillow·ImageHash·py7zr·rarfile·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
 분리해 설치 여부·버전·실제 경로를 표시합니다. `--show-gui`와 도구 메뉴의
 `설치 및 선택 기능 진단...`은 같은 보고서를 표로 보여주며 `--close`로 닫을 수 있습니다.
 
@@ -510,11 +514,17 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 그대로이고, 다음 실행은 남은 임시 파일을 정리한 뒤 기존 완성 결과를 건너뜁니다.
 `--progress-json`은 진행 이벤트와 최종 결과를 한 줄씩 JSON으로 출력하며 사용자 중지는
 종료 코드 3을 사용합니다. 투명 이미지를 JPEG로 변환할 때는 흰 배경 RGB로 합성합니다.
-선택 기능이므로 다음 명령으로 Pillow를 설치합니다.
+선택 기능이므로 다음 명령으로 Pillow와 ImageHash를 설치합니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-image-tools.txt
 ```
+
+`duplicates images`는 지정 작품의 이미지 파일을 삭제하거나 수정하지 않는 읽기 전용
+검사입니다. `sha256`은 파일 내용이 완전히 같은 이미지를 제한된 I/O 스레드 풀로 찾고,
+선택 기능인 `phash`는 Pillow·ImageHash와 제한된 CPU 프로세스 풀을 사용해 시각적으로
+유사한 이미지를 찾습니다. 결과에는 검사 파일 수, 중복 그룹, 관련 이미지, 사용한 풀과
+작업자 수가 포함됩니다.
 
 GUI 없이 기존 방식으로 바로 실행하려면 다음 명령을 사용할 수 있습니다.
 

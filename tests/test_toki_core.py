@@ -35,6 +35,7 @@ from toki_core import (
     export_diagnostics,
     export_jobs_snapshot,
     find_duplicate_works,
+    find_duplicate_images,
     hydrate_job_metadata,
     import_jobs_snapshot,
     inspect_local_archive,
@@ -750,6 +751,40 @@ class CoreContractTests(unittest.TestCase):
 
 
 class JobRepositoryTests(unittest.TestCase):
+    def test_duplicate_image_sha256_scan_uses_bounded_threads_and_preserves_files(self) -> None:
+        output_path = Path(self.temp_dir.name) / "work"
+        episode_one = output_path / "0001 first"
+        episode_two = output_path / "0002 second"
+        episode_one.mkdir(parents=True)
+        episode_two.mkdir(parents=True)
+        first = episode_one / "001.jpg"
+        duplicate = episode_two / "002.png"
+        unique = episode_two / "003.webp"
+        first.write_bytes(b"same-image-bytes")
+        duplicate.write_bytes(b"same-image-bytes")
+        unique.write_bytes(b"different-image-bytes")
+        job = DownloadJob(
+            job_id="image-duplicates",
+            url="https://newtoki1.org/manhwa/9901",
+            output_dir=self.temp_dir.name,
+            output_path=str(output_path),
+            title="이미지 중복 작품",
+        )
+        save_jobs([job])
+
+        report = find_duplicate_images(job.job_id, algorithm="sha256", max_workers=99)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["pool"]["kind"], "thread")
+        self.assertLessEqual(report["pool"]["workers"], 8)
+        self.assertEqual(report["scannedImages"], 3)
+        self.assertEqual(report["duplicateGroupCount"], 1)
+        self.assertEqual(report["duplicateImageCount"], 2)
+        self.assertEqual(set(report["groups"][0]["paths"]), {str(first.resolve()), str(duplicate.resolve())})
+        self.assertTrue(report["readOnly"])
+        self.assertFalse(report["filesChanged"])
+        self.assertEqual(unique.read_bytes(), b"different-image-bytes")
+
     def test_duplicate_work_scan_reports_title_author_and_path_without_changes(self) -> None:
         shared_path = str(Path(self.temp_dir.name) / "shared")
         jobs = [

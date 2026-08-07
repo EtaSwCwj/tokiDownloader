@@ -14,6 +14,7 @@ import time
 import uuid
 import zipfile
 from collections import deque
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -786,6 +787,7 @@ def dependency_diagnostics() -> dict[str, Any]:
         }
     )
     checks.append(package("Pillow", "Pillow", False))
+    checks.append(package("ImageHash", "ImageHash", False))
     checks.append(package("py7zr", "py7zr", False))
     checks.append(package("rarfile", "rarfile", False))
     for name, executable, version_argument in (
@@ -4168,6 +4170,124 @@ def _collect_conversion_sources(output_path: Path) -> list[Path]:
                 and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
             )
     return sorted(sources, key=lambda path: str(path).casefold())
+
+
+def _sha256_image_file(path_text: str) -> tuple[str, str, str]:
+    digest = hashlib.sha256()
+    try:
+        with Path(path_text).open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return path_text, digest.hexdigest(), ""
+    except OSError as error:
+        return path_text, "", str(error)
+
+
+def _phash_image_file(path_text: str) -> tuple[str, str, str]:
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+        import imagehash  # type: ignore[import-not-found]
+
+        with Image.open(path_text) as image:
+            return path_text, str(imagehash.phash(image)), ""
+    except Exception as error:  # Pillow decoders expose several format exceptions.
+        return path_text, "", str(error)
+
+
+def find_duplicate_images(
+    job_id: str,
+    *,
+    algorithm: str = "sha256",
+    max_workers: int | None = None,
+) -> dict[str, Any]:
+    selected_algorithm = str(algorithm or "sha256").strip().lower()
+    if selected_algorithm not in {"sha256", "phash"}:
+        raise ValueError("이미지 중복 알고리즘은 sha256 또는 phash여야 합니다.")
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    images = _collect_conversion_sources(output_path)
+    limits = resource_budget()
+    if selected_algorithm == "phash":
+        try:
+            pillow_version = importlib.metadata.version("Pillow")
+            imagehash_version = importlib.metadata.version("ImageHash")
+        except importlib.metadata.PackageNotFoundError as error:
+            raise RuntimeError(
+                "pHash 검사는 Pillow와 ImageHash가 필요합니다. "
+                "setup-gui.cmd -WithImageTools를 실행하세요."
+            ) from error
+        worker_count = max(
+            1,
+            min(
+                int(max_workers or limits["cpuProcesses"]),
+                int(limits["cpuProcesses"]),
+            ),
+        )
+        executor_type = ProcessPoolExecutor
+        hash_function = _phash_image_file
+        dependency = {
+            "name": "Pillow+ImageHash",
+            "available": True,
+            "version": f"{pillow_version}+{imagehash_version}",
+        }
+        pool_kind = "process"
+    else:
+        worker_count = max(
+            1,
+            min(int(max_workers or limits["ioThreads"]), int(limits["ioThreads"])),
+        )
+        executor_type = ThreadPoolExecutor
+        hash_function = _sha256_image_file
+        dependency = {"name": "hashlib", "available": True, "version": sys.version.split()[0]}
+        pool_kind = "thread"
+
+    started = time.perf_counter()
+    with executor_type(max_workers=worker_count) as executor:
+        hashed = list(executor.map(hash_function, map(str, images), chunksize=16))
+    digest_groups: dict[str, list[str]] = {}
+    failures: list[dict[str, str]] = []
+    for path_text, digest, error in hashed:
+        if error:
+            failures.append({"path": path_text, "error": error})
+        elif digest:
+            digest_groups.setdefault(digest, []).append(path_text)
+    duplicates = [
+        {
+            "hash": digest,
+            "count": len(paths),
+            "paths": sorted(paths, key=str.casefold),
+        }
+        for digest, paths in digest_groups.items()
+        if len(paths) > 1
+    ]
+    duplicates.sort(key=lambda item: (-int(item["count"]), str(item["hash"])))
+    duplicate_paths = {path for group in duplicates for path in group["paths"]}
+    return {
+        "ok": not failures,
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": job.title,
+        "outputPath": str(output_path),
+        "algorithm": selected_algorithm,
+        "dependency": dependency,
+        "pool": {"kind": pool_kind, "workers": worker_count},
+        "scannedImages": len(images),
+        "hashedImages": len(images) - len(failures),
+        "failedImages": len(failures),
+        "duplicateGroupCount": len(duplicates),
+        "duplicateImageCount": len(duplicate_paths),
+        "groups": duplicates,
+        "failures": failures[:100],
+        "durationMs": max(0, int((time.perf_counter() - started) * 1000)),
+        "readOnly": True,
+        "filesChanged": False,
+    }
 
 
 def plan_image_conversion(
