@@ -43,6 +43,9 @@ HITOMI_SERVER_CATALOG = (
 HITOMI_SERVER_IDS = tuple(item["id"] for item in HITOMI_SERVER_CATALOG)
 HITOMI_METADATA_MAX_BYTES = 8 * 1024 * 1024
 HITOMI_METADATA_MODES = ("auto", "required", "disabled")
+HITOMI_FILENAME_MODES = ("original", "number", "number_original")
+HITOMI_FILENAME_PLAN_MAX_FILES = 100_000
+HITOMI_FILENAME_SAMPLE_LIMIT = 1_000
 HITOMI_METADATA_ENDPOINT = "https://ltn.hitomi.la/galleries/{gallery_id}.js"
 EHENTAI_METADATA_ENDPOINT = "https://api.e-hentai.org/api.php"
 _GALLERY_ID = re.compile(r"^[0-9]{1,18}$")
@@ -54,6 +57,10 @@ _EXHENTAI_GALLERY_PATH = re.compile(
 )
 _EXHENTAI_MISSING_TOKEN_PATH = re.compile(r"^/g/([0-9]+)/?$", re.IGNORECASE)
 _EXHENTAI_ANY_TOKEN_PATH = re.compile(r"^/g/([0-9]+)/([^/]+)/?$", re.IGNORECASE)
+_WINDOWS_INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_FILENAME = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.IGNORECASE
+)
 
 
 class HitomiReferenceError(ValueError):
@@ -75,6 +82,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "networkRequest": False,
         "download": False,
         "metadata": True,
+        "imageFilenamePolicy": True,
         "metadataExternalRequestRequiresConfirmation": True,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
@@ -84,6 +92,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
             "URL 및 갤러리 ID 분석은 외부 네트워크 없이 동작합니다.",
             "ExHentai 갤러리 토큰은 결과와 로그에 원문으로 표시하지 않습니다.",
             "메타데이터 요청은 명시적 확인 뒤에만 실행하며 다운로드는 아직 활성화되지 않았습니다.",
+            "이미지 파일명 계획은 로컬 메타데이터만 사용하며 Windows 충돌을 방지합니다.",
         ],
     }
 
@@ -93,6 +102,161 @@ def normalize_hitomi_metadata_mode(value: str | None) -> str:
     if normalized not in HITOMI_METADATA_MODES:
         raise ValueError("Hitomi 메타데이터 방식은 auto, required 또는 disabled여야 합니다.")
     return normalized
+
+
+def normalize_hitomi_filename_mode(value: str | None) -> str:
+    normalized = str(value or "number_original").strip().lower().replace("+", "_")
+    aliases = {
+        "numbered": "number",
+        "numeric": "number",
+        "numbered_original": "number_original",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in HITOMI_FILENAME_MODES:
+        raise ValueError(
+            "Hitomi 파일명 방식은 original, number 또는 number_original이어야 합니다."
+        )
+    return normalized
+
+
+def hitomi_filename_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    mode = normalize_hitomi_filename_mode(source.get("hitomiFilenameMode"))
+    examples = {
+        "original": "원본 이름.jpg",
+        "number": "0001.jpg",
+        "number_original": "0001_원본 이름.jpg",
+    }
+    return {
+        "ok": True,
+        "mode": mode,
+        "example": examples[mode],
+        "supportedModes": list(HITOMI_FILENAME_MODES),
+        "collisionPolicy": "append_counter",
+        "windowsSafe": True,
+        "networkRequested": False,
+    }
+
+
+def _safe_hitomi_original_name(value: Any, index: int) -> tuple[str, bool]:
+    raw = Path(str(value or "").replace("\\", "/")).name.strip()
+    if not raw:
+        return "", False
+    sanitized = _WINDOWS_INVALID_FILENAME.sub("", raw).rstrip(". ").strip()
+    if not sanitized:
+        sanitized = f"image-{index}"
+    if _WINDOWS_RESERVED_FILENAME.fullmatch(sanitized):
+        sanitized = f"_{sanitized}"
+    suffix = Path(sanitized).suffix
+    stem = sanitized[: -len(suffix)] if suffix else sanitized
+    max_stem_length = max(1, 180 - len(suffix))
+    if len(stem) > max_stem_length:
+        stem = stem[:max_stem_length].rstrip(". ") or f"image-{index}"
+        sanitized = f"{stem}{suffix}"
+    return sanitized, sanitized != raw
+
+
+def _hitomi_numbered_name(index: int, width: int, original: str, mode: str) -> str:
+    suffix = Path(original).suffix.lower() if original else ".jpg"
+    if not re.fullmatch(r"\.[a-zA-Z0-9]{1,10}", suffix):
+        suffix = ".jpg"
+    prefix = str(index).zfill(width)
+    if mode == "number":
+        return f"{prefix}{suffix}"
+    stem = original[: -len(Path(original).suffix)] if Path(original).suffix else original
+    return f"{prefix}_{stem}{suffix}"
+
+
+def plan_hitomi_image_filenames(
+    metadata: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    mode: str | None = None,
+    sample_limit: int = 100,
+) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise HitomiReferenceError(
+            "hitomi.filename_metadata_invalid",
+            "파일명 계획에는 공통 갤러리 메타데이터 객체가 필요합니다.",
+        )
+    policy = hitomi_filename_policy_snapshot(
+        {"hitomiFilenameMode": mode} if mode is not None else config
+    )
+    files = metadata.get("files")
+    rows = files if isinstance(files, list) else []
+    total = max(_positive_int(metadata.get("pageCount")), len(rows))
+    if total <= 0:
+        raise HitomiReferenceError(
+            "hitomi.filename_pages_missing",
+            "파일명 계획을 만들 이미지 페이지가 없습니다.",
+        )
+    if total > HITOMI_FILENAME_PLAN_MAX_FILES:
+        raise HitomiReferenceError(
+            "hitomi.filename_too_many",
+            f"파일명 계획은 {HITOMI_FILENAME_PLAN_MAX_FILES:,}장까지 지원합니다.",
+        )
+    requested_limit = max(0, min(HITOMI_FILENAME_SAMPLE_LIMIT, int(sample_limit)))
+    width = max(4, len(str(total)))
+    used: dict[str, int] | None = {} if policy["mode"] == "original" else None
+    sample: list[dict[str, Any]] = []
+    collision_count = 0
+    sanitized_count = 0
+    missing_original_count = 0
+    for index in range(1, total + 1):
+        row = rows[index - 1] if index <= len(rows) and isinstance(rows[index - 1], dict) else {}
+        original, was_sanitized = _safe_hitomi_original_name(row.get("name"), index)
+        if not original:
+            missing_original_count += 1
+            if policy["mode"] in {"original", "number_original"}:
+                raise HitomiReferenceError(
+                    "hitomi.filename_original_missing",
+                    f"{index}번째 이미지의 원본 파일명이 없어 선택한 방식을 적용할 수 없습니다.",
+                )
+        if policy["mode"] == "original":
+            candidate = original
+        else:
+            candidate = _hitomi_numbered_name(index, width, original, policy["mode"])
+        base_candidate = candidate
+        key = candidate.casefold()
+        collision_index = (used.get(key, 0) + 1) if used is not None else 1
+        if used is not None:
+            used[key] = collision_index
+        if used is not None and collision_index > 1:
+            collision_count += 1
+            suffix = Path(candidate).suffix
+            stem = candidate[: -len(suffix)] if suffix else candidate
+            candidate = f"{stem} ({collision_index}){suffix}"
+            while candidate.casefold() in used:
+                collision_index += 1
+                candidate = f"{stem} ({collision_index}){suffix}"
+            used[candidate.casefold()] = 1
+        if was_sanitized:
+            sanitized_count += 1
+        if len(sample) < requested_limit:
+            sample.append(
+                {
+                    "index": index,
+                    "originalName": str(row.get("name") or ""),
+                    "fileName": candidate,
+                    "sanitized": was_sanitized,
+                    "collisionResolved": candidate != base_candidate,
+                }
+            )
+    return {
+        **policy,
+        "galleryId": str(metadata.get("galleryId") or ""),
+        "workKey": str(metadata.get("workKey") or ""),
+        "pageCount": total,
+        "numberWidth": width,
+        "sampleLimit": requested_limit,
+        "sampleTruncated": total > len(sample),
+        "sanitizedCount": sanitized_count,
+        "collisionCount": collision_count,
+        "missingOriginalCount": missing_original_count,
+        "sample": sample,
+    }
 
 
 def hitomi_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -532,6 +532,16 @@ fetch|show|close`, GUI 설정·대화상자·IPC·상태를 연결했고 실제 
 `logs/hitomi-metadata-fixture.png`, `logs/hitomi-metadata-settings.png`에 보존했고 Python
 215건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
 
+2026-08-07 Hitomi 이미지 파일명 정책: 설정 스키마 v18에 `original`, `number`,
+`number_original`을 추가하고 서비스가 공통 메타데이터에서 Windows 안전 이름을 계산하도록
+했다. 경로 구분자·금지 문자·예약 장치 이름을 제거하고 대소문자 중복도 카운터로 분리하며,
+최대 100,000장을 순회해도 결과 샘플은 최대 1,000개만 반환한다. 원본 이름이 없는 공급자
+요약에서 원본 기반 방식을 요청하면 자동 대체하지 않고 안정 오류 코드를 반환한다. `hitomi
+filenames status|set|plan`, GUI 공급자 설정, `status --json`을 같은 정책에 연결하고 실제
+GUI에서 CLI 적용·복원과 `logs/hitomi-filename-settings.png` 캡처를 확인했다. 외부 요청과
+파일 생성은 수행하지 않았으며 100,000장 숫자 방식의 제한 샘플 회귀를 포함해 Python
+219건, Node 16건, 자체 점검 6/6을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

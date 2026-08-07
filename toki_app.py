@@ -24,12 +24,14 @@ from PyQt6.QtWidgets import QApplication
 from hitomi_provider import (
     HitomiReferenceError,
     fetch_hitomi_metadata,
+    hitomi_filename_policy_snapshot,
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_provider_capabilities,
     hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
+    plan_hitomi_image_filenames,
     plan_hitomi_server,
 )
 from toki_core import (
@@ -909,6 +911,39 @@ def build_parser() -> argparse.ArgumentParser:
         "close", help="열린 메타데이터 대화상자 닫기"
     )
     hitomi_metadata_close.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_filenames = hitomi_commands.add_parser(
+        "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
+    )
+    hitomi_filename_commands = hitomi_filenames.add_subparsers(
+        dest="hitomi_filename_command", required=True
+    )
+    hitomi_filename_status = hitomi_filename_commands.add_parser(
+        "status", help="현재 원본·숫자 파일명 정책 조회"
+    )
+    hitomi_filename_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_filename_set = hitomi_filename_commands.add_parser(
+        "set", help="이미지 파일명 방식 저장"
+    )
+    hitomi_filename_set.add_argument(
+        "--mode", choices=("original", "number", "number_original"), required=True
+    )
+    hitomi_filename_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_filename_plan = hitomi_filename_commands.add_parser(
+        "plan", help="로컬 메타데이터 픽스처에서 안전한 파일명 계획"
+    )
+    hitomi_filename_plan.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+    hitomi_filename_plan.add_argument(
+        "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+    )
+    hitomi_filename_plan.add_argument("--fixture", required=True, help="로컬 JS/JSON 픽스처 경로")
+    hitomi_filename_plan.add_argument(
+        "--mode", choices=("original", "number", "number_original"),
+        help="저장 설정 대신 이 계획에만 적용할 방식",
+    )
+    hitomi_filename_plan.add_argument(
+        "--sample-limit", type=int, default=100, help="출력할 샘플 수(최대 1000)"
+    )
+    hitomi_filename_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2406,6 +2441,40 @@ def run_cli(args: argparse.Namespace) -> int:
                             )
                     except HitomiReferenceError as error:
                         result = error.to_dict()
+        elif args.hitomi_command == "filenames":
+            current = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            subcommand = args.hitomi_filename_command
+            if subcommand == "status":
+                result = hitomi_filename_policy_snapshot(current)
+            elif subcommand == "set":
+                updates = {"hitomiFilenameMode": args.mode}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **hitomi_filename_policy_snapshot(saved)}
+            else:
+                try:
+                    metadata = load_hitomi_metadata_fixture(
+                        args.input,
+                        Path(args.fixture),
+                        provider_hint=args.provider,
+                    )
+                    result = plan_hitomi_image_filenames(
+                        metadata,
+                        config=current,
+                        mode=args.mode,
+                        sample_limit=args.sample_limit,
+                    )
+                except HitomiReferenceError as error:
+                    result = error.to_dict()
         elif args.show_gui:
             ensure_gui_running()
             result = control_request(

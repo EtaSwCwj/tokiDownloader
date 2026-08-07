@@ -16,6 +16,65 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_filename_cli_uses_shared_offline_policy(self) -> None:
+        status_args = build_parser().parse_args(
+            ["hitomi", "filenames", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertEqual(json.loads(stdout.getvalue())["mode"], "number_original")
+
+        set_args = build_parser().parse_args(
+            ["hitomi", "filenames", "set", "--mode", "original", "--json"]
+        )
+        saved = {**default_config(), "hitomiFilenameMode": "original"}
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"hitomiFilenameMode": "original"},
+                "reset": False,
+            },
+        )
+
+        fixture = Path(__file__).parent / "fixtures" / "hitomi" / "galleryinfo_1234567.js"
+        plan_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "filenames",
+                "plan",
+                "--input",
+                "1234567",
+                "--fixture",
+                str(fixture),
+                "--mode",
+                "number",
+                "--sample-limit",
+                "1",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(plan_args), 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["sample"][0]["fileName"], "0001.jpg")
+        self.assertTrue(result["sampleTruncated"])
+        self.assertFalse(result["networkRequested"])
+
     def test_hitomi_metadata_cli_keeps_external_fetch_explicit(self) -> None:
         status_args = build_parser().parse_args(
             ["hitomi", "metadata", "status", "--json"]

@@ -139,6 +139,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi metadata show --input "https://hitomi.la/manga/sample-1234567.html" --json
 .\toki-cli.cmd hitomi metadata fetch --input "https://hitomi.la/manga/sample-1234567.html" --yes --json
 .\toki-cli.cmd hitomi metadata close --json
+.\toki-cli.cmd hitomi filenames status --json
+.\toki-cli.cmd hitomi filenames set --mode number_original --json
+.\toki-cli.cmd hitomi filenames plan --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --mode number_original --sample-limit 20 --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -721,7 +724,8 @@ inspect --input URL_OR_ID --provider auto|hitomi|exhentai --json`은 외부 네�
 ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에 원문을 남기지 않으며 끝 4자리
 힌트만 표시합니다. `--show-gui`로 같은 분석기를 GUI 대화상자에서 열고 `hitomi close`로
 닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
-false`, `download: false`, `metadata: false`로 아직 연결되지 않은 범위를 명확히 표시합니다.
+false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`로 구현 범위를 명확히
+표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
@@ -749,6 +753,17 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 않습니다. 로컬 검증 화면은 `logs\hitomi-metadata-plan.png`,
 `logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`에 있습니다. 실제 공급자
 요청 검증은 사용자 승인 전에는 실행하지 않습니다.
+
+설정 스키마 v18은 Hitomi 이미지 파일명을 `original`, `number`, `number_original` 중 하나로
+저장하며 기본값은 식별성과 자연 정렬을 함께 보존하는 `0001_원본.jpg` 방식입니다. 공용
+파일명 계획은 Windows 금지 문자·예약 장치 이름·경로 구분자를 제거하고, 대소문자까지 같은
+중복 이름에는 `(2)` 카운터를 붙여 덮어쓰기를 막습니다. 숫자 자릿수는 최소 4자리이고 최대
+100,000장까지 계산하되 CLI 결과에는 요청한 최대 1,000개 샘플만 담아 대형 갤러리에서도
+출력과 GUI를 막지 않습니다. E-Hentai `gdata`처럼 원본 이름이 없는 요약에서 `original` 또는
+`number_original`을 요청하면 임의로 다른 정책으로 바꾸지 않고
+`hitomi.filename_original_missing` 오류를 냅니다. `hitomi filenames status|set|plan`과 공급자
+설정 탭이 같은 서비스를 사용하며, `plan --fixture`는 네트워크 없이 실제 저장 이름을
+미리 확인합니다. 검증 화면은 `logs\hitomi-filename-settings.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

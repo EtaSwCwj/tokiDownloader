@@ -9,12 +9,14 @@ from hitomi_provider import (
     HitomiReferenceError,
     fetch_hitomi_metadata,
     hitomi_provider_capabilities,
+    hitomi_filename_policy_snapshot,
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
     normalize_hitomi_server_priority,
+    plan_hitomi_image_filenames,
     parse_hitomi_metadata_payload,
     plan_hitomi_server,
 )
@@ -240,6 +242,80 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], 9)
         self.assertTrue(result["networkRequested"])
         self.assertNotIn("abcdef1234", repr(result))
+
+    def test_filename_modes_are_windows_safe_deterministic_and_bounded(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "1234567", FIXTURE_DIR / "galleryinfo_1234567.js"
+        )
+        self.assertEqual(default_config()["hitomiFilenameMode"], "number_original")
+        policy = hitomi_filename_policy_snapshot(default_config())
+        self.assertEqual(policy["example"], "0001_원본 이름.jpg")
+        self.assertFalse(policy["networkRequested"])
+
+        original = plan_hitomi_image_filenames(
+            metadata, mode="original", sample_limit=1
+        )
+        self.assertEqual(original["sample"][0]["fileName"], "001.jpg")
+        self.assertTrue(original["sampleTruncated"])
+        numbered = plan_hitomi_image_filenames(metadata, mode="number")
+        self.assertEqual(
+            [item["fileName"] for item in numbered["sample"]],
+            ["0001.jpg", "0002.png"],
+        )
+        combined = plan_hitomi_image_filenames(metadata)
+        self.assertEqual(combined["sample"][1]["fileName"], "0002_원본 02.png")
+
+        unsafe = {
+            "galleryId": "9",
+            "workKey": "hitomi:9",
+            "pageCount": 3,
+            "files": [
+                {"name": "../CON.jpg"},
+                {"name": "same?.jpg"},
+                {"name": "same*.jpg"},
+            ],
+        }
+        safe = plan_hitomi_image_filenames(unsafe, mode="original")
+        self.assertEqual(safe["sample"][0]["fileName"], "_CON.jpg")
+        self.assertEqual(safe["sample"][2]["fileName"], "same (2).jpg")
+        self.assertEqual(safe["collisionCount"], 1)
+        self.assertEqual(safe["sanitizedCount"], 3)
+
+    def test_original_filename_modes_require_original_names(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "https://exhentai.org/g/987654/abcdef1234/",
+            FIXTURE_DIR / "ehentai_gdata_987654.json",
+        )
+        numbered = plan_hitomi_image_filenames(
+            metadata, mode="number", sample_limit=2
+        )
+        self.assertEqual(numbered["pageCount"], 24)
+        self.assertEqual(numbered["sample"][0]["fileName"], "0001.jpg")
+        self.assertEqual(numbered["missingOriginalCount"], 24)
+        with self.assertRaises(HitomiReferenceError) as caught:
+            plan_hitomi_image_filenames(metadata, mode="original")
+        self.assertEqual(caught.exception.code, "hitomi.filename_original_missing")
+        with self.assertRaises(ValueError):
+            validate_app_setting_updates({"hitomiFilenameMode": "random"})
+        migrated = normalize_config({"configVersion": 17})
+        self.assertEqual(migrated["hitomiFilenameMode"], "number_original")
+
+    def test_large_numbered_filename_plan_returns_only_bounded_sample(self) -> None:
+        result = plan_hitomi_image_filenames(
+            {
+                "galleryId": "100000",
+                "workKey": "hitomi:100000",
+                "pageCount": 100_000,
+                "files": [],
+            },
+            mode="number",
+            sample_limit=3,
+        )
+        self.assertEqual(result["pageCount"], 100_000)
+        self.assertEqual(result["numberWidth"], 6)
+        self.assertEqual(len(result["sample"]), 3)
+        self.assertEqual(result["sample"][-1]["fileName"], "000003.jpg")
+        self.assertTrue(result["sampleTruncated"])
 
 
 if __name__ == "__main__":
