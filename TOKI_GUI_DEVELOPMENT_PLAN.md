@@ -275,6 +275,8 @@ set-concurrency --works N --images N
 
 - [x] 작품 폴더 변경 및 이동
 - [x] 폴더명 미리보기와 충돌 검사
+- [x] 전체 작품명 기반 회차 폴더와 안정 회차 ID 매핑
+- [x] 예전 숫자 접두어 회차 폴더의 안전한 이름변경 미리보기·실행
 - [x] 작품 폴더의 메타데이터 다시 생성
 - [x] 보유 회차와 누락/손상 파일 검사
 - [x] 이미지 미리보기
@@ -285,6 +287,8 @@ set-concurrency --works N --images N
 
 ```text
 move-folder --job ID --output PATH --dry-run --json
+rename-episodes --job ID --dry-run --json
+rename-episodes --job ID --execute --yes --json
 rebuild-metadata --job ID --json
 verify-files --job ID --json
 preview --job ID --episode EPISODE
@@ -296,7 +300,7 @@ cancel-conversion --job ID
 
 완료 조건:
 
-- 이동과 변환은 항상 `--dry-run`으로 예상 대상을 먼저 검증할 수 있다.
+- 이동, 회차 폴더명 정리와 변환은 항상 `--dry-run`으로 예상 대상을 먼저 검증할 수 있다.
 - 원본 삭제가 필요한 동작은 별도의 명시적 옵션과 사용자 확인 없이는 실행되지 않는다.
 - 작업 도중 실패해도 데이터베이스 경로와 실제 폴더 상태가 불일치한 채 성공 처리되지 않는다.
 
@@ -305,6 +309,28 @@ cancel-conversion --job ID
 CLI는 기본 `dry-run`이며 실제 이동에는 `--execute --yes`를 모두 요구한다. GUI 우클릭
 메뉴도 목적지 미리보기와 확인을 거친다. 임시 한글·공백 경로에서 회차 파일 보존과
 표지·메타데이터·작품 DB 경로 갱신을 자동 테스트했으며 실제 사용자 폴더는 이동하지 않았다.
+
+2026-08-08 회차 저장 계약 수정: 사이트의 `.wr-num` 게시물 순번과 목록에 이미 축약된
+회차 제목을 폴더명으로 쓰지 않고, `전체 작품명 + 실제 회차/부제`와 `0000.ext` 이미지명을
+신규 기본값으로 사용한다. 내부 완료 판정은 URL 경로 기반 source ID와 state v2
+`episodes[]` 매핑으로 분리했다. 기존 숫자 접두어 폴더와 긴 `image0000` 파일은 계속
+인식하여 재검사 때 중복 다운로드하지 않는다. 파일 검사·미리보기·중복 검사·변환·PDF는
+공용 회차 탐색기를 사용해 state v2 정확 경로, metadata 매핑, 기존 접두어 순으로 복구한다.
+`rename-episodes`와 GUI `회차 폴더명 정리...`는 전체 매핑·충돌·경로 길이를 먼저 검사하고,
+명시 실행 때 상태/메타데이터 백업과 두 단계 임시 이름, 실패 롤백을 사용한다. 자동 롤백까지
+실패하면 복구 transaction과 실제 잔존 경로를 표시하고 수동 확인 전 재실행을 차단한다. 실제 사용자
+작업 `54d3f0ed91`은 읽기 전용 계획에서 272개 대상, 충돌·중복·fallback·줄임표 0건을
+확인했다. 시스템 임시 폴더의 라이브 1건 다운로드도 `전체 제목 287화/0000.png~0007.png`,
+state v2와 272개 manifest로 완료했으며 임시 결과는 검증 후 삭제했다. 실제 사용자 작업의
+이름변경은 사용자 확인 전에는 실행하지 않는다.
+
+2026-08-08 회차 이름변경 제어 계약 보강: GUI와 CLI의 계획·실행은 I/O worker만 사용하며
+동기 control action은 제거했다. dry-run worker에는 현재 GUI 작품의 불변 snapshot만 넘겨
+`jobs.db`를 읽거나 flush하지 않고, execute만 먼저 기록을 flush한 뒤 DB 기반 서비스로
+실행한다. CLI execute 응답 timeout은 일반 실패와 구분해 작업이 백그라운드에서 계속될 수
+있음을 JSON으로 알리고 `status --json` 확인을 요구한다. 최종 manifest는 필수 필드와
+source ID·folderName 고유성을 다시 검사하며, 동일 ordinal의 identity가 모호하면 실행을
+차단한다.
 
 2026-08-07 로컬 메타데이터 재생성: 작품 DB와 `[작가][그룹] 제목` 폴더명으로 핵심
 필드를 복구하고 읽을 수 있는 기존 설명·장르 등의 확장 필드는 보존한다. 기본은

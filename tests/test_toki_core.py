@@ -6,6 +6,7 @@ import importlib.util
 import os
 import sqlite3
 import time
+import unicodedata
 import unittest
 import zipfile
 from datetime import datetime
@@ -36,6 +37,7 @@ from toki_core import (
     count_jobs,
     count_runs,
     dependency_diagnostics,
+    discover_episode_folders,
     convert_job_images,
     default_config,
     delete_job_record,
@@ -73,6 +75,7 @@ from toki_core import (
     generate_local_api_token,
     memory_usage_snapshot,
     load_run,
+    load_episode_state_manifest,
     load_runs_page,
     mark_job_cancelled,
     mark_run_cancelled,
@@ -2476,6 +2479,160 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(loaded.metadata_path, str(metadata_path.resolve()))
         self.assertEqual(loaded.author, "작가 A")
 
+    def test_manifestless_modern_folders_recover_in_natural_order_and_report_missing_state(
+        self,
+    ) -> None:
+        workspace = Path(self.temp_dir.name)
+        work_title = "복구 작품"
+        output = workspace / "마나토끼" / "[작가][그룹] 다른 루트 제목"
+        folder_names = [
+            f"{work_title} 1~5화",
+            f"{work_title} 141.5화",
+            f"{work_title} 287화",
+        ]
+        valid_jpeg = b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        for folder_name in folder_names:
+            episode = output / folder_name
+            episode.mkdir(parents=True)
+            (episode / "0000.jpg").write_bytes(valid_jpeg)
+
+        unrelated = output / "사용자 메모"
+        unrelated.mkdir()
+        (unrelated / "0000.jpg").write_bytes(valid_jpeg)
+        prefixed_without_image = output / f"{work_title} 이미지 없는 메모"
+        prefixed_without_image.mkdir()
+        (prefixed_without_image / "note.txt").write_text("memo", encoding="utf-8")
+        (output / "metadata.json").write_text(
+            json.dumps(
+                {"title": unicodedata.normalize("NFD", work_title)},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="manifestless-modern-recovery",
+            url="https://newtoki1.org/manhwa/7400",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        discovered = discover_episode_folders(output)
+        self.assertEqual([entry.number for entry in discovered], [1, 2, 3])
+        self.assertEqual([entry.folder_name for entry in discovered], folder_names)
+        self.assertEqual(
+            [entry.display_title for entry in discovered],
+            folder_names,
+        )
+        self.assertTrue(
+            all(entry.discovery == "modern-recovery" for entry in discovered)
+        )
+        self.assertTrue(all(entry.number_inferred for entry in discovered))
+        self.assertEqual(len({entry.number for entry in discovered}), 3)
+        self.assertNotIn(unrelated.resolve(), {entry.path for entry in discovered})
+        self.assertNotIn(
+            prefixed_without_image.resolve(),
+            {entry.path for entry in discovered},
+        )
+
+        verification = verify_job_files(job.job_id)
+        self.assertFalse(verification["healthy"])
+        self.assertEqual(verification["summary"]["episodeFolders"], 3)
+        self.assertEqual(verification["summary"]["images"], 3)
+        self.assertIn(
+            "state_missing",
+            {issue["kind"] for issue in verification["issues"]},
+        )
+
+    def test_metadata_rebuild_persists_modern_recovery_when_both_manifests_are_damaged(
+        self,
+    ) -> None:
+        workspace = Path(self.temp_dir.name)
+        work_title = "루트 복구 작품"
+        output = workspace / "마나토끼" / f"[작가][그룹] {work_title}"
+        folder_names = [
+            f"{work_title} 1~5화",
+            f"{work_title} 141.5화",
+            f"{work_title} 287화",
+        ]
+        valid_png = b"\x89PNG\r\n\x1a\n" + b"image" + b"IEND"
+        for folder_name in folder_names:
+            episode = output / folder_name
+            episode.mkdir(parents=True)
+            (episode / "0000.png").write_bytes(valid_png)
+        unrelated = output / "임의 사용자 폴더"
+        unrelated.mkdir()
+        (unrelated / "0000.png").write_bytes(valid_png)
+        metadata_path = output / "metadata.json"
+        metadata_path.write_text(
+            json.dumps({"episodes": {"broken": True}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": [1, 2, 3],
+                    "episodes": "broken",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="damaged-manifest-modern-recovery",
+            url="https://newtoki1.org/manhwa/7401",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        preview = plan_metadata_rebuild(job.job_id)
+        self.assertEqual(preview["episodeFolderCount"], 3)
+        self.assertEqual(preview["recoveredEpisodeCount"], 3)
+        self.assertEqual(
+            [episode["number"] for episode in preview["metadata"]["episodes"]],
+            [1, 2, 3],
+        )
+        self.assertTrue(
+            all(
+                episode.get("numberInferred") is True
+                for episode in preview["metadata"]["episodes"]
+            )
+        )
+        self.assertEqual(
+            [episode["folderName"] for episode in preview["metadata"]["episodes"]],
+            folder_names,
+        )
+        self.assertEqual(
+            [episode["displayTitle"] for episode in preview["metadata"]["episodes"]],
+            folder_names,
+        )
+        self.assertNotIn(
+            unrelated.name,
+            {episode["folderName"] for episode in preview["metadata"]["episodes"]},
+        )
+
+        result = rebuild_job_metadata(job.job_id)
+        rebuilt = json.loads(metadata_path.read_text(encoding="utf-8"))
+        self.assertTrue(result["executed"])
+        self.assertEqual(
+            [episode["folderName"] for episode in rebuilt["episodes"]],
+            folder_names,
+        )
+        self.assertTrue(
+            all(episode.get("numberInferred") is True for episode in rebuilt["episodes"])
+        )
+        rediscovered = discover_episode_folders(output)
+        self.assertEqual(
+            [entry.folder_name for entry in rediscovered],
+            folder_names,
+        )
+        self.assertTrue(all(entry.discovery == "metadata" for entry in rediscovered))
+        self.assertTrue(all(entry.number_inferred for entry in rediscovered))
+
     def test_file_verification_reports_healthy_episode_and_image_inventory(self) -> None:
         workspace = Path(self.temp_dir.name)
         output = workspace / "마나토끼" / "[작가][그룹] 정상 작품"
@@ -2505,6 +2662,529 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(result["summary"]["episodeFolders"], 2)
         self.assertEqual(result["summary"]["images"], 2)
         self.assertEqual(result["summary"]["issueCount"], 0)
+
+    def test_state_v2_discovers_full_title_folders_for_all_file_consumers(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 신형 작품"
+        folder_names = ["신형 작품 전체 제목 1화", "신형 작품 전체 제목 2화"]
+        valid_jpeg = b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        for folder_name in folder_names:
+            episode = output / folder_name
+            episode.mkdir(parents=True)
+            (episode / "0000.jpg").write_bytes(valid_jpeg)
+        episodes = [
+            {
+                "number": number,
+                "sourceId": f"/manhwa/7000/episode-{number}",
+                "sourceUrl": f"https://newtoki1.org/manhwa/7000/episode-{number}",
+                "sourceTitle": f"신형 작품 전체 제목 {number}화",
+                "displayTitle": f"신형 작품 전체 제목 {number}화",
+                "folderName": folder_name,
+            }
+            for number, folder_name in enumerate(folder_names, start=1)
+        ]
+        (output / "metadata.json").write_text(
+            json.dumps({"episodes": episodes}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": [1, 2],
+                    "completedEpisodeIds": [
+                        "/manhwa/7000/episode-1",
+                        "/manhwa/7000/episode-2",
+                    ],
+                    "episodes": episodes,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="state-v2-folders",
+            url="https://newtoki1.org/manhwa/7000",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        manifest = load_episode_state_manifest(output)
+        discovered = discover_episode_folders(output, manifest)
+        self.assertTrue(manifest.valid)
+        self.assertEqual(manifest.version, 2)
+        self.assertEqual([entry.number for entry in discovered], [1, 2])
+        self.assertEqual([entry.folder_name for entry in discovered], folder_names)
+        self.assertTrue(all(entry.discovery == "manifest" for entry in discovered))
+
+        verification = verify_job_files(job.job_id)
+        self.assertTrue(verification["healthy"])
+        self.assertEqual(verification["summary"]["episodeFolders"], 2)
+        self.assertEqual(verification["summary"]["images"], 2)
+        self.assertEqual(verification["state"]["version"], 2)
+        self.assertEqual(verification["state"]["manifestEpisodes"], 2)
+
+        preview = list_job_episode_images(job.job_id, 2)
+        self.assertEqual(preview["episode"], 2)
+        self.assertEqual(preview["availableEpisodes"], [1, 2])
+        self.assertEqual(Path(preview["episodeFolders"][0]).name, folder_names[1])
+        self.assertEqual([image["name"] for image in preview["images"]], ["0000.jpg"])
+
+        conversion = plan_image_conversion(job.job_id, "webp")
+        self.assertEqual(conversion["sourceCount"], 2)
+        self.assertEqual(
+            {Path(item["source"]).parent.name for item in conversion["sample"]},
+            set(folder_names),
+        )
+        pdf = plan_job_pdf_generation(job.job_id)
+        self.assertEqual(pdf["episodeFolderCount"], 2)
+        self.assertEqual(pdf["episodeCount"], 2)
+        self.assertEqual(pdf["sourceCount"], 2)
+
+    def test_state_v2_uses_legacy_numbered_folder_when_exact_folder_is_missing(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 이전 자료"
+        legacy = output / "0001 축약된 이전 제목"
+        legacy.mkdir(parents=True)
+        (legacy / "image0000.jpg").write_bytes(
+            b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        )
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": [1],
+                    "episodes": [
+                        {
+                            "number": 1,
+                            "sourceId": "",
+                            "sourceUrl": "",
+                            "sourceTitle": "",
+                            "displayTitle": "전체 제목 1화",
+                            "folderName": "전체 제목 1화",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="state-v2-legacy-fallback",
+            url="https://newtoki1.org/manhwa/7001",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        manifest = load_episode_state_manifest(output)
+        discovered = discover_episode_folders(output, manifest)
+        self.assertTrue(manifest.valid)
+        self.assertEqual(len(discovered), 1)
+        self.assertEqual(discovered[0].path, legacy.resolve())
+        self.assertEqual(discovered[0].discovery, "legacy-fallback")
+        self.assertTrue(verify_job_files(job.job_id)["healthy"])
+
+    def test_episode_discovery_keeps_state_v1_numbered_folder_compatibility(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] v1 자료"
+        folders = [output / "0001 첫 회차", output / "0002 둘째 회차"]
+        for folder in folders:
+            folder.mkdir(parents=True)
+        (output / ".toki-state.json").write_text(
+            json.dumps({"version": 1, "completedEpisodes": [1, 2]}),
+            encoding="utf-8",
+        )
+
+        manifest = load_episode_state_manifest(output)
+        discovered = discover_episode_folders(output, manifest)
+        self.assertTrue(manifest.valid)
+        self.assertEqual(manifest.version, 1)
+        self.assertEqual([entry.number for entry in discovered], [1, 2])
+        self.assertEqual([entry.path for entry in discovered], [
+            folder.resolve() for folder in folders
+        ])
+        self.assertTrue(all(entry.discovery == "legacy" for entry in discovered))
+
+    def test_state_v2_exact_folder_keeps_leftover_legacy_duplicate_visible(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 중복 자료"
+        exact = output / "전체 제목 1화"
+        legacy = output / "0001 축약 제목"
+        for folder in (exact, legacy):
+            folder.mkdir(parents=True)
+            (folder / "image0000.jpg").write_bytes(
+                b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+            )
+        episodes = [
+            {
+                "number": 1,
+                "sourceId": "",
+                "sourceUrl": "",
+                "sourceTitle": "",
+                "displayTitle": "전체 제목 1화",
+                "folderName": exact.name,
+            }
+        ]
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {"version": 2, "completedEpisodes": [1], "episodes": episodes},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="state-v2-duplicate",
+            url="https://newtoki1.org/manhwa/7002",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        discovered = discover_episode_folders(output)
+        self.assertEqual([entry.path for entry in discovered], [exact.resolve(), legacy.resolve()])
+        result = verify_job_files(job.job_id)
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["summary"]["episodeFolders"], 2)
+        self.assertEqual(result["summary"]["duplicateEpisodes"], 1)
+
+    def test_invalid_state_uses_metadata_episode_manifest_for_discovery(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 메타데이터 복구"
+        exact = output / "메타데이터 전체 제목 1화"
+        exact.mkdir(parents=True)
+        (exact / "image0000.jpg").write_bytes(
+            b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        )
+        episodes = [
+            {
+                "number": 1,
+                "sourceId": "",
+                "sourceUrl": "",
+                "sourceTitle": "",
+                "displayTitle": exact.name,
+                "folderName": exact.name,
+            }
+        ]
+        (output / "metadata.json").write_text(
+            json.dumps({"episodes": episodes}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (output / ".toki-state.json").write_text("not-json", encoding="utf-8")
+        job = DownloadJob(
+            job_id="metadata-manifest-fallback",
+            url="https://newtoki1.org/manhwa/7003",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        discovered = discover_episode_folders(output)
+        self.assertEqual(len(discovered), 1)
+        self.assertEqual(discovered[0].path, exact.resolve())
+        self.assertEqual(discovered[0].discovery, "metadata")
+        result = verify_job_files(job.job_id)
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["summary"]["episodeFolders"], 1)
+        self.assertEqual(result["summary"]["images"], 1)
+        self.assertEqual(result["summary"]["missingEpisodes"], 0)
+        self.assertEqual(result["issues"][0]["kind"], "state_invalid")
+
+    def test_partial_state_v2_keeps_all_declared_nonprefixed_folders_discoverable(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 부분 손상 작품"
+        valid_jpeg = b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        episodes = []
+        expected_paths = set()
+        for number in range(1, 273):
+            folder_name = f"부분 손상 작품 전체 제목 {number}화"
+            folder = output / folder_name
+            folder.mkdir(parents=True)
+            (folder / "0000.jpg").write_bytes(valid_jpeg)
+            expected_paths.add(folder.resolve())
+            episodes.append(
+                {
+                    "number": number,
+                    "sourceId": f"/manhwa/7100/episode-{number}",
+                    "sourceUrl": f"https://newtoki1.org/manhwa/7100/episode-{number}",
+                    "sourceTitle": folder_name,
+                    "displayTitle": folder_name,
+                    "folderName": folder_name,
+                }
+            )
+        episodes[49].pop("number")
+        episodes[99]["number"] = 99
+        episodes[149].pop("folderName")
+        unrelated = output / "사용자 메모"
+        unrelated.mkdir()
+        (unrelated / "0000.jpg").write_bytes(valid_jpeg)
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": list(range(1, 273)),
+                    "completedEpisodeIds": [
+                        *(f"/manhwa/7100/episode-{number}" for number in range(1, 273)),
+                        "/manhwa/7100/not-in-manifest",
+                    ],
+                    "episodes": episodes,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="partial-state-v2",
+            url="https://newtoki1.org/manhwa/7100",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        manifest = load_episode_state_manifest(output)
+        discovered = discover_episode_folders(output, manifest)
+        self.assertFalse(manifest.valid)
+        self.assertEqual(len(manifest.episodes), 272)
+        self.assertEqual(len(discovered), 272)
+        self.assertEqual({entry.path for entry in discovered}, expected_paths)
+        self.assertNotIn(unrelated.resolve(), {entry.path for entry in discovered})
+        self.assertGreaterEqual(
+            sum(not episode.record_valid for episode in manifest.episodes),
+            2,
+        )
+
+        result = verify_job_files(job.job_id)
+        self.assertFalse(result["healthy"])
+        self.assertFalse(result["state"]["valid"])
+        self.assertEqual(result["summary"]["episodeFolders"], 272)
+        self.assertEqual(result["summary"]["images"], 272)
+        self.assertIn("state_invalid", {issue["kind"] for issue in result["issues"]})
+        self.assertEqual(result["summary"]["duplicateEpisodes"], 0)
+        self.assertEqual(result["summary"]["uniqueEpisodes"], 272)
+        self.assertEqual(result["missingEpisodes"], [])
+        self.assertEqual(
+            result["missingEpisodeIds"],
+            ["/manhwa/7100/not-in-manifest"],
+        )
+
+    def test_partial_metadata_manifest_recovers_only_named_episode_folders(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] metadata 부분 복구"
+        folder_names = [f"metadata 전체 제목 {number}화" for number in range(1, 4)]
+        for folder_name in folder_names:
+            (output / folder_name).mkdir(parents=True)
+        unrelated = output / "임의 생성 폴더"
+        unrelated.mkdir()
+        episodes = [
+            {
+                "number": number,
+                "sourceId": "",
+                "sourceUrl": "",
+                "sourceTitle": folder_name,
+                "displayTitle": folder_name,
+                "folderName": folder_name,
+            }
+            for number, folder_name in enumerate(folder_names, start=1)
+        ]
+        episodes[1].pop("number")
+        episodes[1].pop("folderName")
+        (output / "metadata.json").write_text(
+            json.dumps({"episodes": episodes}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        discovered = discover_episode_folders(output)
+        self.assertEqual([entry.number for entry in discovered], [1, 2, 3])
+        self.assertEqual({entry.path.name for entry in discovered}, set(folder_names))
+        self.assertNotIn(unrelated.resolve(), {entry.path for entry in discovered})
+        recovered = next(entry for entry in discovered if entry.number == 2)
+        self.assertEqual(recovered.discovery, "metadata-recovery")
+
+    def test_state_v2_allows_reused_ordinal_with_distinct_episode_identities(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 순번 재사용 작품"
+        folder_names = ["순번 재사용 작품 구판 7화", "순번 재사용 작품 신판 7화"]
+        valid_jpeg = b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        episodes = []
+        for edition, folder_name in zip(("old", "new"), folder_names):
+            folder = output / folder_name
+            folder.mkdir(parents=True)
+            (folder / "0000.jpg").write_bytes(valid_jpeg)
+            episodes.append(
+                {
+                    "number": 7,
+                    "sourceId": f"/manhwa/7200/{edition}-episode-7",
+                    "sourceUrl": f"https://newtoki1.org/manhwa/7200/{edition}-episode-7",
+                    "sourceTitle": folder_name,
+                    "displayTitle": folder_name,
+                    "folderName": folder_name,
+                }
+            )
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": [7],
+                    "completedEpisodeIds": [episode["sourceId"] for episode in episodes],
+                    "episodes": episodes,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="reused-ordinal-v2",
+            url="https://newtoki1.org/manhwa/7200",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        manifest = load_episode_state_manifest(output)
+        discovered = discover_episode_folders(output, manifest)
+        self.assertTrue(manifest.valid)
+        self.assertEqual([entry.number for entry in discovered], [7, 7])
+        self.assertEqual({entry.source_id for entry in discovered}, {
+            episode["sourceId"] for episode in episodes
+        })
+        result = verify_job_files(job.job_id)
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["summary"]["episodeFolders"], 2)
+        self.assertEqual(result["summary"]["uniqueEpisodes"], 2)
+        self.assertEqual(result["summary"]["expectedEpisodes"], 2)
+        self.assertEqual(result["summary"]["duplicateEpisodes"], 0)
+
+    def test_state_v2_partial_ids_verify_idless_completed_and_untracked_folders(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 부분 ID 작품"
+        valid_jpeg = b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        identified_folder = output / "부분 ID 작품 1화"
+        untracked_folder = output / "부분 ID 작품 3화"
+        for folder in (identified_folder, untracked_folder):
+            folder.mkdir(parents=True)
+            (folder / "0000.jpg").write_bytes(valid_jpeg)
+        episodes = [
+            {
+                "number": 1,
+                "sourceId": "/manhwa/7300/episode-1",
+                "sourceUrl": "https://newtoki1.org/manhwa/7300/episode-1",
+                "sourceTitle": identified_folder.name,
+                "displayTitle": identified_folder.name,
+                "folderName": identified_folder.name,
+            },
+            {
+                "number": 2,
+                "sourceId": "",
+                "sourceUrl": "",
+                "sourceTitle": "부분 ID 작품 2화",
+                "displayTitle": "부분 ID 작품 2화",
+                "folderName": "부분 ID 작품 2화",
+            },
+            {
+                "number": 3,
+                "sourceId": "",
+                "sourceUrl": "",
+                "sourceTitle": untracked_folder.name,
+                "displayTitle": untracked_folder.name,
+                "folderName": untracked_folder.name,
+            },
+        ]
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": [1, 2],
+                    "completedEpisodeIds": ["/manhwa/7300/episode-1"],
+                    "episodes": episodes,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="partial-id-verification",
+            url="https://newtoki1.org/manhwa/7300",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        result = verify_job_files(job.job_id)
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["missingEpisodes"], [2])
+        self.assertEqual(result["missingEpisodeIds"], [])
+        self.assertEqual(result["untrackedEpisodes"], [3])
+        self.assertEqual(result["untrackedEpisodeIds"], [])
+        self.assertEqual(result["summary"]["expectedEpisodes"], 2)
+        self.assertEqual(result["summary"]["missingEpisodes"], 1)
+        self.assertEqual(result["summary"]["untrackedEpisodes"], 1)
+
+    def test_state_v2_partial_ids_keep_idless_identity_at_a_reused_ordinal(self) -> None:
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] 혼합 ID 작품"
+        identified_folder = output / "혼합 ID 작품 정식 7화"
+        identified_folder.mkdir(parents=True)
+        (identified_folder / "0000.jpg").write_bytes(
+            b"\xff\xd8\xff" + b"image" + b"\xff\xd9"
+        )
+        episodes = [
+            {
+                "number": 7,
+                "sourceId": "/manhwa/7301/identified-7",
+                "sourceUrl": "https://newtoki1.org/manhwa/7301/identified-7",
+                "sourceTitle": identified_folder.name,
+                "displayTitle": identified_folder.name,
+                "folderName": identified_folder.name,
+            },
+            {
+                "number": 7,
+                "sourceId": "",
+                "sourceUrl": "",
+                "sourceTitle": "혼합 ID 작품 이전 7화",
+                "displayTitle": "혼합 ID 작품 이전 7화",
+                "folderName": "혼합 ID 작품 이전 7화",
+            },
+        ]
+        (output / "metadata.json").write_text("{}", encoding="utf-8")
+        (output / ".toki-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "completedEpisodes": [7],
+                    "completedEpisodeIds": ["/manhwa/7301/identified-7"],
+                    "episodes": episodes,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = DownloadJob(
+            job_id="partial-id-reused-ordinal",
+            url="https://newtoki1.org/manhwa/7301",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        result = verify_job_files(job.job_id)
+        self.assertEqual(result["missingEpisodes"], [7])
+        self.assertEqual(result["missingEpisodeIds"], [])
+        self.assertEqual(result["summary"]["expectedEpisodes"], 2)
+        self.assertEqual(result["summary"]["missingEpisodes"], 1)
 
     def test_file_verification_detects_missing_empty_and_invalid_images(self) -> None:
         workspace = Path(self.temp_dir.name)

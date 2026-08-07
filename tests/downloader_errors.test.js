@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyDownloaderError } from '../downloader_errors.js';
+import {
+    classifyDownloaderError,
+    createDownloaderError,
+} from '../downloader_errors.js';
 
 
 test('Cloudflare and challenge pages require authentication without blind retry', () => {
@@ -26,4 +29,24 @@ test('rate limits and filesystem errors remain distinct', () => {
     const filesystem = classifyDownloaderError(new Error('EACCES: permission denied'));
     assert.equal(filesystem.category, 'filesystem');
     assert.equal(filesystem.retryable, false);
+});
+
+
+test('structured terminal errors keep their code, diagnostics, and retry policy', () => {
+    const error = createDownloaderError('회차 제목 확인 불가', {
+        errorCode: 'unsafe_episode_title',
+        category: 'site_structure',
+        retryable: false,
+        diagnostics: { reason: 'empty_source_title', siteOrdinal: 12 },
+        suggestion: '사이트 목록 DOM을 확인하세요.',
+    });
+    const result = classifyDownloaderError(error);
+    assert.equal(result.errorCode, 'unsafe_episode_title');
+    assert.equal(result.category, 'site_structure');
+    assert.equal(result.retryable, false);
+    assert.deepEqual(result.diagnostics, {
+        reason: 'empty_source_title',
+        siteOrdinal: 12,
+    });
+    assert.match(result.suggestion, /DOM/);
 });

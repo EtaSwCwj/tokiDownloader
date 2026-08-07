@@ -279,6 +279,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd open-folder --job 작업ID
 .\toki-cli.cmd move-folder --job 작업ID --output "E:\Manga" --dry-run --json
 .\toki-cli.cmd move-folder --job 작업ID --output "E:\Manga" --execute --yes --json
+.\toki-cli.cmd rename-episodes --job 작업ID --dry-run --json
+.\toki-cli.cmd rename-episodes --job 작업ID --execute --yes --json
 .\toki-cli.cmd rebuild-metadata --job 작업ID --dry-run --json
 .\toki-cli.cmd rebuild-metadata --job 작업ID --execute --yes --json
 .\toki-cli.cmd verify-files --job 작업ID --json
@@ -1012,6 +1014,10 @@ Windows 전원 관리 옵션이나 레지스트리는 변경하지 않습니다.
 다운로더 오류는 `인증 필요`, `요청 제한`, `네트워크`, `사이트 구조 변경`,
 `파일 시스템`, `기타`로 분류되어 작품 행과 실행 이력에 저장됩니다. Cloudflare 확인,
 CAPTCHA와 HTTP 403은 `인증 필요`로 끝내고 무의미한 자동 재시도를 하지 않습니다.
+Windows 안전 길이를 넘는 신규 회차 경로는 `path_too_long` 파일 시스템 오류로,
+사이트 목록에 실제 회차명이 없는 행은 `unsafe_episode_title` 사이트 구조 오류로
+중단하며 둘 다 자동 재시도하지 않습니다. 긴 전체 경로는 제목을 임의로 자르지 않고
+더 짧은 `-output` 경로를 안내합니다.
 `run-info --run 실행ID`로 분류와 자동 재시도 가능 여부를 확인할 수 있습니다.
 
 `move-folder`는 새 저장 루트 아래에 기존 사이트 폴더와 작품 폴더명을 유지한 목적지를
@@ -1021,17 +1027,50 @@ CAPTCHA와 HTTP 403은 `인증 필요`로 끝내고 무의미한 자동 재시�
 있거나 작품이 실행 중이면 이동하지 않습니다. 파일 이동이 끝난 뒤에만 작품 기록의
 저장 루트·표지·메타데이터 경로를 갱신하고, 기록 저장이 실패하면 원위치 복구를 시도합니다.
 
+`rename-episodes`는 예전의 `0001 + 사이트 축약 제목` 회차 폴더를
+`전체 작품명 + 실제 회차/부제` 형식으로 정리합니다. 기본 동작과 `--dry-run`은 1건도
+변경하지 않고 전체 매핑, 중복, 기존 목적지와 경로 길이를 검사합니다. Windows 경로는
+UTF-16 code unit 기준으로 회차 폴더명 240, 전체 목적지 248을 안전 상한으로 사용합니다.
+실제 변경에는
+`--execute --yes`가 모두 필요하며, 두 단계 임시 이름을 거쳐 전부 성공한 경우에만 state v2와
+`metadata.json`의 회차 매핑을 기록합니다. 상태와 메타데이터는 먼저 별도 `.bak` 파일로
+백업하고 실패 시 폴더와 JSON의 원위치 복구를 시도합니다. 원위치 복구까지 실패하면
+`.toki-episode-rename-*.json` 복구 기록과 남은 원본·임시·대상 경로를 dry-run JSON에
+표시하고, 사용자가 해당 경로를 확인하기 전에는 다음 실행을 차단합니다. 이미지 파일 내용과
+이름은 건드리지 않습니다. GUI에서는 작품 우클릭
+`파일 및 회차 도구 > 회차 폴더명 정리...`에서 같은 미리보기와 확인 절차를 사용합니다.
+manifest에 없는 숫자 접두어 폴더는 구형 `image####` 파일 증거가 있어야 이관 대상으로
+인정하므로 `2024 개인 메모` 같은 일반 폴더를 회차로 추측하지 않습니다. 오래된 같은 순번
+record도 원본 제목이 일치할 때만 source ID를 승계합니다. state 또는 명시 완료 목록이 없으면
+폴더 존재만으로 완료를 만들지 않고 다음 검사에서 보수적으로 다시 확인합니다.
+GUI가 켜진 상태의 dry-run은 화면에 있는 작품 정보를 불변 snapshot으로 복사해 worker에
+전달하므로 `jobs.db`를 flush하거나 갱신하지 않습니다. 실제 `--execute --yes`만 먼저 작품
+기록을 저장한 뒤 DB 경로를 다시 읽어 실행합니다. 실행 응답 제한 시간을 넘긴 경우에도
+worker는 백그라운드에서 계속될 수 있습니다. CLI JSON의 `operationMayContinue`가 `true`이면
+반복 실행하지 말고 `toki-cli.cmd status --json`의 `episodeFolderRenames`를 먼저 확인하세요.
+실제 이름 변경 중에는 job ID, 작품 ID와 정규화한 저장 경로를 함께 잠그므로 같은 작품의
+다운로드·재검사·폴더 이동·메타데이터 쓰기·변환·PDF 작업을 GUI와 CLI 양쪽에서 차단합니다.
+
 `rebuild-metadata`는 사이트에 접속하지 않고 작품 DB, 현재 폴더명과 읽을 수 있는 기존
 `metadata.json`을 합쳐 로컬 메타데이터를 다시 만듭니다. 기본 동작은 미리보기이며 실제
 쓰기는 `--execute --yes`가 모두 필요합니다. 기존 파일은 `metadata.json.bak`으로 먼저
 백업하고 임시 파일을 완성한 뒤 원자적으로 교체합니다. 설명·장르·연재 상태처럼 기존에만
 있는 값은 보존하며, 손상된 파일은 DB와 `[작가][그룹] 제목` 폴더명에서 핵심 필드를
-복구합니다. GUI에서는 작품 우클릭 `로컬 메타데이터 재생성...`에서 같은 기능을 확인 후
-실행할 수 있습니다.
+복구합니다. state와 metadata의 `episodes[]`가 없거나 손상됐을 때도 전체 작품명으로
+시작하고 지원 이미지가 직접 들어 있는 새 형식 회차 폴더만 보수적으로 찾아, 실제 폴더명과
+표시명을 보존한 `episodes[]`를 다시 기록합니다. 이때 임시 복구 순번은
+`numberInferred: true`로 남기며, 다음 사이트 검사에서 유일한 전체 회차명이 일치할 때 실제
+순번과 source ID로 승격합니다. GUI에서는 작품 우클릭
+`로컬 메타데이터 재생성...`에서 같은 기능을 확인 후 실행할 수 있습니다.
 
 `verify-files`는 작품 폴더를 변경하지 않는 읽기 전용 검사입니다. 완료 상태 대비 누락
 회차, 같은 번호의 중복 폴더, 이미지가 없는 회차, 0바이트 파일, JPG·PNG·WebP·GIF·BMP·
 AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`을 구분해 반환합니다.
+회차 폴더가 있는데 `.toki-state.json`이 없으면 `state_missing` 문제로 보고해 정상으로
+오판하지 않습니다.
+전체 재검사에서도 기존 이미지는 확장자·signature와 JPEG/PNG 종단 표식이 유효할 때만
+건너뜁니다. 0바이트, 잘린 파일 또는 HTML 응답은 새 버퍼를 검증한 뒤 원자 교체하며,
+페이지에서 유효 이미지가 0개면 해당 회차를 완료 상태로 기록하지 않습니다.
 문제가 없으면 종료 코드 0, 문제가 발견되면 결과 JSON을 출력한 뒤 종료 코드 2를 사용합니다.
 `--issue-limit`으로 상세 문제 배열 크기를 제한할 수 있어 수천 파일에서도 출력이 무한히
 커지지 않습니다. GUI 우클릭 `보유 회차·파일 검사`와 `--show-gui`는 같은 CLI 검사를 별도
@@ -1153,31 +1192,33 @@ https://github.com/user-attachments/assets/86c17334-c96c-48d2-bfdb-31072766030c
 뉴토끼/
 ├─ [작가][그룹] 웹툰이름1/
 │   ├─ metadata.json
-│   ├─ 0001 어떤웹툰-1화/
-│   │   ├─ 0001 어떤웹툰-1화 image0000.jpg
-│   │   ├─ 0001 어떤웹툰-1화 image0001.jpg
+│   ├─ .toki-state.json
+│   ├─ 웹툰이름1 1화/
+│   │   ├─ 0000.jpg
+│   │   ├─ 0001.jpg
 │   │   ...
-│   │   └─ 0001 어떤웹툰-1화 image0024.jpg
-│   └─ 0002 어떤웹툰-2화/
-│       ├─ 0002 어떤웹툰-2화 image0000.jpg
-│       ├─ 0002 어떤웹툰-2화 image0001.jpg
+│   │   └─ 0024.jpg
+│   └─ 웹툰이름1 2화/
+│       ├─ 0000.jpg
+│       ├─ 0001.jpg
 │       ...
-│       └─ 0002 어떤웹툰-2화 image0020.jpg
+│       └─ 0020.jpg
 └─ 웹툰이름2/
 
 마나토끼/
 ├─ [작가][N／A] 만화이름1/
 │   ├─ metadata.json
-│   ├─ 0001 어떤만화-1화/
-│   │   ├─ 0001 어떤만화-1화 image0000.jpg
-│   │   ├─ 0001 어떤만화-1화 image0001.jpg
+│   ├─ .toki-state.json
+│   ├─ 만화이름1 1화/
+│   │   ├─ 0000.jpg
+│   │   ├─ 0001.jpg
 │   │   ...
-│   │   └─ 0001 어떤만화-1화 image0015.jpg
-│   └─ 0002 어떤만화-2화/
-│       ├─ 0002 어떤만화-2화 image0000.jpg
-│       ├─ 0002 어떤만화-2화 image0001.jpg
+│   │   └─ 0015.jpg
+│   └─ 만화이름1 2화/
+│       ├─ 0000.jpg
+│       ├─ 0001.jpg
 │       ...
-│       └─ 0002 어떤만화-2화 image0032.jpg
+│       └─ 0032.jpg
 └─ 만화이름2/
 
 북토끼/

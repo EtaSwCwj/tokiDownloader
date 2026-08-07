@@ -3,13 +3,32 @@ import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { ProxyAgent } from 'proxy-agent';
-import { selectEpisodeLinks } from './downloader_policy.js';
+import {
+    episodeStateUsesStableIds,
+    normalizeAndSortEpisodeLinks,
+    requireEpisodeImages,
+    resolveEpisodeCompletion,
+    selectEpisodeLinks,
+    validateImageBuffer,
+} from './downloader_policy.js';
 import { classifyDownloaderError } from './downloader_errors.js';
 import {
     DEFAULT_FOLDER_TEMPLATE,
+    buildInferredEpisodeTitleIndex,
+    buildEpisodeManifestRecord,
+    canReuseLegacyEpisodeFolder,
+    episodeRecordFolderCandidates,
+    episodeSourceTitlesMatch,
+    findUniqueInferredEpisodeMatch,
+    isLegacyEpisodeFolderCandidate,
+    mergeEpisodeManifestRecords,
     renderFolderTemplate,
     sanitizePathSegment,
+    uniqueEpisodeFolderName,
+    validateEpisodeDestinationPath,
 } from './downloader_naming.js';
 import {
     GlobalBandwidthLimiter,
@@ -272,42 +291,300 @@ function getContentPath() {
 function completionStatePath() {
     return path.join(getContentPath(), '.toki-state.json');
 }
-function physicalEpisodeNumbers() {
+function contentEntries() {
     const contentPath = getContentPath();
     if (!fs.existsSync(contentPath))
-        return new Set();
-    const episodes = new Set();
-    for (const entry of fs.readdirSync(contentPath, { withFileTypes: true })) {
-        const matched = entry.name.match(/^0*(\d+)(?:\s|$)/);
-        if (matched)
-            episodes.add(parseInt(matched[1]));
-    }
-    return episodes;
+        return [];
+    return fs.readdirSync(contentPath, { withFileTypes: true });
 }
-function loadCompletedEpisodeNumbers() {
-    const physical = physicalEpisodeNumbers();
+function loadEpisodeState() {
     const statePath = completionStatePath();
-    if (!fs.existsSync(statePath))
-        return physical;
+    if (!fs.existsSync(statePath)) {
+        return {
+            exists: false,
+            version: 2,
+            completedEpisodes: [],
+            completedEpisodeIds: [],
+            completedEpisodeIdsPresent: false,
+            episodes: [],
+        };
+    }
     try {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-        return new Set((state.completedEpisodes || [])
-            .map(Number)
-            .filter(number => Number.isInteger(number) && physical.has(number)));
+        return {
+            exists: true,
+            version: Number.parseInt(state.version) || 1,
+            completedEpisodes: Array.isArray(state.completedEpisodes)
+                ? state.completedEpisodes.map(Number).filter(Number.isInteger)
+                : [],
+            completedEpisodeIds: Array.isArray(state.completedEpisodeIds)
+                ? state.completedEpisodeIds.map(String).filter(Boolean)
+                : [],
+            completedEpisodeIdsPresent: Object.prototype.hasOwnProperty.call(
+                state,
+                'completedEpisodeIds',
+            ),
+            episodes: Array.isArray(state.episodes)
+                ? mergeEpisodeManifestRecords([], state.episodes)
+                : [],
+        };
     }
     catch (error) {
         console.log(`회차 완료 상태 읽기 실패, 기존 파일로 복구: ${error.message || error}`);
-        return physical;
+        return {
+            exists: false,
+            version: 2,
+            completedEpisodes: [],
+            completedEpisodeIds: [],
+            completedEpisodeIdsPresent: false,
+            episodes: [],
+        };
     }
 }
-function saveCompletedEpisodeNumbers(completedEpisodes) {
+function loadEpisodeMetadataManifest() {
+    const metadataPath = path.join(getContentPath(), 'metadata.json');
+    if (!fs.existsSync(metadataPath))
+        return [];
+    try {
+        const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        return Array.isArray(metadata?.episodes)
+            ? mergeEpisodeManifestRecords([], metadata.episodes)
+            : [];
+    }
+    catch (error) {
+        console.log(`기존 메타데이터 회차 목록 읽기 실패: ${error.message || error}`);
+        return [];
+    }
+}
+function legacyEpisodeFolderName(
+    number,
+    entries = contentEntries(),
+    currentSourceTitle = '',
+    previousEpisodes = [],
+    sourceId = '',
+) {
+    const normalizedNumber = Number(number);
+    if (!Number.isSafeInteger(normalizedNumber) || normalizedNumber <= 0)
+        return '';
+    const prefixPattern = new RegExp(`^0*${normalizedNumber}(?:\\s|$)`);
+    return entries
+        .filter(entry => {
+            if (!entry.isDirectory() || !prefixPattern.test(entry.name))
+                return false;
+            if (!episodeSourceTitlesMatch(currentSourceTitle, entry.name, normalizedNumber))
+                return false;
+            if (!canReuseLegacyEpisodeFolder(
+                previousEpisodes,
+                normalizedNumber,
+                sourceId,
+                currentSourceTitle,
+                entry.name,
+            ))
+                return false;
+            try {
+                const childNames = fs.readdirSync(path.join(getContentPath(), entry.name));
+                return isLegacyEpisodeFolderCandidate(
+                    entry.name,
+                    number,
+                    childNames,
+                );
+            }
+            catch (_error) {
+                return false;
+            }
+        })
+        .map(entry => entry.name)
+        .sort((left, right) => left.localeCompare(right, 'ko', { numeric: true }))[0] || '';
+}
+function isLegacyEpisodeFolder(folderName, number) {
+    return new RegExp(`^0*${Number.parseInt(number)}(?:\\s|$)`).test(String(folderName || ''));
+}
+function prepareEpisodeManifest(links, state) {
+    const entries = contentEntries();
+    const directories = new Set(
+        entries.filter(entry => entry.isDirectory()).map(entry => entry.name.toLowerCase()),
+    );
+    const previousById = new Map();
+    const previousByNumber = new Map();
+    for (const item of state.episodes || []) {
+        const number = Number.parseInt(item.number);
+        if (!Number.isSafeInteger(number) || number <= 0)
+            continue;
+        if (item.sourceId)
+            previousById.set(String(item.sourceId), item);
+        if (!item.sourceId && !item.numberInferred) {
+            if (!previousByNumber.has(number))
+                previousByNumber.set(number, []);
+            previousByNumber.get(number).push(item);
+        }
+    }
+    const inferredTitleIndex = buildInferredEpisodeTitleIndex(state.episodes);
+    const preparedLinks = links.map(item => {
+        const base = buildEpisodeManifestRecord(
+            {
+                number: Number.parseInt(item.num),
+                sourceUrl: item.src,
+                sourceTitle: item.fileName,
+            },
+            info.contentTitle,
+        );
+        return {
+            item,
+            base,
+            inferredPrevious: findUniqueInferredEpisodeMatch(inferredTitleIndex, base),
+        };
+    });
+    const inferredClaimCounts = new Map();
+    for (const prepared of preparedLinks) {
+        if (prepared.inferredPrevious) {
+            inferredClaimCounts.set(
+                prepared.inferredPrevious,
+                (inferredClaimCounts.get(prepared.inferredPrevious) || 0) + 1,
+            );
+        }
+    }
+    const usedNames = new Set(directories);
+    const claimedNames = new Set();
+    const manifest = [];
+    for (const { item, base, inferredPrevious } of preparedLinks) {
+        const previous = previousById.get(base.sourceId) || (
+            previousByNumber.get(base.number) || []
+        ).find(candidate => (
+            episodeSourceTitlesMatch(
+                base.sourceTitle,
+                candidate.sourceTitle || candidate.folderName,
+                base.number,
+            )
+        )) || (
+            inferredPrevious && inferredClaimCounts.get(inferredPrevious) === 1
+                ? inferredPrevious
+                : null
+        );
+        const legacyName = legacyEpisodeFolderName(
+            base.number,
+            entries,
+            base.sourceTitle,
+            state.episodes,
+            base.sourceId,
+        );
+        const mappedNames = previous ? episodeRecordFolderCandidates(previous) : [];
+        const existingMappedName = mappedNames.find(candidate => (
+            directories.has(candidate.toLowerCase())
+        )) || '';
+        const mappedName = String(existingMappedName || mappedNames[0] || '');
+        const preferredName = String(
+            (mappedName && directories.has(mappedName.toLowerCase()) ? mappedName : '')
+            || legacyName
+            || mappedName
+            || base.folderName,
+        );
+        const preferredKey = preferredName.toLowerCase();
+        const referencesExistingFolder = (
+            directories.has(preferredKey)
+            && (
+                Boolean(mappedName && mappedName.toLowerCase() === preferredKey)
+                || Boolean(legacyName && legacyName.toLowerCase() === preferredKey)
+            )
+        );
+        const folderName = uniqueEpisodeFolderName(
+            preferredName,
+            base.number,
+            usedNames,
+            { allowExisting: referencesExistingFolder && !claimedNames.has(preferredKey) },
+        );
+        claimedNames.add(folderName.toLowerCase());
+        const record = buildEpisodeManifestRecord(
+            {
+                number: base.number,
+                sourceUrl: base.sourceUrl,
+                sourceTitle: base.sourceTitle,
+                folderName,
+            },
+            info.contentTitle,
+        );
+        const destinationPath = path.join(getContentPath(), record.folderName);
+        if (
+            info.site !== 'booktoki'
+            && !fs.existsSync(destinationPath)
+        )
+            validateEpisodeDestinationPath(record.folderName, destinationPath);
+        item.sourceId = record.sourceId;
+        item.episode = record;
+        item.legacyFolder = isLegacyEpisodeFolder(record.folderName, record.number);
+        item.numericFallbackVerified = Boolean(
+            legacyName
+            || (
+                previous
+                && episodeSourceTitlesMatch(
+                    base.sourceTitle,
+                    previous.sourceTitle || previous.folderName,
+                    base.number,
+                )
+            )
+        );
+        item.storageExists = (
+            info.site === 'booktoki'
+                ? entries.some(entry => (
+                    entry.isFile()
+                    && new RegExp(`^0*${record.number}(?:\\s|$)`).test(entry.name)
+                    && entry.name.toLowerCase().endsWith('.txt')
+                ))
+                : directories.has(record.folderName.toLowerCase())
+        );
+        manifest.push(record);
+    }
+    return mergeEpisodeManifestRecords(manifest, state.episodes);
+}
+function loadEpisodeCompletion(state, links, manifest) {
+    const entries = contentEntries();
+    const directoryNames = new Set(
+        entries.filter(entry => entry.isDirectory()).map(entry => entry.name.toLowerCase()),
+    );
+    const storageExists = record => (
+        info.site === 'booktoki'
+            ? entries.some(entry => (
+                entry.isFile()
+                && new RegExp(`^0*${Number(record.number)}(?:\\s|$)`).test(entry.name)
+                && entry.name.toLowerCase().endsWith('.txt')
+            ))
+            : directoryNames.has(String(record.folderName || '').toLowerCase())
+    );
+    const physicalNumbers = new Set();
+    const physicalEpisodeIds = new Set();
+    for (const entry of entries) {
+        const matched = entry.name.match(/^0*(\d+)(?:\s|$)/);
+        const number = matched ? Number.parseInt(matched[1]) : 0;
+        if (number > 0 && (entry.isDirectory() || entry.name.toLowerCase().endsWith('.txt')))
+            physicalNumbers.add(number);
+    }
+    for (const record of manifest || []) {
+        if (!storageExists(record))
+            continue;
+        physicalNumbers.add(Number(record.number));
+        if (record.sourceId)
+            physicalEpisodeIds.add(String(record.sourceId));
+    }
+    return resolveEpisodeCompletion(state, links, {
+        physicalNumbers,
+        physicalEpisodeIds,
+    });
+}
+function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes) {
     const contentPath = getContentPath();
     fs.mkdirSync(contentPath, { recursive: true });
-    fs.writeFileSync(completionStatePath(), `${JSON.stringify({
-        version: 1,
+    const statePath = completionStatePath();
+    const temporaryPath = `${statePath}.tmp`;
+    fs.writeFileSync(temporaryPath, `${JSON.stringify({
+        version: 2,
         completedEpisodes: [...completedEpisodes].sort((a, b) => a - b),
+        completedEpisodeIds: [...completedEpisodeIds].filter(Boolean).sort(),
+        episodes: [...episodes].sort((left, right) => (
+            Number(left.number) - Number(right.number)
+            || String(left.sourceId).localeCompare(String(right.sourceId))
+        )),
         updatedAt: new Date().toISOString()
     }, null, 2)}\n`, 'utf8');
+    fs.renameSync(temporaryPath, statePath);
 }
 function saveMetadata(metadata) {
     const contentPath = getContentPath();
@@ -340,15 +617,120 @@ function saveBook(path, fileName, content) {
         fs.mkdirSync(path, { recursive: true });
     fs.writeFileSync(`${path}/${fileName}`, content);
 }
-async function saveImage(path, fileName, src) {
+
+function existingImageFileValidation(filePath) {
+    try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile() || stat.size <= 0) {
+            return {
+                valid: false,
+                reason: stat.size <= 0 ? 'empty_image' : 'not_a_file',
+                size: stat.size,
+            };
+        }
+        const headerLength = Math.min(256, stat.size);
+        const tailLength = Math.min(16, stat.size);
+        const header = Buffer.allocUnsafe(headerLength);
+        const tail = Buffer.allocUnsafe(tailLength);
+        const descriptor = fs.openSync(filePath, 'r');
+        let bytesRead = 0;
+        let tailBytesRead = 0;
+        try {
+            bytesRead = fs.readSync(descriptor, header, 0, headerLength, 0);
+            tailBytesRead = fs.readSync(
+                descriptor,
+                tail,
+                0,
+                tailLength,
+                Math.max(0, stat.size - tailLength),
+            );
+        }
+        finally {
+            fs.closeSync(descriptor);
+        }
+        return {
+            ...validateImageBuffer(
+                header.subarray(0, bytesRead),
+                path.extname(filePath),
+                {
+                    tail: tail.subarray(0, tailBytesRead),
+                    totalSize: stat.size,
+                },
+            ),
+            size: stat.size,
+        };
+    }
+    catch (error) {
+        return { valid: false, reason: 'image_read_failed', size: 0, error };
+    }
+}
+
+function existingImageFileIsValid(filePath) {
+    return existingImageFileValidation(filePath).valid === true;
+}
+
+function imageValidationError(fileName, validation) {
+    const error = new Error(
+        `이미지 응답 검증 실패: ${fileName} (${validation.reason || 'unknown'})`,
+    );
+    error.code = 'invalid_image_payload';
+    error.diagnostics = { ...validation, fileName };
+    return error;
+}
+
+function writeImageBufferAtomically(
+    directoryPath,
+    fileName,
+    imageBuffer,
+    { renameFile = fs.renameSync } = {},
+) {
+    const validation = validateImageBuffer(imageBuffer, path.extname(fileName));
+    if (!validation.valid)
+        throw imageValidationError(fileName, validation);
+    fs.mkdirSync(directoryPath, { recursive: true });
+    const destinationPath = path.join(directoryPath, fileName);
+    const temporaryPath = path.join(
+        directoryPath,
+        `.${path.basename(fileName)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    let descriptor;
+    try {
+        descriptor = fs.openSync(temporaryPath, 'wx');
+        fs.writeFileSync(descriptor, imageBuffer);
+        fs.fsyncSync(descriptor);
+        fs.closeSync(descriptor);
+        descriptor = undefined;
+        renameFile(temporaryPath, destinationPath);
+    }
+    catch (error) {
+        if (descriptor !== undefined) {
+            try {
+                fs.closeSync(descriptor);
+            }
+            catch (_closeError) {}
+        }
+        try {
+            fs.rmSync(temporaryPath, { force: true });
+        }
+        catch (_cleanupError) {}
+        throw error;
+    }
+    return { destinationPath, validation };
+}
+
+async function saveImage(directoryPath, fileName, src) {
     let imageBuffer;
     let lastError;
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            imageBuffer = await downloadBuffer(src, {
+            const candidate = await downloadBuffer(src, {
                 'User-Agent': 'Mozilla/5.0',
                 'Referer': `${info.protocolDomain}/`
             });
+            const validation = validateImageBuffer(candidate, path.extname(fileName));
+            if (!validation.valid)
+                throw imageValidationError(fileName, validation);
+            imageBuffer = candidate;
             break;
         }
         catch (error) {
@@ -359,10 +741,8 @@ async function saveImage(path, fileName, src) {
     }
     if (!imageBuffer)
         throw new Error(`이미지 다운로드 실패: ${src}\n${lastError}`);
-    // 경로가 없다면 만들기
-    if (!fs.existsSync(path))
-        fs.mkdirSync(path, { recursive: true });
-    fs.writeFileSync(`${path}/${fileName}`, imageBuffer);
+    // 새 버퍼 검증이 끝나기 전에는 기존 파일을 건드리지 않는다.
+    writeImageBufferAtomically(directoryPath, fileName, imageBuffer);
 }
 
 async function downloadBuffer(src, headers, redirectCount = 0) {
@@ -497,10 +877,13 @@ async function main() {
             link = link.concat(await page.evaluate(() => {
                 let list = Array.from(document.querySelector('.list-body').querySelectorAll('li'));
                 for (let i = 0; i < list.length; i++) {
+                    const anchor = list[i].querySelector('a');
+                    const subject = anchor?.cloneNode(true);
+                    subject?.querySelectorAll('span').forEach(element => element.remove());
                     list[i] = {
-                        num: list[i].querySelector('.wr-num').innerText.padStart(4, '0'),
-                        fileName: list[i].querySelector('a').innerHTML.replace(/<span[\s\S]*?\/span>/g, '').trim(),
-                        src: list[i].querySelector('a').href
+                        num: list[i].querySelector('.wr-num')?.innerText?.trim() || '',
+                        fileName: subject?.textContent?.trim() || '',
+                        src: anchor?.href || ''
                     }
                 }
                 return list;
@@ -515,26 +898,53 @@ async function main() {
             else
                 break;
         }
-        // 1화부터 받을것이기 때문에 리버스 해준다.
-        link.reverse();
+        // 페이지 구성이나 DOM 방향에 의존하지 않고 유효한 행 순번만 안정적으로 처리한다.
+        const normalizedLinks = normalizeAndSortEpisodeLinks(link);
+        for (const skipped of normalizedLinks.skipped) {
+            const reason = skipped.reason === 'duplicate_episode_source'
+                ? '중복 회차 URL'
+                : skipped.reason === 'invalid_episode_url'
+                    ? '유효하지 않은 회차 URL'
+                    : `유효하지 않은 순번 "${skipped.rawNumber}"`;
+            console.log(
+                `회차 목록 항목 건너뜀: ${reason}`
+                + `${skipped.fileName ? ` (${skipped.fileName})` : ''}`,
+            );
+        }
+        link = normalizedLinks.links;
+        if (link.length === 0 && !info.metadataOnly)
+            throw new Error('회차 목록에서 유효한 양의 정수 순번을 찾지 못했습니다.');
         const totalEpisodeCount = link.length;
+        const episodeState = loadEpisodeState();
+        episodeState.episodes = mergeEpisodeManifestRecords(
+            episodeState.episodes,
+            loadEpisodeMetadataManifest(),
+        );
+        const preferEpisodeIds = episodeStateUsesStableIds(episodeState);
+        const episodeManifest = prepareEpisodeManifest(link, episodeState);
         let completedEpisodes = new Set();
+        let completedEpisodeIds = new Set();
+        let completedEpisodeFallbacks = new Set();
         let skippedExistingEpisodes = 0;
         if (!info.metadataOnly) {
-            completedEpisodes = loadCompletedEpisodeNumbers();
+            const completion = loadEpisodeCompletion(episodeState, link, episodeManifest);
+            completedEpisodes = completion.completedEpisodes;
+            completedEpisodeIds = completion.completedEpisodeIds;
+            completedEpisodeFallbacks = completion.completedEpisodeFallbacks;
+            saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
         }
         const selection = selectEpisodeLinks(link, {
             metadataOnly: info.metadataOnly,
             scanMode: info.scanMode,
             startIndex: info.startIndex,
             lastIndex: info.lastIndex,
-            completedEpisodes
+            completedEpisodes,
+            completedEpisodeIds,
+            completedEpisodeFallbacks,
+            preferEpisodeIds,
         });
         link = selection.links;
         skippedExistingEpisodes = selection.skippedExistingEpisodes;
-        if (!info.metadataOnly && info.scanMode === 'new') {
-            saveCompletedEpisodeNumbers(completedEpisodes);
-        }
         if (!info.metadataOnly && info.scanMode !== 'new' && link.length === 0)
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
@@ -545,6 +955,7 @@ async function main() {
             last: info.lastIndex === 99999 ? null : info.lastIndex
         };
         info.metadata.scanMode = info.metadataOnly ? 'metadata' : info.scanMode;
+        info.metadata.episodes = episodeManifest;
         info.metadata.generatedAt = new Date().toISOString();
         const coverPath = await cacheCoverImage(info.metadata, info.metadataOnly);
         saveMetadata(info.metadata);
@@ -579,12 +990,23 @@ async function main() {
             await Promise.all([page.goto(link[i].src), page.waitForNavigation()]);
             await sleep(2000);
             const safeEpisodeName = sanitizePathSegment(link[i].fileName, '회차');
+            const episodeRecord = link[i].episode || buildEpisodeManifestRecord(
+                {
+                    number: Number.parseInt(link[i].num),
+                    sourceUrl: link[i].src,
+                    sourceTitle: link[i].fileName,
+                },
+                info.contentTitle,
+            );
             console.log(`${link[i].num} ${link[i].fileName} 진행중`);
             emitEvent('episode_started', {
                 index: i + 1,
                 total: link.length,
                 number: parseInt(link[i].num),
-                title: link[i].fileName
+                title: episodeRecord.displayTitle,
+                sourceTitle: link[i].fileName,
+                folderName: episodeRecord.folderName,
+                sourceId: episodeRecord.sourceId,
             });
             // 북토끼
             if (info.site === "booktoki") {
@@ -603,10 +1025,15 @@ async function main() {
                     index: i + 1,
                     total: link.length,
                     number: parseInt(link[i].num),
-                    title: link[i].fileName
+                    title: episodeRecord.displayTitle,
+                    sourceTitle: link[i].fileName,
+                    folderName: episodeRecord.folderName,
+                    sourceId: episodeRecord.sourceId,
                 });
                 completedEpisodes.add(parseInt(link[i].num));
-                saveCompletedEpisodeNumbers(completedEpisodes);
+                if (episodeRecord.sourceId)
+                    completedEpisodeIds.add(episodeRecord.sourceId);
+                saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
             }
             // 뉴토끼, 마나토끼
             else {
@@ -634,7 +1061,12 @@ async function main() {
                         }
                     }
                     return returnList;
-                }, imageSelector)
+                }, imageSelector);
+                imgLists = requireEpisodeImages(imgLists, {
+                    episodeNumber: Number.parseInt(link[i].num),
+                    sourceId: episodeRecord.sourceId,
+                    sourceUrl: link[i].src,
+                });
                 console.log(`이미지 ${imgLists.length}개 감지`);
                 emitEvent('images_found', {
                     episodeNumber: parseInt(link[i].num),
@@ -653,11 +1085,36 @@ async function main() {
                     });
                 };
                 // 이미지들을 다운로드한다.
+                const episodePath = path.join(getContentPath(), episodeRecord.folderName);
+                const existingImageIndexes = new Set();
+                let hasLegacyImageFiles = false;
+                if (fs.existsSync(episodePath)) {
+                    for (const entry of fs.readdirSync(episodePath, { withFileTypes: true })) {
+                        if (!entry.isFile())
+                            continue;
+                        const numbered = entry.name.match(/^(\d{4})\.[a-zA-Z0-9]+$/);
+                        const legacy = entry.name.match(/image(\d{4})\.[a-zA-Z0-9]+$/i);
+                        if (!numbered && !legacy)
+                            continue;
+                        const existingPath = path.join(episodePath, entry.name);
+                        const validImage = existingImageFileIsValid(existingPath);
+                        if (numbered && validImage)
+                            existingImageIndexes.add(Number.parseInt(numbered[1]));
+                        if (legacy) {
+                            if (validImage)
+                                existingImageIndexes.add(Number.parseInt(legacy[1]));
+                            hasLegacyImageFiles = true;
+                        }
+                    }
+                }
+                const useLegacyImageNames = Boolean(link[i].legacyFolder || hasLegacyImageFiles);
                 for (let j = 0; j < imgLists.length; j++) {
-                    const episodePath = path.join(getContentPath(), `${link[i].num} ${safeEpisodeName}`);
-                    const fileName = `${link[i].num} ${safeEpisodeName} image${j.toString().padStart(4, '0')}${imgLists[j].extension}`;
-                    // 이미지 다운. 있다면 다운하지 않는다.
-                    if (fs.existsSync(path.join(episodePath, fileName))) {
+                    const imageNumber = j.toString().padStart(4, '0');
+                    const fileName = useLegacyImageNames
+                        ? `${link[i].num} ${safeEpisodeName} image${imageNumber}${imgLists[j].extension}`
+                        : `${imageNumber}${imgLists[j].extension}`;
+                    // 파일명만 같은 0 byte/손상 파일은 skip하지 않는다.
+                    if (existingImageIndexes.has(j)) {
                         reportImage(j, true);
                     }
                     else {
@@ -672,10 +1129,15 @@ async function main() {
                     index: i + 1,
                     total: link.length,
                     number: parseInt(link[i].num),
-                    title: link[i].fileName
+                    title: episodeRecord.displayTitle,
+                    sourceTitle: link[i].fileName,
+                    folderName: episodeRecord.folderName,
+                    sourceId: episodeRecord.sourceId,
                 });
                 completedEpisodes.add(parseInt(link[i].num));
-                saveCompletedEpisodeNumbers(completedEpisodes);
+                if (episodeRecord.sourceId)
+                    completedEpisodeIds.add(episodeRecord.sourceId);
+                saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
             }
         }
         console.log('다운로드 완료');
@@ -699,6 +1161,22 @@ async function main() {
 
 }
 
-analyseArguments();
-configureNetworkRuntime();
-main();
+const directEntryPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+const directEntryCandidates = directEntryPath
+    ? [directEntryPath, ...(path.extname(directEntryPath) ? [] : [`${directEntryPath}.js`])]
+    : [];
+const isDirectExecution = directEntryCandidates.some(candidate => (
+    import.meta.url === pathToFileURL(candidate).href
+));
+
+if (isDirectExecution) {
+    analyseArguments();
+    configureNetworkRuntime();
+    main();
+}
+
+export {
+    existingImageFileIsValid,
+    existingImageFileValidation,
+    writeImageBufferAtomically,
+};

@@ -165,11 +165,20 @@ D:\Manga\
 └─ 마나토끼\
    └─ [이요미네 츠쿠][N／A] 이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건\
       ├─ metadata.json
-      ├─ 0001 이세계에서 개인방송…어 버린 건 1화\
-      │  ├─ 0001 ... image0000.jpeg
+      ├─ .toki-state.json
+      ├─ 이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건 1화\
+      │  ├─ 0000.jpeg
       │  └─ ...
-      └─ 0002 ... 2화\
+      └─ 이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건 2화\
 ```
+
+회차 폴더는 사이트 목록의 축약 표시문이나 게시물 순번을 노출하지 않는다. 전체 작품명과
+실제 회차/부제를 사용하고, 사이트 회차 ID·URL·원문·폴더명 매핑은 state v2와
+`metadata.json`의 `episodes` 배열에 따로 보존한다. 예전 `0001 + 축약 제목` 폴더는 계속
+읽으며, 명시적인 `rename-episodes` 미리보기와 확인 실행으로만 새 형식으로 바꾼다.
+GUI 경유 미리보기는 현재 작품의 불변 snapshot으로 실행해 `jobs.db`를 변경하지 않는다.
+실제 실행만 GUI 이력을 저장한 뒤 DB 기반 worker로 처리하며, CLI 응답 timeout 뒤에는
+`status --json`으로 백그라운드 회차 이름변경 상태를 확인해야 한다.
 
 현재 잘못 생성된 이전 경로가 있을 수 있다.
 
@@ -206,6 +215,16 @@ C:\gitproject\tokiDownloader\마나토끼\일본만화\
     "start": 1,
     "last": 1
   },
+  "episodes": [
+    {
+      "number": 1,
+      "sourceId": "/manhwa/34732/episode-1",
+      "sourceUrl": "https://newtoki1.org/manhwa/34732/episode-1",
+      "sourceTitle": "작품 제목 1화",
+      "displayTitle": "작품 제목 1화",
+      "folderName": "작품 제목 1화"
+    }
+  ],
   "generatedAt": "ISO-8601 timestamp"
 }
 ```

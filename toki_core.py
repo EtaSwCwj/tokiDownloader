@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 import zipfile
 from collections import deque
@@ -6496,6 +6497,1234 @@ def move_job_folder(job_id: str, output_dir: str) -> dict[str, Any]:
     }
 
 
+_LEGACY_EPISODE_FOLDER = re.compile(r"^(\d{4,})\s+(.+\S|\S)$")
+_EPISODE_RENAME_ARTIFACT_PREFIX = ".toki-episode-rename-"
+_EPISODE_RENAME_TRANSACTION = re.compile(
+    r"^\.toki-episode-rename-([0-9a-f]{32})\.json$",
+    re.IGNORECASE,
+)
+_KNOWN_R18_ARTIFACT_WORK_TITLE = "남녀비 139의 평행세계는 의외로 평범"
+_WINDOWS_SAFE_EPISODE_COMPONENT_UTF16_UNITS = 240
+_WINDOWS_SAFE_EPISODE_PATH_UTF16_UNITS = 248
+_LEGACY_EPISODE_INLINE_HTML_TAG = re.compile(
+    r"</?(?:abbr|b|bdi|bdo|br|cite|code|data|del|dfn|em|i|img|ins|kbd|mark|q|"
+    r"rp|rt|ruby|s|samp|small|span|strong|sub|sup|time|u|var|wbr)\b[^<>]*>",
+    re.IGNORECASE,
+)
+_LEGACY_EPISODE_HTML_ENTITY = re.compile(
+    r"&(#(?:x[0-9a-f]+|[0-9]+)|[a-z][a-z0-9]+);",
+    re.IGNORECASE,
+)
+_LEGACY_EPISODE_HTML_ENTITIES = {
+    "amp": "&",
+    "apos": "'",
+    "gt": ">",
+    "hellip": "…",
+    "lt": "<",
+    "mdash": "—",
+    "middot": "·",
+    "nbsp": "\u00a0",
+    "ndash": "–",
+    "quot": '"',
+}
+_LEGACY_EPISODE_IMAGE_FILE = re.compile(
+    r"(?:^|\s)image\d{4}\.(?:jpe?g|png|webp|gif|bmp|avif)$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class EpisodeRenameJobSnapshot:
+    job_id: str
+    work_key: str
+    title: str
+    state: str
+    output_path: str
+
+
+def episode_rename_job_snapshot(job: DownloadJob) -> EpisodeRenameJobSnapshot:
+    """Capture the GUI-visible fields needed by a read-only rename plan."""
+
+    return EpisodeRenameJobSnapshot(
+        job_id=str(job.job_id),
+        work_key=str(job.work_key),
+        title=str(job.title),
+        state=str(job.state),
+        output_path=str(job.output_path),
+    )
+
+
+def _episode_rename_resolve_job(
+    job_id: str,
+    job_snapshot: EpisodeRenameJobSnapshot | DownloadJob | None,
+) -> EpisodeRenameJobSnapshot | DownloadJob:
+    if job_snapshot is None:
+        job = load_job_by_id(job_id)
+        if job is None:
+            raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+        return job
+    snapshot = (
+        episode_rename_job_snapshot(job_snapshot)
+        if isinstance(job_snapshot, DownloadJob)
+        else job_snapshot
+    )
+    if not isinstance(snapshot, EpisodeRenameJobSnapshot):
+        raise TypeError("회차 폴더명 계획의 작업 snapshot 형식이 올바르지 않습니다.")
+    if snapshot.job_id != str(job_id):
+        raise ValueError("회차 폴더명 계획의 작업 ID와 snapshot이 일치하지 않습니다.")
+    return snapshot
+
+
+def _episode_rename_json(path: Path, *, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label}을 읽을 수 없습니다: {path}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label}은 JSON 객체여야 합니다: {path}")
+    return payload
+
+
+def _episode_rename_record_folders(record: dict[str, Any]) -> list[str]:
+    values = [
+        record.get("folderName"),
+        *(record.get("folderHints") if isinstance(record.get("folderHints"), list) else []),
+        record.get("displayTitle"),
+        record.get("sourceTitle"),
+    ]
+    folders: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        folder = sanitize_windows_path_segment(str(value or ""), "").strip()
+        key = folder.casefold()
+        if folder and key not in seen:
+            folders.append(folder)
+            seen.add(key)
+    return folders
+
+
+def _episode_rename_stable_id(record: dict[str, Any]) -> str:
+    source_id = str(record.get("sourceId") or "").strip()
+    if source_id:
+        return source_id
+    source_url = str(record.get("sourceUrl") or "").strip()
+    if not source_url:
+        return ""
+    parsed = urlsplit(source_url)
+    return parsed.path.rstrip("/") or (source_url.split("?", 1)[0].rstrip("/"))
+
+
+def _episode_rename_merge_records(
+    state_records: list[Any], metadata_records: list[Any]
+) -> list[dict[str, Any]]:
+    def normalize(raw: Any, fallback_number: int) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            declared_number = int(raw.get("number") or 0)
+        except (TypeError, ValueError):
+            declared_number = 0
+        number_inferred = bool(raw.get("numberInferred")) or declared_number <= 0
+        number = fallback_number if number_inferred else declared_number
+        record = dict(raw)
+        record["number"] = number
+        if number_inferred:
+            record["numberInferred"] = True
+        else:
+            record.pop("numberInferred", None)
+        source_id = _episode_rename_stable_id(record)
+        if source_id:
+            record["sourceId"] = source_id
+        folders = _episode_rename_record_folders(record)
+        if folders:
+            record["folderName"] = folders[0]
+            if len(folders) > 1:
+                record["folderHints"] = folders[1:]
+        if not folders and not source_id:
+            return None
+        return record
+
+    primary = [
+        record
+        for index, item in enumerate(state_records, start=1)
+        if (record := normalize(item, index)) is not None
+    ]
+
+    def records_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_id = _episode_rename_stable_id(left)
+        right_id = _episode_rename_stable_id(right)
+        if left_id and right_id:
+            return left_id == right_id
+        if int(left.get("number") or 0) != int(right.get("number") or 0):
+            return False
+        left_folders = {
+            folder.casefold() for folder in _episode_rename_record_folders(left)
+        }
+        return any(
+            folder.casefold() in left_folders
+            for folder in _episode_rename_record_folders(right)
+        )
+
+    def combine(
+        preferred: dict[str, Any], supplemental: dict[str, Any]
+    ) -> dict[str, Any]:
+        combined = dict(supplemental)
+        combined.update(preferred)
+        if preferred.get("numberInferred") and not supplemental.get(
+            "numberInferred"
+        ):
+            combined["number"] = supplemental["number"]
+            combined.pop("numberInferred", None)
+        for key in ("sourceId", "sourceUrl", "sourceTitle", "displayTitle"):
+            if not str(preferred.get(key) or "").strip() and str(
+                supplemental.get(key) or ""
+            ).strip():
+                combined[key] = supplemental[key]
+        folders = _episode_rename_record_folders(
+            {
+                "folderName": preferred.get("folderName")
+                or supplemental.get("folderName"),
+                "folderHints": [
+                    *(
+                        preferred.get("folderHints")
+                        if isinstance(preferred.get("folderHints"), list)
+                        else []
+                    ),
+                    *_episode_rename_record_folders(supplemental),
+                ],
+                "displayTitle": preferred.get("displayTitle"),
+                "sourceTitle": preferred.get("sourceTitle"),
+            }
+        )
+        if folders:
+            combined["folderName"] = folders[0]
+            if len(folders) > 1:
+                combined["folderHints"] = folders[1:]
+            else:
+                combined.pop("folderHints", None)
+        source_id = _episode_rename_stable_id(combined)
+        if source_id:
+            combined["sourceId"] = source_id
+        return combined
+
+    merged = list(primary)
+    for index, raw in enumerate(metadata_records, start=1):
+        item = normalize(raw, index)
+        if item is None:
+            continue
+        matching_index = next(
+            (
+                candidate_index
+                for candidate_index, candidate in enumerate(merged)
+                if records_match(candidate, item)
+            ),
+            None,
+        )
+        if matching_index is None:
+            merged.append(item)
+        else:
+            merged[matching_index] = combine(merged[matching_index], item)
+    merged.sort(
+        key=lambda item: (
+            int(item.get("number") or 0),
+            str(item.get("sourceId") or ""),
+            str(item.get("folderName") or "").casefold(),
+        )
+    )
+    return merged
+
+
+def _episode_rename_normalized_text(value: Any) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        unicodedata.normalize("NFC", str(value or "")),
+    ).strip()
+
+
+def _episode_rename_decode_legacy_entity(match: re.Match[str]) -> str:
+    entity = match.group(1)
+    if entity.startswith("#"):
+        hexadecimal = len(entity) > 1 and entity[1].casefold() == "x"
+        digits = entity[2:] if hexadecimal else entity[1:]
+        try:
+            code_point = int(digits, 16 if hexadecimal else 10)
+        except ValueError:
+            return match.group(0)
+        if (
+            code_point <= 0
+            or code_point > 0x10FFFF
+            or 0xD800 <= code_point <= 0xDFFF
+        ):
+            return match.group(0)
+        return chr(code_point)
+    return _LEGACY_EPISODE_HTML_ENTITIES.get(entity.casefold(), match.group(0))
+
+
+def _episode_rename_legacy_title_text(value: Any) -> str:
+    """Match the downloader's conservative v1 ``innerHTML`` normalization."""
+
+    without_tags = _LEGACY_EPISODE_INLINE_HTML_TAG.sub("", str(value or ""))
+    return _LEGACY_EPISODE_HTML_ENTITY.sub(
+        _episode_rename_decode_legacy_entity,
+        without_tags,
+    )
+
+
+def _episode_rename_title_identity(value: Any, number: int = 0) -> str:
+    normalized = unicodedata.normalize(
+        "NFKC",
+        _episode_rename_normalized_text(_episode_rename_legacy_title_text(value)),
+    )
+    if number > 0:
+        normalized = re.sub(rf"^0*{number}(?:\s+|$)", "", normalized)
+    return unicodedata.normalize(
+        "NFKC",
+        sanitize_windows_path_segment(normalized, ""),
+    ).casefold()
+
+
+def _episode_rename_titles_match(left: Any, right: Any, number: int = 0) -> bool:
+    left_key = _episode_rename_title_identity(left, number)
+    right_key = _episode_rename_title_identity(right, number)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def _episode_rename_safe_text(value: Any) -> str:
+    return _episode_rename_normalized_text(
+        sanitize_windows_path_segment(_episode_rename_normalized_text(value), "")
+    )
+
+
+def _windows_utf16_units(value: Any) -> int:
+    """Return the number of UTF-16 code units Windows uses for a path string."""
+
+    return len(str(value or "").encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _episode_rename_path_policy() -> dict[str, Any]:
+    return {
+        "encoding": "utf-16",
+        "componentMaxUnits": _WINDOWS_SAFE_EPISODE_COMPONENT_UTF16_UNITS,
+        "destinationMaxUnits": _WINDOWS_SAFE_EPISODE_PATH_UTF16_UNITS,
+    }
+
+
+def _episode_rename_overlap(work_title: str, abbreviated_suffix: str) -> int:
+    folded_work = work_title.casefold()
+    folded_suffix = abbreviated_suffix.casefold()
+    for length in range(min(len(folded_work), len(folded_suffix)), 0, -1):
+        if folded_work[-length:] == folded_suffix[:length]:
+            return length
+    return 0
+
+
+def _episode_rename_repair_known_artifact(value: str, work_title: str) -> str:
+    suffix = _episode_rename_normalized_text(value)
+    if _episode_rename_safe_text(work_title) != _KNOWN_R18_ARTIFACT_WORK_TITLE:
+        return suffix
+    matched = re.match(
+        r"^(?:-18|18|8)\s+(.+\s\d+(?:\.\d+)?(?:~\d+(?:\.\d+)?)?화)$",
+        suffix,
+        re.IGNORECASE,
+    )
+    return f"R-18 {matched.group(1)}" if matched else suffix
+
+
+def _episode_rename_suffix(
+    *titles: str,
+    number: int,
+    work_title: str,
+) -> tuple[str, str]:
+    del number  # A storage ordinal is never evidence for the displayed episode suffix.
+    safe_work = _episode_rename_safe_text(work_title)
+    for title in titles:
+        original = _episode_rename_normalized_text(
+            _episode_rename_legacy_title_text(title)
+        )
+        if not original:
+            continue
+        safe_original = _episode_rename_safe_text(original)
+        if not safe_original:
+            continue
+        if safe_original.casefold() == safe_work.casefold():
+            continue
+        if safe_work and safe_original.casefold().startswith(
+            f"{safe_work.casefold()} "
+        ):
+            suffix = safe_original[len(safe_work) :].strip(" -–—")
+            if suffix:
+                return suffix, "source_title"
+            continue
+
+        ellipsis_match = re.search(r"…|\.{3}", original)
+        if ellipsis_match:
+            left = original[: ellipsis_match.start()].rstrip()
+            right = original[ellipsis_match.end() :].lstrip()
+            safe_left = _episode_rename_safe_text(left)
+            if not right or not (
+                not left
+                or work_title.casefold().startswith(left.casefold())
+                or (safe_left and safe_work.casefold().startswith(safe_left.casefold()))
+            ):
+                continue
+            overlap = _episode_rename_overlap(work_title, right)
+            if overlap:
+                suffix = right[overlap:].strip(" -–—")
+            else:
+                safe_right = _episode_rename_safe_text(right)
+                safe_overlap = _episode_rename_overlap(safe_work, safe_right)
+                suffix = (
+                    safe_right[safe_overlap:].strip(" -–—")
+                    if safe_overlap
+                    else _episode_rename_repair_known_artifact(right, work_title)
+                )
+            if suffix:
+                return suffix, "source_title"
+            continue
+
+        # This is the same conservative final case used by the downloader:
+        # a non-empty source label such as "프롤로그" or "공지" is itself the
+        # full suffix.  Never manufacture an N화 label from the storage ordinal.
+        return original, "source_title"
+    return "", "unsafe"
+
+
+def _episode_rename_work_title(
+    job: DownloadJob | EpisodeRenameJobSnapshot,
+    metadata: dict[str, Any],
+    output_path: Path,
+) -> str:
+    folder_match = re.match(r"^\[[^]]*\]\[[^]]*\]\s*(.+)$", output_path.name)
+    candidates = (
+        metadata.get("title"),
+        job.title,
+        folder_match.group(1) if folder_match else output_path.name,
+    )
+    placeholders = {"", "메타데이터 확인 중", "제목 없음"}
+    truncated_candidates: list[str] = []
+    for candidate in candidates:
+        clean = sanitize_windows_path_segment(candidate, "").strip()
+        if clean in placeholders:
+            continue
+        if "…" in clean or "..." in clean:
+            truncated_candidates.append(clean)
+            continue
+        return clean
+    if truncated_candidates:
+        raise ValueError(
+            "줄임표가 없는 전체 작품 제목을 metadata.json 또는 작업 기록에서 찾을 수 없습니다."
+        )
+    raise ValueError("회차 폴더에 사용할 전체 작품 제목을 찾을 수 없습니다.")
+
+
+def _episode_rename_backup_candidate(path: Path) -> Path:
+    base = path.with_name(path.name + ".pre-episode-rename.bak")
+    if not base.exists():
+        return base
+    for index in range(2, 1000):
+        candidate = path.with_name(
+            path.name + f".pre-episode-rename.{index}.bak"
+        )
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"백업 파일 이름을 만들 수 없습니다: {path}")
+
+
+def _episode_rename_recovery_info(output_path: Path) -> dict[str, Any]:
+    temporary_folders: list[str] = []
+    transaction_files: list[dict[str, Any]] = []
+    unknown_artifacts: list[str] = []
+    with os.scandir(output_path) as output_entries_scan:
+        output_entries = list(output_entries_scan)
+    for entry in output_entries:
+        if not entry.name.startswith(_EPISODE_RENAME_ARTIFACT_PREFIX):
+            continue
+        path = Path(entry.path).resolve()
+        if entry.is_dir(follow_symlinks=False):
+            temporary_folders.append(str(path))
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        matched = _EPISODE_RENAME_TRANSACTION.fullmatch(entry.name)
+        if not matched:
+            unknown_artifacts.append(str(path))
+            continue
+        detail: dict[str, Any] = {
+            "path": str(path),
+            "token": matched.group(1),
+            "valid": False,
+            "status": "unknown",
+            "entries": [],
+        }
+        try:
+            payload = _episode_rename_json(path, label="회차 폴더 복구 기록")
+            raw_entries = payload.get("entries", [])
+            if not isinstance(raw_entries, list):
+                raise ValueError("entries가 배열이 아닙니다.")
+            locations: list[dict[str, Any]] = []
+            for item in raw_entries:
+                if not isinstance(item, dict):
+                    continue
+                source_text = str(item.get("source") or "").strip()
+                temporary_text = str(item.get("temporary") or "").strip()
+                target_text = str(item.get("target") or "").strip()
+                locations.append(
+                    {
+                        "source": source_text,
+                        "temporary": temporary_text,
+                        "target": target_text,
+                        "sourceExists": bool(
+                            source_text and Path(source_text).is_dir()
+                        ),
+                        "temporaryExists": bool(
+                            temporary_text and Path(temporary_text).is_dir()
+                        ),
+                        "targetExists": bool(
+                            target_text and Path(target_text).is_dir()
+                        ),
+                    }
+                )
+            rollback_errors = payload.get("rollbackErrors", [])
+            if not isinstance(rollback_errors, list):
+                rollback_errors = [str(rollback_errors)]
+            detail.update(
+                {
+                    "valid": True,
+                    "status": str(payload.get("status") or "unknown"),
+                    "createdAt": str(payload.get("createdAt") or ""),
+                    "updatedAt": str(payload.get("updatedAt") or ""),
+                    "rollbackErrors": [str(item) for item in rollback_errors],
+                    "entries": locations,
+                }
+            )
+        except (OSError, ValueError) as error:
+            detail["error"] = str(error)
+        transaction_files.append(detail)
+
+    temporary_folders.sort(key=str.casefold)
+    transaction_files.sort(key=lambda item: str(item["path"]).casefold())
+    unknown_artifacts.sort(key=str.casefold)
+    required = bool(temporary_folders or transaction_files or unknown_artifacts)
+    return {
+        "required": required,
+        "message": (
+            "이전 회차 폴더명 변경의 복구 자료가 남아 있습니다. "
+            "표시된 원본·임시·대상 경로를 확인하고 복구하기 전에는 다시 실행할 수 없습니다."
+            if required
+            else ""
+        ),
+        "temporaryFolders": temporary_folders,
+        "transactionFiles": transaction_files,
+        "unknownArtifacts": unknown_artifacts,
+        "artifactCount": (
+            len(temporary_folders)
+            + len(transaction_files)
+            + len(unknown_artifacts)
+        ),
+    }
+
+
+def _episode_rename_has_legacy_image(folder: Path) -> bool:
+    """Return whether a heuristic folder contains an old downloader image name."""
+
+    try:
+        with os.scandir(folder) as children:
+            return any(
+                child.is_file(follow_symlinks=False)
+                and _LEGACY_EPISODE_IMAGE_FILE.search(child.name) is not None
+                for child in children
+            )
+    except OSError:
+        return False
+
+
+def plan_episode_folder_rename(
+    job_id: str,
+    *,
+    job_snapshot: EpisodeRenameJobSnapshot | DownloadJob | None = None,
+) -> dict[str, Any]:
+    """Plan a non-destructive legacy episode-folder naming migration.
+
+    The legacy leading ordinal remains the stable episode number in state.  Only
+    the directory display name changes to ``<full work title> <episode suffix>``.
+    """
+
+    job = _episode_rename_resolve_job(job_id, job_snapshot)
+    if job.state in ACTIVE_JOB_STATES:
+        raise ValueError("대기 또는 실행 중인 작품의 회차 폴더명은 변경할 수 없습니다.")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+
+    state_path = output_path / ".toki-state.json"
+    metadata_path = output_path / "metadata.json"
+    state = _episode_rename_json(state_path, label="완료 회차 상태 파일")
+    metadata = _episode_rename_json(metadata_path, label="metadata.json")
+    work_title = _episode_rename_work_title(job, metadata, output_path)
+
+    state_records = state.get("episodes", [])
+    if not isinstance(state_records, list):
+        raise ValueError("완료 회차 상태의 episodes는 배열이어야 합니다.")
+    metadata_records = metadata.get("episodes", [])
+    if not isinstance(metadata_records, list):
+        raise ValueError("metadata.json의 episodes는 배열이어야 합니다.")
+    existing_records = _episode_rename_merge_records(
+        state_records,
+        metadata_records,
+    )
+    records_by_number: dict[int, list[dict[str, Any]]] = {}
+    for item in existing_records:
+        if not isinstance(item, dict):
+            continue
+        try:
+            number = int(item.get("number") or 0)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            records_by_number.setdefault(number, []).append(dict(item))
+
+    recovery = _episode_rename_recovery_info(output_path)
+    if recovery["required"]:
+        return {
+            "jobId": job.job_id,
+            "workKey": job.work_key,
+            "title": work_title,
+            "outputPath": str(output_path),
+            "mode": "title_suffix",
+            "dryRun": True,
+            "executed": False,
+            "folderCount": 0,
+            "renameCount": 0,
+            "unchangedCount": 0,
+            "fallbackSuffixCount": 0,
+            "unsafeSuffixCount": 0,
+            "duplicateNumbers": [],
+            "conflictCount": 1,
+            "conflicts": [
+                {
+                    "type": "recovery_required",
+                    "message": recovery["message"],
+                    "artifactCount": recovery["artifactCount"],
+                }
+            ],
+            "canExecute": False,
+            "recoveryRequired": True,
+            "recovery": recovery,
+            "mappings": [],
+            "episodes": [
+                dict(item) for item in existing_records if isinstance(item, dict)
+            ],
+            "stateVersion": 2,
+            "statePath": str(state_path),
+            "stateExists": state_path.is_file(),
+            "stateBackupPath": str(_episode_rename_backup_candidate(state_path)),
+            "metadataPath": str(metadata_path),
+            "metadataExists": metadata_path.is_file(),
+            "metadataBackupPath": str(
+                _episode_rename_backup_candidate(metadata_path)
+            ),
+            "pathPolicy": _episode_rename_path_policy(),
+            "manifestValid": False,
+        }
+
+    sources: list[tuple[int, Path, str, bool]] = []
+    known_sources: set[str] = set()
+    # State v2 is authoritative and must be consulted before the legacy-name
+    # heuristic.  An already migrated title is allowed to begin with digits.
+    for number, records in records_by_number.items():
+        for record in records:
+            for folder_name in _episode_rename_record_folders(record):
+                source = (output_path / folder_name).resolve()
+                source_key = os.path.normcase(str(source))
+                if source_key in known_sources or not source.is_dir():
+                    continue
+                try:
+                    source.relative_to(output_path)
+                except ValueError:
+                    continue
+                matched = _LEGACY_EPISODE_FOLDER.match(source.name)
+                legacy_title = (
+                    matched.group(2).strip()
+                    if matched
+                    else str(record.get("sourceTitle") or source.name).strip()
+                )
+                sources.append((number, source, legacy_title, False))
+                known_sources.add(source_key)
+                break
+
+    with os.scandir(output_path) as output_entries_scan:
+        output_entries = list(output_entries_scan)
+    for entry in output_entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        source = Path(entry.path).resolve()
+        source_key = os.path.normcase(str(source))
+        if source_key in known_sources:
+            continue
+        matched = _LEGACY_EPISODE_FOLDER.match(entry.name)
+        if not matched:
+            continue
+        number = int(matched.group(1))
+        if number <= 0 or not _episode_rename_has_legacy_image(source):
+            continue
+        sources.append((number, source, matched.group(2).strip(), True))
+        known_sources.add(source_key)
+
+    if not sources:
+        raise FileNotFoundError("이름을 변경할 회차 폴더를 찾을 수 없습니다.")
+    sources.sort(key=lambda item: (item[0], item[1].name.casefold()))
+
+    mappings: list[dict[str, Any]] = []
+    target_counts: dict[str, int] = {}
+    number_counts: dict[int, int] = {}
+    unsafe_count = 0
+    for number, source, legacy_title, heuristic_legacy in sources:
+        matching_records = records_by_number.get(number, [])
+        exact_record = next(
+            (
+                item
+                for item in matching_records
+                if source.name.casefold()
+                in {
+                    folder.casefold()
+                    for folder in _episode_rename_record_folders(item)
+                }
+            ),
+            None,
+        )
+        identity_matches = [
+            item
+            for item in matching_records
+            if any(
+                _episode_rename_titles_match(legacy_title, candidate, number)
+                for candidate in (
+                    item.get("sourceTitle"),
+                    item.get("displayTitle"),
+                    *_episode_rename_record_folders(item),
+                )
+            )
+        ]
+        record = exact_record or (
+            identity_matches[0] if len(identity_matches) == 1 else {}
+        )
+        identity_trusted = bool(record)
+        source_title = str(record.get("sourceTitle") or legacy_title).strip()
+        suffix, suffix_source = _episode_rename_suffix(
+            source_title,
+            legacy_title,
+            number=number,
+            work_title=work_title,
+        )
+        unsafe_suffix = suffix_source == "unsafe" or not suffix
+        if unsafe_suffix:
+            unsafe_count += 1
+        display_title = (
+            sanitize_windows_path_segment(f"{work_title} {suffix}", "회차")
+            if not unsafe_suffix
+            else ""
+        )
+        if "…" in display_title or "..." in display_title:
+            unsafe_suffix = True
+            unsafe_count += int(suffix_source != "unsafe")
+            suffix_source = "unsafe"
+            display_title = ""
+        if not record and display_title and matching_records:
+            identity_matches = [
+                item
+                for item in matching_records
+                if display_title.casefold()
+                in {
+                    folder.casefold()
+                    for folder in _episode_rename_record_folders(item)
+                }
+            ]
+            if len(identity_matches) == 1:
+                record = identity_matches[0]
+                identity_trusted = True
+                source_title = str(
+                    record.get("sourceTitle") or source_title
+                ).strip()
+        target = (output_path / display_title).resolve() if display_title else None
+        if target is not None:
+            try:
+                target.relative_to(output_path)
+            except ValueError as error:
+                raise ValueError("회차 폴더명이 작품 폴더 밖을 가리킵니다.") from error
+        same_path = bool(
+            target is not None
+            and os.path.normcase(str(source)) == os.path.normcase(str(target))
+        )
+        component_utf16_units = _windows_utf16_units(display_title)
+        destination_utf16_units = _windows_utf16_units(target) if target else 0
+        component_too_long = (
+            component_utf16_units
+            > _WINDOWS_SAFE_EPISODE_COMPONENT_UTF16_UNITS
+        )
+        absolute_path_too_long = (
+            destination_utf16_units > _WINDOWS_SAFE_EPISODE_PATH_UTF16_UNITS
+        )
+        if target is not None:
+            target_key = os.path.normcase(str(target))
+            target_counts[target_key] = target_counts.get(target_key, 0) + 1
+        if heuristic_legacy:
+            number_counts[number] = number_counts.get(number, 0) + 1
+        mappings.append(
+            {
+                "number": number,
+                "sourceId": str(record.get("sourceId") or ""),
+                "sourceUrl": str(record.get("sourceUrl") or ""),
+                "sourceTitle": source_title,
+                "displayTitle": display_title,
+                "folderName": display_title,
+                "source": str(source),
+                "destination": str(target) if target is not None else "",
+                "sourceFolderName": source.name,
+                "destinationFolderName": display_title,
+                "suffix": suffix,
+                "suffixSource": suffix_source,
+                "sourceDiscovery": "legacy_prefix" if heuristic_legacy else "state",
+                "identityTrusted": identity_trusted,
+                "numberInferred": bool(record.get("numberInferred"))
+                and not heuristic_legacy,
+                "unsafeSuffix": unsafe_suffix,
+                "unsafeReason": (
+                    "원본 회차 제목에서 신뢰할 수 있는 회차 접미사를 찾지 못했습니다."
+                    if unsafe_suffix
+                    else ""
+                ),
+                "samePath": same_path,
+                "componentUtf16Units": component_utf16_units,
+                "destinationUtf16Units": destination_utf16_units,
+                "componentTooLong": component_too_long,
+                "absolutePathTooLong": absolute_path_too_long,
+                "pathTooLong": (
+                    not same_path and (component_too_long or absolute_path_too_long)
+                ),
+                "conflict": bool(target is not None and target.exists() and not same_path),
+            }
+        )
+
+    duplicate_targets = {
+        target for target, count in target_counts.items() if count > 1
+    }
+    duplicate_numbers = sorted(
+        number for number, count in number_counts.items() if count > 1
+    )
+    for mapping in mappings:
+        mapping["duplicateTarget"] = (
+            bool(mapping["destination"])
+            and os.path.normcase(mapping["destination"]) in duplicate_targets
+        )
+
+    def conflict_type(mapping: dict[str, Any]) -> str:
+        if mapping["unsafeSuffix"]:
+            return "unsafe_suffix"
+        if mapping["duplicateTarget"]:
+            return "duplicate_target"
+        if mapping["pathTooLong"]:
+            return "path_too_long"
+        return "path_conflict"
+
+    def conflict_message(mapping: dict[str, Any]) -> str:
+        if mapping["unsafeSuffix"]:
+            return str(mapping["unsafeReason"])
+        if mapping["duplicateTarget"]:
+            return "둘 이상의 회차가 같은 목적지 폴더명을 사용합니다."
+        if mapping["componentTooLong"]:
+            return (
+                "회차 폴더명이 Windows 안전 길이를 초과합니다: "
+                f"{mapping['componentUtf16Units']} UTF-16 units"
+            )
+        if mapping["absolutePathTooLong"]:
+            return (
+                "전체 목적지 경로가 Windows 안전 길이를 초과합니다: "
+                f"{mapping['destinationUtf16Units']} UTF-16 units"
+            )
+        return "목적지 폴더가 이미 존재합니다."
+
+    conflicts = [
+        {
+            "type": conflict_type(mapping),
+            "number": mapping["number"],
+            "source": mapping["source"],
+            "destination": mapping["destination"],
+            "existingDestination": mapping["conflict"],
+            "duplicateTarget": mapping["duplicateTarget"],
+            "pathTooLong": mapping["pathTooLong"],
+            "componentTooLong": mapping["componentTooLong"],
+            "absolutePathTooLong": mapping["absolutePathTooLong"],
+            "componentUtf16Units": mapping["componentUtf16Units"],
+            "destinationUtf16Units": mapping["destinationUtf16Units"],
+            "unsafeSuffix": mapping["unsafeSuffix"],
+            "message": conflict_message(mapping),
+        }
+        for mapping in mappings
+        if mapping["conflict"]
+        or mapping["duplicateTarget"]
+        or mapping["pathTooLong"]
+        or mapping["unsafeSuffix"]
+    ]
+
+    mapped_folder_names = {
+        str(mapping["sourceFolderName"]).casefold()
+        for mapping in mappings
+        if not mapping["unsafeSuffix"]
+    }
+    mapped_source_ids = {
+        str(mapping["sourceId"])
+        for mapping in mappings
+        if not mapping["unsafeSuffix"] and mapping["sourceId"]
+    }
+    episodes: list[dict[str, Any]] = []
+    for item in existing_records:
+        if not isinstance(item, dict):
+            continue
+        try:
+            number = int(item.get("number") or 0)
+        except (TypeError, ValueError):
+            continue
+        folder_names = {
+            folder.casefold() for folder in _episode_rename_record_folders(item)
+        }
+        source_id = str(item.get("sourceId") or "")
+        if number <= 0 or folder_names.intersection(mapped_folder_names) or (
+            source_id and source_id in mapped_source_ids
+        ):
+            continue
+        episodes.append(dict(item))
+    episodes.extend(
+        {
+            "number": mapping["number"],
+            **(
+                {"numberInferred": True}
+                if mapping.get("numberInferred")
+                else {}
+            ),
+            "sourceId": mapping["sourceId"],
+            "sourceUrl": mapping["sourceUrl"],
+            "sourceTitle": mapping["sourceTitle"],
+            "displayTitle": mapping["displayTitle"],
+            "folderName": mapping["folderName"],
+        }
+        for mapping in mappings
+        if not mapping["unsafeSuffix"]
+    )
+    episodes = [
+        {
+            "number": int(item.get("number") or 0),
+            **({"numberInferred": True} if item.get("numberInferred") else {}),
+            "sourceId": _episode_rename_stable_id(item),
+            "sourceUrl": str(item.get("sourceUrl") or ""),
+            "sourceTitle": str(item.get("sourceTitle") or ""),
+            "displayTitle": str(
+                item.get("displayTitle")
+                or item.get("folderName")
+                or item.get("sourceTitle")
+                or ""
+            ),
+            "folderName": str(
+                next(iter(_episode_rename_record_folders(item)), "")
+            ),
+        }
+        for item in episodes
+        if int(item.get("number") or 0) > 0
+    ]
+    episodes.sort(
+        key=lambda item: (
+            int(item.get("number") or 0),
+            str(item.get("sourceId") or ""),
+            str(item.get("folderName") or "").casefold(),
+        )
+    )
+    _parsed_episodes, manifest_valid = _parse_episode_manifest_entries(episodes)
+    if not manifest_valid:
+        conflicts.append(
+            {
+                "type": "manifest_invalid",
+                "number": 0,
+                "source": "",
+                "destination": "",
+                "existingDestination": False,
+                "duplicateTarget": False,
+                "pathTooLong": False,
+                "componentTooLong": False,
+                "absolutePathTooLong": False,
+                "componentUtf16Units": 0,
+                "destinationUtf16Units": 0,
+                "unsafeSuffix": False,
+                "message": (
+                    "이름 변경 뒤 회차 manifest의 ID 또는 폴더명이 중복되거나 "
+                    "필수 필드가 비어 있어 실행할 수 없습니다."
+                ),
+            }
+        )
+
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": work_title,
+        "outputPath": str(output_path),
+        "mode": "title_suffix",
+        "dryRun": True,
+        "executed": False,
+        "folderCount": len(mappings),
+        "renameCount": sum(
+            not item["samePath"] and not item["unsafeSuffix"] for item in mappings
+        ),
+        "unchangedCount": sum(bool(item["samePath"]) for item in mappings),
+        "fallbackSuffixCount": 0,
+        "unsafeSuffixCount": unsafe_count,
+        "duplicateNumbers": duplicate_numbers,
+        "conflictCount": len(conflicts),
+        "conflicts": conflicts,
+        "canExecute": not conflicts and not duplicate_numbers,
+        "recoveryRequired": False,
+        "recovery": recovery,
+        "mappings": mappings,
+        "episodes": episodes,
+        "stateVersion": 2,
+        "statePath": str(state_path),
+        "stateExists": state_path.is_file(),
+        "stateBackupPath": str(_episode_rename_backup_candidate(state_path)),
+        "metadataPath": str(metadata_path),
+        "metadataExists": metadata_path.is_file(),
+        "metadataBackupPath": str(_episode_rename_backup_candidate(metadata_path)),
+        "pathPolicy": _episode_rename_path_policy(),
+        "manifestValid": manifest_valid,
+    }
+
+
+def _write_episode_rename_json(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(path.name + ".episode-rename.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def rename_episode_folders(job_id: str) -> dict[str, Any]:
+    plan = plan_episode_folder_rename(job_id)
+    if not plan["canExecute"]:
+        if plan.get("recoveryRequired"):
+            raise RuntimeError(str(plan["recovery"]["message"]))
+        if plan.get("unsafeSuffixCount"):
+            raise ValueError(
+                "원본 제목에서 신뢰할 수 있는 회차 접미사를 찾지 못한 폴더가 있습니다."
+            )
+        if plan["duplicateNumbers"]:
+            joined = ", ".join(str(value) for value in plan["duplicateNumbers"])
+            raise FileExistsError(f"중복 회차 번호 폴더가 있습니다: {joined}")
+        first = plan["conflicts"][0]
+        if first.get("type") == "manifest_invalid":
+            raise ValueError(str(first.get("message") or "회차 manifest가 올바르지 않습니다."))
+        raise FileExistsError(f"회차 폴더 이름 충돌이 있습니다: {first['destination']}")
+
+    state_path = Path(plan["statePath"])
+    metadata_path = Path(plan["metadataPath"])
+    state_existed = state_path.is_file()
+    metadata_existed = metadata_path.is_file()
+    state = _episode_rename_json(state_path, label="완료 회차 상태 파일")
+    metadata = _episode_rename_json(metadata_path, label="metadata.json")
+    state_backup = _episode_rename_backup_candidate(state_path)
+    metadata_backup = _episode_rename_backup_candidate(metadata_path)
+    if state_existed:
+        shutil.copy2(state_path, state_backup)
+    if metadata_existed:
+        shutil.copy2(metadata_path, metadata_backup)
+
+    token = uuid.uuid4().hex
+    entries: list[dict[str, Path]] = []
+    for index, mapping in enumerate(plan["mappings"], start=1):
+        if mapping["samePath"]:
+            continue
+        source = Path(mapping["source"])
+        target = Path(mapping["destination"])
+        temporary = Path(plan["outputPath"]) / (
+            f".toki-episode-rename-{token}-{index:04d}"
+        )
+        if temporary.exists():
+            raise FileExistsError(f"임시 회차 폴더가 이미 존재합니다: {temporary}")
+        entries.append({"source": source, "temporary": temporary, "target": target})
+
+    transaction_path = Path(plan["outputPath"]) / (
+        f".toki-episode-rename-{token}.json"
+    )
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    transaction: dict[str, Any] = {
+        "version": 1,
+        "jobId": job_id,
+        "token": token,
+        "status": "prepared",
+        "createdAt": now,
+        "updatedAt": now,
+        "entries": [
+            {key: str(value) for key, value in entry.items()} for entry in entries
+        ],
+        "rollbackErrors": [],
+    }
+    _write_episode_rename_json(transaction_path, transaction)
+
+    def update_transaction(status: str, rollback_errors: list[str] | None = None) -> None:
+        transaction["status"] = status
+        transaction["updatedAt"] = datetime.now().astimezone().isoformat(
+            timespec="seconds"
+        )
+        if rollback_errors is not None:
+            transaction["rollbackErrors"] = list(rollback_errors)
+        _write_episode_rename_json(transaction_path, transaction)
+
+    current_locations: dict[str, Path] = {
+        os.path.normcase(str(entry["source"])): entry["source"] for entry in entries
+    }
+    try:
+        for entry in entries:
+            os.replace(entry["source"], entry["temporary"])
+            current_locations[os.path.normcase(str(entry["source"]))] = entry[
+                "temporary"
+            ]
+        update_transaction("temporary")
+        for entry in entries:
+            if entry["target"].exists():
+                raise FileExistsError(
+                    f"회차 폴더 이름 변경 중 목적지가 생성되었습니다: {entry['target']}"
+                )
+            os.replace(entry["temporary"], entry["target"])
+            current_locations[os.path.normcase(str(entry["source"]))] = entry["target"]
+        update_transaction("renamed")
+
+        completed = state.get("completedEpisodes")
+        if isinstance(completed, list):
+            completed_episodes = sorted(
+                {
+                    int(value)
+                    for value in completed
+                    if str(value).isdigit() and int(value) > 0
+                }
+            )
+        else:
+            # A folder can be left behind by an interrupted/partial download.
+            # Without an explicit completion list, migration must not invent one.
+            completed_episodes = []
+        existing_completed_ids = state.get("completedEpisodeIds")
+        completed_episode_ids = {
+            str(value).strip()
+            for value in (
+                existing_completed_ids
+                if isinstance(existing_completed_ids, list)
+                else []
+            )
+            if str(value).strip()
+        }
+        try:
+            source_state_version = int(
+                state.get("version", 1 if state_existed else 0)
+            )
+        except (TypeError, ValueError):
+            source_state_version = 0
+        if (
+            state_existed
+            and source_state_version <= 1
+            and isinstance(completed, list)
+        ):
+            mappings_by_number: dict[int, list[dict[str, Any]]] = {}
+            for mapping in plan["mappings"]:
+                mappings_by_number.setdefault(int(mapping["number"]), []).append(mapping)
+            for number in completed_episodes:
+                candidates = mappings_by_number.get(number, [])
+                if len(candidates) != 1:
+                    continue
+                candidate = candidates[0]
+                source_id = str(candidate.get("sourceId") or "").strip()
+                if source_id and bool(candidate.get("identityTrusted")):
+                    completed_episode_ids.add(source_id)
+        state.update(
+            {
+                "version": 2,
+                "completedEpisodes": completed_episodes,
+                "completedEpisodeIds": sorted(completed_episode_ids),
+                "episodes": plan["episodes"],
+                "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+        )
+        metadata["episodes"] = plan["episodes"]
+        metadata["episodeFolderNaming"] = {
+            "version": 1,
+            "mode": "title_suffix",
+            "title": plan["title"],
+            "updatedAt": state["updatedAt"],
+        }
+        _write_episode_rename_json(state_path, state)
+        _write_episode_rename_json(metadata_path, metadata)
+        transaction_path.unlink(missing_ok=True)
+    except Exception as error:
+        rollback_errors: list[str] = []
+        for entry in reversed(entries):
+            source_key = os.path.normcase(str(entry["source"]))
+            current = current_locations[source_key]
+            try:
+                if current.exists() and not entry["source"].exists():
+                    os.replace(current, entry["source"])
+            except OSError as rollback_error:
+                rollback_errors.append(f"{current} -> {entry['source']}: {rollback_error}")
+        for entry in entries:
+            source_key = os.path.normcase(str(entry["source"]))
+            current = current_locations[source_key]
+            if not entry["source"].is_dir():
+                rollback_errors.append(f"원본 폴더가 복구되지 않음: {entry['source']}")
+            if current != entry["source"] and current.exists():
+                rollback_errors.append(f"변경 중 폴더가 남아 있음: {current}")
+        try:
+            if state_existed and state_backup.is_file():
+                shutil.copy2(state_backup, state_path)
+            elif not state_existed and state_path.exists():
+                state_path.unlink()
+        except OSError as rollback_error:
+            rollback_errors.append(f"완료 회차 상태 파일 복구: {rollback_error}")
+        try:
+            if metadata_existed and metadata_backup.is_file():
+                shutil.copy2(metadata_backup, metadata_path)
+            elif not metadata_existed and metadata_path.exists():
+                metadata_path.unlink()
+        except OSError as rollback_error:
+            rollback_errors.append(f"metadata.json 복구: {rollback_error}")
+        if not rollback_errors:
+            try:
+                transaction_path.unlink(missing_ok=True)
+            except OSError as rollback_error:
+                rollback_errors.append(f"복구 기록 정리: {rollback_error}")
+        if rollback_errors:
+            try:
+                update_transaction("rollback_failed", rollback_errors)
+            except OSError as marker_error:
+                rollback_errors.append(f"복구 기록 갱신: {marker_error}")
+            raise RuntimeError(
+                "회차 폴더명 변경과 원위치 복구가 모두 실패했습니다: "
+                + "; ".join(rollback_errors)
+            ) from error
+        raise
+
+    return {
+        **plan,
+        "dryRun": False,
+        "executed": True,
+        "renamedCount": len(entries),
+        "stateBackupPath": str(state_backup) if state_existed else "",
+        "stateBackupCreated": state_existed and state_backup.is_file(),
+        "metadataBackupPath": str(metadata_backup) if metadata_existed else "",
+        "metadataBackupCreated": metadata_existed and metadata_backup.is_file(),
+    }
+
+
 def plan_metadata_rebuild(job_id: str) -> dict[str, Any]:
     job = load_job_by_id(job_id)
     if job is None:
@@ -6544,6 +7773,31 @@ def plan_metadata_rebuild(job_id: str) -> dict[str, Any]:
         if candidate.is_file():
             cover_file = candidate.name
 
+    discovered_episodes = discover_episode_folders(output_path)
+    rebuilt_episodes = [
+        {
+            "number": episode.number,
+            **({"numberInferred": True} if episode.number_inferred else {}),
+            "sourceId": episode.source_id,
+            "sourceUrl": episode.source_url,
+            "sourceTitle": episode.source_title or episode.folder_name,
+            "displayTitle": episode.display_title or episode.folder_name,
+            "folderName": episode.folder_name,
+        }
+        for episode in discovered_episodes
+    ]
+    try:
+        recorded_episode_count = int(existing.get("episodeCount") or 0)
+    except (TypeError, ValueError):
+        recorded_episode_count = 0
+    episode_count = max(
+        recorded_episode_count,
+        job.episode_total,
+        job.episode_number,
+        len(rebuilt_episodes),
+        0,
+    )
+
     rebuilt = dict(existing)
     rebuilt.update(
         {
@@ -6559,14 +7813,13 @@ def plan_metadata_rebuild(job_id: str) -> dict[str, Any]:
                 "url": job.url,
             },
             "folderName": output_path.name,
-            "episodeCount": int(
-                existing.get("episodeCount")
-                or max(job.episode_total, job.episode_number, 0)
-            ),
+            "episodeCount": episode_count,
             "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "generatedBy": "tokiDownloader-local-rebuild",
         }
     )
+    if rebuilt_episodes:
+        rebuilt["episodes"] = rebuilt_episodes
     if cover_file:
         rebuilt["coverFile"] = cover_file
     return {
@@ -6576,6 +7829,11 @@ def plan_metadata_rebuild(job_id: str) -> dict[str, Any]:
         "backupPath": str(metadata_path.with_suffix(".json.bak")),
         "willOverwrite": metadata_path.exists(),
         "existingValid": existing_valid,
+        "episodeFolderCount": len(rebuilt_episodes),
+        "recoveredEpisodeCount": sum(
+            episode.discovery.endswith("recovery")
+            for episode in discovered_episodes
+        ),
         "metadata": rebuilt,
         "executed": False,
     }
@@ -6610,6 +7868,472 @@ def rebuild_job_metadata(job_id: str) -> dict[str, Any]:
 IMAGE_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 )
+
+
+@dataclass(frozen=True)
+class EpisodeManifestEntry:
+    number: int
+    source_id: str
+    source_url: str
+    source_title: str
+    display_title: str
+    folder_name: str
+    folder_hints: tuple[str, ...] = ()
+    number_inferred: bool = False
+    record_valid: bool = True
+
+
+@dataclass(frozen=True)
+class EpisodeStateManifest:
+    path: Path
+    exists: bool
+    valid: bool
+    version: int
+    completed_numbers: frozenset[int]
+    completed_ids: frozenset[str]
+    completed_ids_present: bool
+    episodes: tuple[EpisodeManifestEntry, ...]
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class EpisodeFolderEntry:
+    number: int
+    path: Path
+    folder_name: str
+    source_id: str = ""
+    source_url: str = ""
+    source_title: str = ""
+    display_title: str = ""
+    number_inferred: bool = False
+    discovery: str = "legacy"
+
+
+def _positive_episode_number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _safe_manifest_folder_name(value: Any) -> str:
+    folder_name = str(value or "").strip()
+    if (
+        not folder_name
+        or folder_name in {".", ".."}
+        or "/" in folder_name
+        or "\\" in folder_name
+        or "\x00" in folder_name
+    ):
+        return ""
+    return folder_name
+
+
+def _parse_episode_manifest_entries(
+    raw_episodes: Any,
+) -> tuple[tuple[EpisodeManifestEntry, ...], bool]:
+    if not isinstance(raw_episodes, list):
+        return (), False
+    episodes: list[EpisodeManifestEntry] = []
+    valid = True
+    seen_ids: set[str] = set()
+    seen_folders: set[str] = set()
+    required_fields = {
+        "number",
+        "sourceId",
+        "sourceUrl",
+        "sourceTitle",
+        "displayTitle",
+        "folderName",
+    }
+    for position, raw_episode in enumerate(raw_episodes, start=1):
+        if not isinstance(raw_episode, dict):
+            valid = False
+            continue
+        declared_number = _positive_episode_number(raw_episode.get("number"))
+        number = declared_number or position
+        number_inferred = (
+            raw_episode.get("numberInferred") is True or declared_number is None
+        )
+        source_id = str(raw_episode.get("sourceId") or "").strip()
+        source_url = str(raw_episode.get("sourceUrl") or "").strip()
+        source_title = str(raw_episode.get("sourceTitle") or "").strip()
+        display_title = str(raw_episode.get("displayTitle") or "").strip()
+        folder_candidates: list[str] = []
+        declared_folder = _safe_manifest_folder_name(raw_episode.get("folderName"))
+        if declared_folder:
+            folder_candidates.append(declared_folder)
+        for title in (display_title, source_title):
+            candidate = _safe_manifest_folder_name(
+                sanitize_windows_path_segment(title, "")
+            )
+            if candidate and candidate.casefold() not in {
+                item.casefold() for item in folder_candidates
+            }:
+                folder_candidates.append(candidate)
+        if not folder_candidates:
+            valid = False
+            continue
+        folder_name = folder_candidates[0]
+        folder_key = folder_name.casefold()
+        source_fields_are_strings = all(
+            isinstance(raw_episode.get(field), str)
+            for field in (
+                "sourceId",
+                "sourceUrl",
+                "sourceTitle",
+                "displayTitle",
+                "folderName",
+            )
+        )
+        record_valid = (
+            required_fields.issubset(raw_episode)
+            and source_fields_are_strings
+            and declared_number is not None
+            and bool(declared_folder)
+            and (not source_id or source_id not in seen_ids)
+            and folder_key not in seen_folders
+        )
+        if not record_valid:
+            valid = False
+        if source_id:
+            seen_ids.add(source_id)
+        seen_folders.add(folder_key)
+        episodes.append(
+            EpisodeManifestEntry(
+                number=number,
+                source_id=source_id,
+                source_url=source_url,
+                source_title=source_title,
+                display_title=display_title,
+                folder_name=folder_name,
+                folder_hints=tuple(folder_candidates[1:]),
+                number_inferred=number_inferred,
+                record_valid=record_valid,
+            )
+        )
+    episodes.sort(key=lambda item: item.number)
+    return tuple(episodes), valid
+
+
+def load_episode_metadata_manifest(
+    output_path: str | Path,
+) -> tuple[EpisodeManifestEntry, ...]:
+    metadata_path = Path(output_path).expanduser().resolve() / "metadata.json"
+    if not metadata_path.is_file():
+        return ()
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    if not isinstance(metadata, dict) or "episodes" not in metadata:
+        return ()
+    episodes, _valid = _parse_episode_manifest_entries(metadata.get("episodes"))
+    return episodes
+
+
+def load_episode_state_manifest(output_path: str | Path) -> EpisodeStateManifest:
+    root = Path(output_path).expanduser().resolve()
+    state_path = root / ".toki-state.json"
+    if not state_path.is_file():
+        return EpisodeStateManifest(
+            path=state_path,
+            exists=state_path.exists(),
+            valid=False,
+            version=0,
+            completed_numbers=frozenset(),
+            completed_ids=frozenset(),
+            completed_ids_present=False,
+            episodes=(),
+        )
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return EpisodeStateManifest(
+            path=state_path,
+            exists=True,
+            valid=False,
+            version=0,
+            completed_numbers=frozenset(),
+            completed_ids=frozenset(),
+            completed_ids_present=False,
+            episodes=(),
+            error=str(error),
+        )
+    if not isinstance(state, dict):
+        return EpisodeStateManifest(
+            path=state_path,
+            exists=True,
+            valid=False,
+            version=0,
+            completed_numbers=frozenset(),
+            completed_ids=frozenset(),
+            completed_ids_present=False,
+            episodes=(),
+            error="완료 회차 상태가 JSON 객체가 아닙니다.",
+        )
+
+    valid = True
+    try:
+        version = int(state.get("version", 1))
+    except (TypeError, ValueError):
+        version = 0
+        valid = False
+    if version < 1:
+        valid = False
+
+    raw_completed = state.get("completedEpisodes", [])
+    if not isinstance(raw_completed, list):
+        raw_completed = []
+        valid = False
+    completed_numbers = frozenset(
+        number
+        for value in raw_completed
+        if (number := _positive_episode_number(value)) is not None
+    )
+
+    completed_ids_present = "completedEpisodeIds" in state
+    raw_completed_ids = state.get("completedEpisodeIds", [])
+    if raw_completed_ids is None and not completed_ids_present:
+        raw_completed_ids = []
+    if not isinstance(raw_completed_ids, list):
+        raw_completed_ids = []
+        valid = False
+    completed_ids = frozenset(
+        str(value).strip() for value in raw_completed_ids if str(value).strip()
+    )
+
+    episodes: tuple[EpisodeManifestEntry, ...] = ()
+    if version >= 2:
+        episodes, episodes_valid = _parse_episode_manifest_entries(
+            state.get("episodes")
+        )
+        valid = valid and episodes_valid
+        seen_ids = {episode.source_id for episode in episodes if episode.source_id}
+        if completed_ids_present and not completed_ids.issubset(seen_ids):
+            valid = False
+
+    return EpisodeStateManifest(
+        path=state_path,
+        exists=True,
+        valid=valid,
+        version=version,
+        completed_numbers=completed_numbers,
+        completed_ids=completed_ids,
+        completed_ids_present=completed_ids_present,
+        episodes=episodes,
+    )
+
+
+def _episode_path_sort_key(path: Path) -> list[tuple[int, Any]]:
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", path.name)
+    ]
+
+
+def _modern_episode_recovery_titles(root: Path) -> tuple[str, ...]:
+    """Return conservative, filesystem-safe work-title prefixes for recovery."""
+
+    candidates: list[Any] = []
+    metadata_path = root / "metadata.json"
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = None
+        if isinstance(metadata, dict):
+            candidates.append(metadata.get("title"))
+
+    folder_match = re.match(r"^\[[^]]*\]\[[^]]*\]\s*(.+)$", root.name)
+    if folder_match:
+        candidates.append(folder_match.group(1))
+
+    titles: list[str] = []
+    seen: set[str] = set()
+    placeholders = {"", "메타데이터 확인 중", "제목 없음"}
+    for candidate in candidates:
+        title = _episode_rename_safe_text(candidate)
+        key = title.casefold()
+        if title in placeholders or key in seen:
+            continue
+        seen.add(key)
+        titles.append(title)
+    return tuple(titles)
+
+
+def _folder_has_supported_episode_image(folder: Path) -> bool:
+    try:
+        with os.scandir(folder) as children:
+            return any(
+                child.is_file(follow_symlinks=False)
+                and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
+                for child in children
+            )
+    except OSError:
+        return False
+
+
+def _is_modern_episode_recovery_folder(
+    folder: Path,
+    work_titles: tuple[str, ...],
+) -> bool:
+    folder_name = _episode_rename_safe_text(folder.name)
+    folded_name = folder_name.casefold()
+    if not any(
+        folded_name.startswith(f"{title.casefold()} ")
+        and len(folder_name) > len(title) + 1
+        for title in work_titles
+    ):
+        return False
+    return _folder_has_supported_episode_image(folder)
+
+
+def discover_episode_folders(
+    output_path: str | Path,
+    state_manifest: EpisodeStateManifest | None = None,
+) -> list[EpisodeFolderEntry]:
+    root = Path(output_path).expanduser().resolve()
+    if not root.is_dir():
+        return []
+    manifest = state_manifest or load_episode_state_manifest(root)
+    physical_folders = [
+        Path(entry.path).resolve()
+        for entry in os.scandir(root)
+        if entry.is_dir(follow_symlinks=False)
+        and entry.name not in {"_converted", "_pdf"}
+    ]
+    physical_folders.sort(key=_episode_path_sort_key)
+    by_name: dict[str, list[Path]] = {}
+    legacy_by_number: dict[int, list[Path]] = {}
+    for folder in physical_folders:
+        by_name.setdefault(folder.name.casefold(), []).append(folder)
+        matched = re.match(r"^0*(\d+)(?:\s|$)", folder.name)
+        if matched:
+            legacy_by_number.setdefault(int(matched.group(1)), []).append(folder)
+
+    discovered: list[EpisodeFolderEntry] = []
+    consumed_paths: set[Path] = set()
+    manifest_sources: list[tuple[int, EpisodeManifestEntry, str]] = []
+    if manifest.version >= 2:
+        manifest_sources.extend(
+            (
+                0 if episode.record_valid else 2,
+                episode,
+                "manifest" if episode.record_valid else "manifest-recovery",
+            )
+            for episode in manifest.episodes
+        )
+    manifest_sources.extend(
+        (
+            1 if episode.record_valid else 3,
+            episode,
+            "metadata" if episode.record_valid else "metadata-recovery",
+        )
+        for episode in load_episode_metadata_manifest(root)
+    )
+    manifest_sources.sort(key=lambda item: (item[0], item[1].number))
+
+    def add_manifest_folder(
+        episode: EpisodeManifestEntry,
+        folder: Path,
+        discovery: str,
+    ) -> None:
+        if folder in consumed_paths:
+            return
+        consumed_paths.add(folder)
+        discovered.append(
+            EpisodeFolderEntry(
+                number=episode.number,
+                path=folder,
+                folder_name=folder.name,
+                source_id=episode.source_id,
+                source_url=episode.source_url,
+                source_title=episode.source_title,
+                display_title=episode.display_title,
+                number_inferred=episode.number_inferred,
+                discovery=discovery,
+            )
+        )
+
+    legacy_fallbacks: list[EpisodeManifestEntry] = []
+    for _priority, episode, discovery in manifest_sources:
+        exact_matches: list[Path] = []
+        matched_paths: set[Path] = set()
+        for folder_name in (episode.folder_name, *episode.folder_hints):
+            for folder in by_name.get(folder_name.casefold(), []):
+                if folder not in matched_paths:
+                    matched_paths.add(folder)
+                    exact_matches.append(folder)
+        if exact_matches:
+            for folder in exact_matches:
+                add_manifest_folder(episode, folder, discovery)
+        else:
+            legacy_fallbacks.append(episode)
+
+    for episode in legacy_fallbacks:
+        for folder in legacy_by_number.get(episode.number, []):
+            add_manifest_folder(episode, folder, "legacy-fallback")
+
+    work_titles = _modern_episode_recovery_titles(root)
+    used_recovery_numbers = {
+        episode.number for episode in discovered
+    } | set(legacy_by_number)
+    next_recovery_number = 1
+    for folder in physical_folders:
+        if folder in consumed_paths or not _is_modern_episode_recovery_folder(
+            folder, work_titles
+        ):
+            continue
+        while next_recovery_number in used_recovery_numbers:
+            next_recovery_number += 1
+        consumed_paths.add(folder)
+        used_recovery_numbers.add(next_recovery_number)
+        discovered.append(
+            EpisodeFolderEntry(
+                number=next_recovery_number,
+                path=folder,
+                folder_name=folder.name,
+                source_title=folder.name,
+                display_title=folder.name,
+                number_inferred=True,
+                discovery="modern-recovery",
+            )
+        )
+        next_recovery_number += 1
+
+    for number in sorted(legacy_by_number):
+        for folder in legacy_by_number[number]:
+            if folder in consumed_paths:
+                continue
+            consumed_paths.add(folder)
+            discovered.append(
+                EpisodeFolderEntry(
+                    number=number,
+                    path=folder,
+                    folder_name=folder.name,
+                )
+            )
+    discovery_order = {
+        "manifest": 0,
+        "metadata": 1,
+        "manifest-recovery": 2,
+        "metadata-recovery": 3,
+        "modern-recovery": 4,
+        "legacy-fallback": 5,
+        "legacy": 6,
+    }
+    discovered.sort(
+        key=lambda item: (
+            item.number,
+            discovery_order.get(item.discovery, 9),
+            _episode_path_sort_key(item.path),
+        )
+    )
+    return discovered
 
 
 def _image_signature_valid(path: Path) -> bool:
@@ -6683,39 +8407,43 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
             "metadata.json이 없거나 올바른 JSON 객체가 아닙니다.",
         )
 
-    state_path = output_path / ".toki-state.json"
-    expected_episodes: set[int] = set()
-    state_valid = False
-    if state_path.is_file():
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            raw_episodes = state.get("completedEpisodes", []) if isinstance(state, dict) else []
-            expected_episodes = {
-                int(value)
-                for value in raw_episodes
-                if str(value).isdigit() and int(value) > 0
-            }
-            state_valid = isinstance(state, dict)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            pass
-    if state_path.exists() and not state_valid:
+    state_manifest = load_episode_state_manifest(output_path)
+    state_path = state_manifest.path
+    state_valid = state_manifest.valid
+    uses_episode_ids = (
+        state_manifest.version >= 2 and state_manifest.completed_ids_present
+    )
+    if uses_episode_ids:
+        expected_episode_ids = set(state_manifest.completed_ids)
+        expected_id_episodes = {
+            episode.number
+            for episode in state_manifest.episodes
+            if episode.source_id in expected_episode_ids
+        }
+        expected_number_fallbacks = {
+            episode.number
+            for episode in state_manifest.episodes
+            if not episode.source_id
+            and episode.number in state_manifest.completed_numbers
+        }
+        expected_episodes = expected_id_episodes | expected_number_fallbacks
+    else:
+        expected_episode_ids = set()
+        expected_episodes = set(state_manifest.completed_numbers)
+        expected_number_fallbacks = set(expected_episodes)
+    if state_manifest.exists and not state_valid:
         add_issue("state_invalid", state_path, "완료 회차 상태 파일을 읽을 수 없습니다.")
 
-    episode_folders: dict[int, list[Path]] = {}
+    episode_folders: dict[int, list[EpisodeFolderEntry]] = {}
     image_count = 0
     other_file_count = 0
     zero_byte_count = 0
     invalid_image_count = 0
     empty_episode_count = 0
-    for entry in os.scandir(output_path):
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        matched = re.match(r"^0*(\d+)(?:\s|$)", entry.name)
-        if not matched:
-            continue
-        episode_number = int(matched.group(1))
-        episode_path = Path(entry.path)
-        episode_folders.setdefault(episode_number, []).append(episode_path)
+    for episode_folder in discover_episode_folders(output_path, state_manifest):
+        episode_number = episode_folder.number
+        episode_path = episode_folder.path
+        episode_folders.setdefault(episode_number, []).append(episode_folder)
         episode_image_count = 0
         try:
             children = os.scandir(episode_path)
@@ -6748,19 +8476,117 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
             add_issue("episode_empty", episode_path, "회차 폴더에 지원 이미지가 없습니다.")
 
     physical_episodes = set(episode_folders)
-    duplicate_episodes = sorted(
-        number for number, paths in episode_folders.items() if len(paths) > 1
-    )
+
+    def episode_identity(folder: EpisodeFolderEntry) -> tuple[str, str] | None:
+        if folder.source_id:
+            return "source", folder.source_id
+        if folder.discovery != "legacy":
+            return "folder", os.path.normcase(folder.folder_name)
+        return None
+
+    duplicate_episodes: list[int] = []
+    for number, folders in episode_folders.items():
+        if len(folders) <= 1:
+            continue
+        identities = [episode_identity(folder) for folder in folders]
+        known_identities = [identity for identity in identities if identity is not None]
+        if len(known_identities) != len(folders) or len(set(known_identities)) != len(
+            known_identities
+        ):
+            duplicate_episodes.append(number)
+    duplicate_episodes.sort()
     for number in duplicate_episodes:
         add_issue(
             "episode_duplicate",
-            episode_folders[number][0],
-            f"{number}번 회차 접두어 폴더가 {len(episode_folders[number])}개입니다.",
+            episode_folders[number][0].path,
+            f"{number}번 회차 폴더가 {len(episode_folders[number])}개입니다.",
         )
-    missing_episodes = sorted(expected_episodes - physical_episodes)
-    for number in missing_episodes:
-        add_issue("episode_missing", None, f"완료 상태의 {number}번 회차 폴더가 없습니다.")
-    untracked_episodes = sorted(physical_episodes - expected_episodes) if state_valid else []
+
+    all_episode_folders = [
+        folder for folders in episode_folders.values() for folder in folders
+    ]
+    if all_episode_folders and not state_manifest.exists:
+        add_issue(
+            "state_missing",
+            state_path,
+            "회차 폴더가 있지만 완료 회차 상태 파일이 없습니다.",
+        )
+    physical_episode_ids = {
+        folder.source_id for folder in all_episode_folders if folder.source_id
+    }
+    if uses_episode_ids:
+        physical_number_fallbacks = {
+            folder.number for folder in all_episode_folders if not folder.source_id
+        }
+        missing_episode_ids = sorted(expected_episode_ids - physical_episode_ids)
+        numbers_by_id = {
+            episode.source_id: episode.number
+            for episode in state_manifest.episodes
+            if episode.source_id
+        }
+        missing_number_fallbacks = sorted(
+            expected_number_fallbacks - physical_number_fallbacks
+        )
+        missing_episodes = sorted(
+            {
+                numbers_by_id[source_id]
+                for source_id in missing_episode_ids
+                if source_id in numbers_by_id
+            }
+            | set(missing_number_fallbacks)
+        )
+        for source_id in missing_episode_ids:
+            number = numbers_by_id.get(source_id)
+            label = f"{number}번 회차" if number is not None else source_id
+            add_issue("episode_missing", None, f"완료 상태의 {label} 폴더가 없습니다.")
+        for number in missing_number_fallbacks:
+            add_issue(
+                "episode_missing",
+                None,
+                f"완료 상태의 ID 없는 {number}번 회차 폴더가 없습니다.",
+            )
+        untracked_episode_ids = (
+            sorted(physical_episode_ids - expected_episode_ids) if state_valid else []
+        )
+        untracked_number_fallbacks = (
+            physical_number_fallbacks - expected_number_fallbacks
+            if state_valid
+            else set()
+        )
+        untracked_episodes = sorted(
+            {
+                folder.number
+                for folder in all_episode_folders
+                if folder.source_id in untracked_episode_ids
+            }
+            | untracked_number_fallbacks
+        )
+        expected_episode_count = len(expected_episode_ids) + len(
+            expected_number_fallbacks
+        )
+        missing_episode_count = len(missing_episode_ids) + len(
+            missing_number_fallbacks
+        )
+    else:
+        missing_episode_ids = []
+        untracked_episode_ids = []
+        missing_episodes = sorted(expected_episodes - physical_episodes)
+        for number in missing_episodes:
+            add_issue(
+                "episode_missing",
+                None,
+                f"완료 상태의 {number}번 회차 폴더가 없습니다.",
+            )
+        untracked_episodes = (
+            sorted(physical_episodes - expected_episodes) if state_valid else []
+        )
+        expected_episode_count = len(expected_episodes)
+        missing_episode_count = len(missing_episodes)
+
+    physical_episode_identities = {
+        episode_identity(folder) or ("legacy-number", str(folder.number))
+        for folder in all_episode_folders
+    }
 
     finished = datetime.now().astimezone()
     return {
@@ -6774,16 +8600,16 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
         "finishedAt": finished.isoformat(timespec="seconds"),
         "durationMs": max(0, int((finished - started).total_seconds() * 1000)),
         "summary": {
-            "episodeFolders": sum(len(paths) for paths in episode_folders.values()),
-            "uniqueEpisodes": len(physical_episodes),
-            "expectedEpisodes": len(expected_episodes),
+            "episodeFolders": len(all_episode_folders),
+            "uniqueEpisodes": len(physical_episode_identities),
+            "expectedEpisodes": expected_episode_count,
             "images": image_count,
             "otherFiles": other_file_count,
             "emptyEpisodes": empty_episode_count,
             "zeroByteImages": zero_byte_count,
             "invalidImages": invalid_image_count,
             "duplicateEpisodes": len(duplicate_episodes),
-            "missingEpisodes": len(missing_episodes),
+            "missingEpisodes": missing_episode_count,
             "untrackedEpisodes": len(untracked_episodes),
             "issueCount": issue_count,
             "returnedIssues": len(issues),
@@ -6792,11 +8618,16 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
         "metadata": {"path": str(metadata_path), "valid": metadata_valid},
         "state": {
             "path": str(state_path),
-            "exists": state_path.exists(),
+            "exists": state_manifest.exists,
             "valid": state_valid,
+            "version": state_manifest.version,
+            "manifestEpisodes": len(state_manifest.episodes),
+            "completedEpisodeIds": len(state_manifest.completed_ids),
         },
         "missingEpisodes": missing_episodes,
+        "missingEpisodeIds": missing_episode_ids,
         "untrackedEpisodes": untracked_episodes,
+        "untrackedEpisodeIds": untracked_episode_ids,
         "issues": issues,
     }
 
@@ -6820,12 +8651,10 @@ def list_job_episode_images(
     clean_offset = max(0, int(offset))
 
     episode_folders: dict[int, list[Path]] = {}
-    for entry in os.scandir(output_path):
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        matched = re.match(r"^0*(\d+)(?:\s|$)", entry.name)
-        if matched:
-            episode_folders.setdefault(int(matched.group(1)), []).append(Path(entry.path))
+    for episode_folder in discover_episode_folders(output_path):
+        episode_folders.setdefault(episode_folder.number, []).append(
+            episode_folder.path
+        )
     available_episodes = sorted(episode_folders)
     if not available_episodes:
         raise FileNotFoundError("미리 볼 회차 폴더가 없습니다.")
@@ -6950,12 +8779,8 @@ def image_processing_policy_snapshot(
 
 def _collect_conversion_sources(output_path: Path) -> list[Path]:
     sources: list[Path] = []
-    for entry in os.scandir(output_path):
-        if not entry.is_dir(follow_symlinks=False) or entry.name == "_converted":
-            continue
-        if not re.match(r"^0*(\d+)(?:\s|$)", entry.name):
-            continue
-        with os.scandir(entry.path) as children:
+    for episode_folder in discover_episode_folders(output_path):
+        with os.scandir(episode_folder.path) as children:
             sources.extend(
                 Path(child.path).resolve()
                 for child in children
@@ -7384,15 +9209,10 @@ def _pdf_episode_mappings(
     output_path: Path,
 ) -> tuple[Path, list[tuple[Path, list[Path], Path]], int]:
     target_root = output_path / "_pdf"
-    episode_folders: list[Path] = []
-    for entry in os.scandir(output_path):
-        if not entry.is_dir(follow_symlinks=False):
-            continue
-        if entry.name in {"_converted", "_pdf"}:
-            continue
-        if re.match(r"^0*(\d+)(?:\s|$)", entry.name):
-            episode_folders.append(Path(entry.path).resolve())
-    episode_folders.sort(key=_natural_path_key)
+    episode_folders = [
+        episode_folder.path
+        for episode_folder in discover_episode_folders(output_path)
+    ]
     mappings: list[tuple[Path, list[Path], Path]] = []
     used_targets: set[str] = set()
     empty_count = 0

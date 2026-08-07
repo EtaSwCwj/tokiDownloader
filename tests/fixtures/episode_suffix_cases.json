@@ -1,0 +1,55 @@
+[
+  {
+    "name": "case-insensitive full-title prefix",
+    "workTitle": "My Work",
+    "sourceTitle": "MY WORK 1화",
+    "number": 1,
+    "expectedSuffix": "1화"
+  },
+  {
+    "name": "case-insensitive raw ellipsis overlap",
+    "workTitle": "작품abc",
+    "sourceTitle": "작품…ABC 특별편",
+    "number": 2,
+    "expectedSuffix": "특별편"
+  },
+  {
+    "name": "sanitized ellipsis overlap slices sanitized right",
+    "workTitle": "작품AB",
+    "sourceTitle": "작품…A:B 1화",
+    "number": 3,
+    "expectedSuffix": "1화"
+  },
+  {
+    "name": "sanitized full-title prefix",
+    "workTitle": "남녀비 1:39의 평행세계는 의외로 평범",
+    "sourceTitle": "남녀비 139의 평행세계는 의외로 평범 287화",
+    "number": 272,
+    "expectedSuffix": "287화"
+  },
+  {
+    "name": "prefix separator trimming",
+    "workTitle": "Example Work",
+    "sourceTitle": "example work - Special",
+    "number": 4,
+    "expectedSuffix": "Special"
+  },
+  {
+    "name": "empty source title is unsafe",
+    "workTitle": "Example Work",
+    "sourceTitle": "",
+    "number": 5,
+    "expectedSuffix": "",
+    "expectedSource": "unsafe",
+    "downloaderErrorCode": "unsafe_episode_title"
+  },
+  {
+    "name": "work title without episode suffix is unsafe",
+    "workTitle": "Example Work",
+    "sourceTitle": "Example Work",
+    "number": 6,
+    "expectedSuffix": "",
+    "expectedSource": "unsafe",
+    "downloaderErrorCode": "unsafe_episode_title"
+  }
+]

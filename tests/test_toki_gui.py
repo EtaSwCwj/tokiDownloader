@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from collections import deque
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -111,6 +114,41 @@ class _ProgressStub:
         self.visible = value
 
 
+class _StatusBarStub:
+    def __init__(self) -> None:
+        self.messages: list[tuple] = []
+
+    def showMessage(self, *values) -> None:
+        self.messages.append(values)
+
+
+class _ThreadPoolStub:
+    def __init__(self) -> None:
+        self.tasks = []
+
+    def activeThreadCount(self) -> int:
+        return 0
+
+    def start(self, task) -> None:
+        self.tasks.append(task)
+
+
+class _ControlSocketStub:
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+        self.flushed = False
+        self.disconnected = False
+
+    def write(self, payload: bytes) -> None:
+        self.writes.append(payload)
+
+    def flush(self) -> None:
+        self.flushed = True
+
+    def disconnectFromServer(self) -> None:
+        self.disconnected = True
+
+
 class _LocalApiServerStub:
     def __init__(self) -> None:
         self.running = False
@@ -161,6 +199,7 @@ class _JobContextMenuHarness(QMainWindow):
         self.file_verify_processes = {}
         self.image_preview_processes = {}
         self.duplicate_image_tasks = {}
+        self.episode_rename_tasks = {}
         self.image_conversion_processes = {}
         self.pdf_generation_processes = {}
         self.start_spin = _ValueStub(0)
@@ -532,6 +571,657 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(inspected["rootItems"][1], "작품 재검사")
         self.assertEqual(calls, [("show", "j1"), ("inspect", "j1")])
 
+    def test_episode_folder_rename_has_no_synchronous_control_branch(self) -> None:
+        harness = type("EpisodeRenameHarness", (), {})()
+
+        with self.assertRaisesRegex(ValueError, "지원하지 않는 CLI 동작"):
+            MainWindow._handle_control_action(
+                harness,
+                {"action": "rename_episode_folders", "jobId": "j1"},
+            )
+
+    def test_episode_folder_rename_is_queued_and_duplicate_job_is_rejected(
+        self,
+    ) -> None:
+        job = DownloadJob(
+            job_id="rename-async",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\rename-async",
+            title="작품",
+            state="완료",
+        )
+        pool = _ThreadPoolStub()
+        status = _StatusBarStub()
+        service_calls = []
+        flush_calls = []
+        harness = type("EpisodeRenameAsyncHarness", (), {})()
+        harness.selected_job = lambda _job_id: job
+        harness.exit_requested = False
+        harness.exit_after_episode_rename = False
+        harness.episode_rename_tasks = {}
+        harness.active_contexts = {}
+        harness.pending_jobs = deque()
+        harness.file_verify_processes = {}
+        harness.image_preview_processes = {}
+        harness.duplicate_image_tasks = {}
+        harness.image_conversion_processes = {}
+        harness.pdf_generation_processes = {}
+        harness.io_thread_pool = pool
+        harness.resource_limits = toki_gui.resource_budget()
+        harness.rename_episode_folders = (
+            lambda job_id, execute=False, job_snapshot=None: service_calls.append(
+                (job_id, execute, job_snapshot)
+            )
+            or {"jobId": job_id, "executed": execute}
+        )
+        harness._flush_job_history = lambda: flush_calls.append("flush")
+        harness._episode_folder_rename_finished = lambda *_args: None
+        harness.log = lambda *_args, **_kwargs: None
+        harness.statusBar = lambda: status
+
+        first = MainWindow.start_episode_folder_rename(harness, job.job_id)
+        second = MainWindow.start_episode_folder_rename(harness, job.job_id)
+
+        self.assertTrue(first["started"])
+        self.assertFalse(second["started"])
+        self.assertTrue(second["alreadyRunning"])
+        self.assertEqual(len(pool.tasks), 1)
+        self.assertEqual(service_calls, [])
+        self.assertEqual(
+            pool.tasks[0].operation(),
+            {"jobId": job.job_id, "executed": False},
+        )
+        self.assertEqual(len(service_calls), 1)
+        self.assertEqual(service_calls[0][:2], (job.job_id, False))
+        snapshot = service_calls[0][2]
+        self.assertIsInstance(snapshot, toki_gui.EpisodeRenameJobSnapshot)
+        with self.assertRaises(FrozenInstanceError):
+            snapshot.title = "변경 금지"
+        self.assertEqual(flush_calls, [])
+
+        harness.episode_rename_tasks = {}
+        executed = MainWindow.start_episode_folder_rename(
+            harness, job.job_id, execute=True
+        )
+        self.assertTrue(executed["started"])
+        self.assertEqual(flush_calls, ["flush"])
+        execute_context = harness.episode_rename_tasks[job.job_id]
+        self.assertEqual(execute_context.job_id, job.job_id)
+        self.assertEqual(execute_context.work_key, job.work_key)
+        self.assertEqual(execute_context.output_path, job.output_path)
+        self.assertEqual(
+            pool.tasks[1].operation(),
+            {"jobId": job.job_id, "executed": True},
+        )
+        self.assertEqual(service_calls[1], (job.job_id, True, None))
+
+    def test_episode_rename_execute_identity_matches_work_and_normalized_path(
+        self,
+    ) -> None:
+        base_job = DownloadJob(
+            job_id="rename-original",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\Same Work",
+            state="완료",
+        )
+        context = toki_gui.EpisodeRenameTaskContext(
+            task=SimpleNamespace(),
+            execute=True,
+            origin="cli",
+            job_id=base_job.job_id,
+            work_key=base_job.work_key,
+            output_path=r"C:\Manga\Same Work\.",
+        )
+        harness = type("EpisodeRenameIdentityHarness", (), {})()
+        harness.episode_rename_tasks = {base_job.job_id: context}
+
+        work_alias = DownloadJob(
+            job_id="rename-work-alias",
+            url=base_job.url,
+            output_dir=r"D:\Elsewhere",
+            output_path=r"D:\Elsewhere\Different",
+            state="완료",
+        )
+        work_conflict = MainWindow._episode_rename_execute_conflict(
+            harness, work_alias
+        )
+        self.assertIsNotNone(work_conflict)
+        self.assertIn("workKey", work_conflict["matchedBy"])
+
+        path_alias = DownloadJob(
+            job_id="rename-path-alias",
+            url="https://newtoki1.org/manhwa/99999",
+            output_dir=r"C:\Manga",
+            output_path=r"c:\manga\same work",
+            state="완료",
+        )
+        path_conflict = MainWindow._episode_rename_execute_conflict(
+            harness, path_alias
+        )
+        self.assertIsNotNone(path_conflict)
+        self.assertIn("outputPath", path_conflict["matchedBy"])
+
+        context.execute = False
+        self.assertIsNone(
+            MainWindow._episode_rename_execute_conflict(harness, work_alias)
+        )
+
+    def test_episode_rename_execute_blocks_same_work_mutation_entry_points(
+        self,
+    ) -> None:
+        locked_job = DownloadJob(
+            job_id="rename-lock",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\Locked Work",
+            state="완료",
+        )
+        alias_job = DownloadJob(
+            job_id="alias-job",
+            url=locked_job.url,
+            output_dir=locked_job.output_dir,
+            output_path=r"c:\manga\locked work\.",
+            state="완료",
+        )
+        rename_context = toki_gui.EpisodeRenameTaskContext(
+            task=SimpleNamespace(),
+            execute=True,
+            origin="cli",
+            job_id=locked_job.job_id,
+            work_key=locked_job.work_key,
+            output_path=locked_job.output_path,
+        )
+        harness = type("EpisodeMutationGuardHarness", (), {})()
+        harness.episode_rename_tasks = {locked_job.job_id: rename_context}
+        harness.selected_job = lambda _job_id=None: alias_job
+        harness.enqueue_download = lambda **_kwargs: self.fail(
+            "blocked retry/rescan/refresh must not enqueue"
+        )
+        harness._flush_job_history = lambda: self.fail(
+            "blocked move/rebuild must not flush"
+        )
+
+        for operation in (
+            lambda: MainWindow.retry_job(harness, alias_job.job_id),
+            lambda: MainWindow.rescan_job(harness, alias_job.job_id, "new"),
+            lambda: MainWindow.refresh_job_metadata(harness, alias_job.job_id),
+            lambda: MainWindow.move_job_folder(
+                harness, alias_job.job_id, r"D:\Manga", execute=True
+            ),
+            lambda: MainWindow.rebuild_job_metadata(
+                harness, alias_job.job_id, execute=True
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "episode_rename_in_progress"):
+                operation()
+
+        for operation_name, operation in (
+            (
+                "fileVerification",
+                lambda: MainWindow.start_file_verification(
+                    harness, alias_job.job_id
+                ),
+            ),
+            (
+                "imagePreview",
+                lambda: MainWindow.start_image_preview(harness, alias_job.job_id),
+            ),
+            (
+                "duplicateImages",
+                lambda: MainWindow.start_duplicate_images(
+                    harness, alias_job.job_id, "sha256"
+                ),
+            ),
+            (
+                "imageConversion",
+                lambda: MainWindow.start_image_conversion(
+                    harness, alias_job.job_id, execute=True
+                ),
+            ),
+            (
+                "pdfGeneration",
+                lambda: MainWindow.start_pdf_generation(
+                    harness, alias_job.job_id, execute=True
+                ),
+            ),
+        ):
+            result = operation()
+            self.assertFalse(result["started"])
+            self.assertTrue(result["mutationBlocked"])
+            self.assertEqual(result["errorCode"], "episode_rename_in_progress")
+            self.assertEqual(result["operation"], operation_name)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            enqueue_harness = type("EpisodeEnqueueGuardHarness", (), {})()
+            enqueue_harness.pending_jobs = deque()
+            enqueue_harness.resource_limits = toki_gui.resource_budget()
+            enqueue_harness.jobs_by_work = {}
+            enqueue_harness.episode_rename_tasks = {
+                locked_job.job_id: rename_context
+            }
+            with (
+                patch("toki_gui.find_node", return_value="node"),
+                patch("toki_gui.save_runs") as save_runs,
+                self.assertRaisesRegex(ValueError, "episode_rename_in_progress"),
+            ):
+                MainWindow.enqueue_download(
+                    enqueue_harness,
+                    locked_job.url,
+                    None,
+                    None,
+                    temporary,
+                )
+            save_runs.assert_not_called()
+
+    def test_episode_rename_execute_is_blocked_by_alias_mutations(self) -> None:
+        target = DownloadJob(
+            job_id="rename-target",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\Target",
+            state="완료",
+        )
+        active_alias = DownloadJob(
+            job_id="download-alias",
+            url=target.url,
+            output_dir=target.output_dir,
+            output_path=r"D:\Temporary\Alias",
+            state="실행 중",
+        )
+        harness = type("RenameReverseMutationHarness", (), {})()
+        harness.selected_job = lambda _job_id=None: target
+        harness.exit_requested = False
+        harness.exit_after_episode_rename = False
+        harness.episode_rename_tasks = {}
+        harness.active_contexts = {
+            active_alias.job_id: ProcessContext(
+                job=active_alias, run=DownloadRun.from_job(active_alias)
+            )
+        }
+        harness.pending_jobs = deque()
+        harness.pending_pdf_jobs = set()
+        harness.file_verify_processes = {}
+        harness.image_preview_processes = {}
+        harness.duplicate_image_tasks = {}
+        harness.image_conversion_processes = {}
+        harness.pdf_generation_processes = {}
+
+        download_block = MainWindow.start_episode_folder_rename(
+            harness, target.job_id, execute=True
+        )
+        self.assertFalse(download_block["started"])
+        self.assertTrue(download_block["mutationBlocked"])
+        self.assertIn("downloadActive", download_block["conflictingServices"])
+
+        harness.active_contexts = {}
+        harness.image_conversion_processes = {
+            "conversion-alias": ImageConversionProcessContext(
+                process=_ProcessStub(),
+                execute=True,
+                job_id="conversion-alias",
+                work_key="different-work",
+                output_path=r"c:\manga\target\.",
+            )
+        }
+        conversion_block = MainWindow.start_episode_folder_rename(
+            harness, target.job_id, execute=True
+        )
+        self.assertFalse(conversion_block["started"])
+        self.assertEqual(
+            conversion_block["errorCode"], "job_mutation_in_progress"
+        )
+        self.assertIn(
+            "imageConversion", conversion_block["conflictingServices"]
+        )
+
+    def test_download_scheduler_skips_work_under_episode_rename_execute(self) -> None:
+        blocked = DownloadJob(
+            job_id="queued-alias",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\Queued Alias",
+        )
+        unrelated = DownloadJob(
+            job_id="queued-other",
+            url="https://newtoki1.org/manhwa/99999",
+            output_dir=r"C:\Manga",
+        )
+        rename_context = toki_gui.EpisodeRenameTaskContext(
+            task=SimpleNamespace(),
+            execute=True,
+            origin="cli",
+            job_id="rename-original",
+            work_key=blocked.work_key,
+            output_path=r"D:\Original Path",
+        )
+        harness = type("SchedulerMutationGuardHarness", (), {})()
+        harness.config = {"workConcurrency": 1}
+        harness.pending_jobs = deque([blocked, unrelated])
+        harness.active_contexts = {}
+        harness.episode_rename_tasks = {"rename-original": rename_context}
+        harness.pdf_generation_processes = {}
+        harness.pending_pdf_jobs = set()
+        launched = []
+        harness._launch_context = lambda context: launched.append(context.job.job_id)
+        harness._refresh_pending_positions = lambda: None
+        harness._update_active_summary = lambda: None
+
+        with patch("toki_gui.load_run", return_value=None):
+            MainWindow._start_next_job(harness)
+
+        self.assertEqual(launched, [unrelated.job_id])
+        self.assertEqual(list(harness.active_contexts), [unrelated.job_id])
+        self.assertEqual([job.job_id for job in harness.pending_jobs], [blocked.job_id])
+
+    def test_episode_folder_rename_control_response_waits_for_worker_completion(
+        self,
+    ) -> None:
+        socket = _ControlSocketStub()
+        callbacks = []
+        harness = type("EpisodeRenameControlHarness", (), {})()
+        harness.control_sockets = {socket}
+        harness.log = lambda *_args, **_kwargs: None
+        harness.start_episode_folder_rename = (
+            lambda job_id, execute=False, origin="gui", completion=None: (
+                callbacks.append((job_id, execute, origin, completion)),
+                {"started": True, "jobId": job_id},
+            )[-1]
+        )
+        harness._episode_rename_start_error = MainWindow._episode_rename_start_error
+        harness._write_control_response = (
+            lambda selected, response: MainWindow._write_control_response(
+                harness, selected, response
+            )
+        )
+
+        MainWindow._start_control_episode_folder_rename(
+            harness,
+            socket,
+            {
+                "action": "rename_episode_folders",
+                "jobId": "j1",
+                "execute": False,
+            },
+        )
+
+        self.assertEqual(socket.writes, [])
+        self.assertEqual(callbacks[0][:3], ("j1", False, "cli"))
+        callbacks[0][3]("j1", {"jobId": "j1", "renameCount": 3}, "")
+        response = json.loads(socket.writes[0].decode("utf-8"))
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["renameCount"], 3)
+        self.assertTrue(socket.flushed)
+        self.assertTrue(socket.disconnected)
+
+    def test_episode_folder_rename_control_execute_requires_confirmation(self) -> None:
+        socket = _ControlSocketStub()
+        harness = type("EpisodeRenameControlConfirmationHarness", (), {})()
+        harness.control_sockets = {socket}
+        harness.log = lambda *_args, **_kwargs: None
+        harness.start_episode_folder_rename = lambda *_args, **_kwargs: self.fail(
+            "unconfirmed execute must not start"
+        )
+        harness._episode_rename_start_error = MainWindow._episode_rename_start_error
+        harness._write_control_response = (
+            lambda selected, response: MainWindow._write_control_response(
+                harness, selected, response
+            )
+        )
+
+        MainWindow._start_control_episode_folder_rename(
+            harness,
+            socket,
+            {
+                "action": "rename_episode_folders",
+                "jobId": "j1",
+                "execute": True,
+            },
+        )
+
+        response = json.loads(socket.writes[0].decode("utf-8"))
+        self.assertFalse(response["ok"])
+        self.assertIn("--execute --yes", response["error"])
+
+    def test_episode_folder_rename_control_reports_mutation_block_code(self) -> None:
+        socket = _ControlSocketStub()
+        harness = type("EpisodeRenameControlBlockedHarness", (), {})()
+        harness.control_sockets = {socket}
+        harness.log = lambda *_args, **_kwargs: None
+        harness.start_episode_folder_rename = lambda *_args, **_kwargs: {
+            "started": False,
+            "mutationBlocked": True,
+            "errorCode": "job_mutation_in_progress",
+            "error": "같은 작품의 다운로드가 진행 중입니다.",
+        }
+        harness._episode_rename_start_error = MainWindow._episode_rename_start_error
+        harness._write_control_response = (
+            lambda selected, response: MainWindow._write_control_response(
+                harness, selected, response
+            )
+        )
+
+        MainWindow._start_control_episode_folder_rename(
+            harness,
+            socket,
+            {
+                "action": "rename_episode_folders",
+                "jobId": "j1",
+                "execute": True,
+                "confirmed": True,
+            },
+        )
+
+        response = json.loads(socket.writes[0].decode("utf-8"))
+        self.assertFalse(response["ok"])
+        self.assertIn("[job_mutation_in_progress]", response["error"])
+
+    def test_episode_folder_rename_confirmation_no_never_executes(self) -> None:
+        calls = []
+        completions = []
+        plan = {
+            "canExecute": True,
+            "renameCount": 1,
+            "fallbackSuffixCount": 0,
+            "mappings": [
+                {
+                    "sourceFolderName": "0001 축약 1화",
+                    "destinationFolderName": "전체 작품 1화",
+                    "samePath": False,
+                }
+            ],
+        }
+        harness = type("EpisodeRenameConfirmationHarness", (), {})()
+        harness.start_episode_folder_rename = (
+            lambda job_id, execute=False, origin="gui", completion=None: (
+                calls.append((job_id, execute, origin)),
+                completions.append(completion),
+                {"started": True, "jobId": job_id},
+            )[-1]
+        )
+        harness._episode_folder_rename_plan_ready = (
+            lambda job_id, result, error: MainWindow._episode_folder_rename_plan_ready(
+                harness, job_id, result, error
+            )
+        )
+        harness._present_episode_folder_rename_plan = (
+            lambda job_id, result: MainWindow._present_episode_folder_rename_plan(
+                harness, job_id, result
+            )
+        )
+        harness.exit_after_episode_rename = False
+
+        with (
+            patch.object(
+                toki_gui.QMessageBox,
+                "question",
+                return_value=toki_gui.QMessageBox.StandardButton.No,
+            ) as question,
+            patch.object(toki_gui.QMessageBox, "information") as information,
+        ):
+            MainWindow.confirm_rename_episode_folders(harness, "j1")
+            question.assert_not_called()
+            completions[0]("j1", plan, "")
+
+        question.assert_called_once()
+        information.assert_not_called()
+        self.assertEqual(calls, [("j1", False, "gui")])
+
+    def test_episode_folder_rename_confirmation_yes_queues_execute_worker(self) -> None:
+        plan = {
+            "canExecute": True,
+            "renameCount": 1,
+            "fallbackSuffixCount": 0,
+            "mappings": [
+                {
+                    "sourceFolderName": "0001 축약 1화",
+                    "destinationFolderName": "전체 작품 1화",
+                    "samePath": False,
+                }
+            ],
+        }
+        starts = []
+        harness = type("EpisodeRenameExecuteHarness", (), {})()
+        harness.start_episode_folder_rename = (
+            lambda job_id, execute=False, origin="gui", completion=None: (
+                starts.append((job_id, execute, origin, completion)),
+                {"started": True, "jobId": job_id},
+            )[-1]
+        )
+        harness._episode_folder_rename_execute_ready = lambda *_args: None
+
+        with (
+            patch.object(
+                toki_gui.QMessageBox,
+                "question",
+                return_value=toki_gui.QMessageBox.StandardButton.Yes,
+            ),
+            patch.object(toki_gui.QMessageBox, "information") as information,
+        ):
+            MainWindow._present_episode_folder_rename_plan(harness, "j1", plan)
+
+        self.assertEqual(starts[0][:3], ("j1", True, "gui"))
+        self.assertIs(starts[0][3], harness._episode_folder_rename_execute_ready)
+        information.assert_not_called()
+
+    def test_episode_folder_rename_completion_defers_exit_until_last_task(self) -> None:
+        status = _StatusBarStub()
+        completions = []
+        task = SimpleNamespace()
+        context = toki_gui.EpisodeRenameTaskContext(
+            task=task,
+            execute=True,
+            origin="cli",
+            completion=lambda job_id, result, error: completions.append(
+                (job_id, result, error)
+            ),
+        )
+        harness = type("EpisodeRenameExitHarness", (), {})()
+        harness.episode_rename_tasks = {"j1": context}
+        harness.exit_after_episode_rename = True
+        harness.log = lambda *_args, **_kwargs: None
+        harness.statusBar = lambda: status
+        harness.close = lambda: None
+
+        with patch.object(toki_gui.QTimer, "singleShot") as single_shot:
+            MainWindow._episode_folder_rename_finished(
+                harness,
+                "j1",
+                {"renamedCount": 1},
+                "",
+            )
+
+        self.assertEqual(completions, [("j1", {"renamedCount": 1}, "")])
+        self.assertEqual(harness.episode_rename_tasks, {})
+        single_shot.assert_called_once_with(100, harness.close)
+
+    def test_episode_folder_rename_block_dialog_explains_each_cause(self) -> None:
+        cases = [
+            (
+                "recovery",
+                {
+                    "canExecute": False,
+                    "recoveryRequired": True,
+                    "recovery": {
+                        "message": "이전 이름 변경의 복구 자료가 남아 있습니다.",
+                        "transactionFiles": [
+                            {"path": r"C:\Manga\.toki-episode-rename-a.json"}
+                        ],
+                    },
+                    "conflicts": [{"type": "recovery_required"}],
+                },
+                "복구 자료 위치",
+            ),
+            (
+                "unsafe",
+                {
+                    "canExecute": False,
+                    "unsafeSuffixCount": 1,
+                    "conflicts": [
+                        {
+                            "type": "unsafe_suffix",
+                            "unsafeSuffix": True,
+                            "source": r"C:\Manga\0001 제목 없음",
+                        }
+                    ],
+                },
+                "회차명 판별 실패",
+            ),
+            (
+                "duplicate",
+                {
+                    "canExecute": False,
+                    "duplicateNumbers": [1, 2],
+                    "conflicts": [],
+                },
+                "중복 회차",
+            ),
+            (
+                "path_conflict",
+                {
+                    "canExecute": False,
+                    "conflicts": [
+                        {
+                            "type": "path_conflict",
+                            "existingDestination": True,
+                            "destination": r"C:\Manga\전체 작품 1화",
+                        }
+                    ],
+                },
+                "이미 존재",
+            ),
+            (
+                "path_too_long",
+                {
+                    "canExecute": False,
+                    "conflicts": [
+                        {
+                            "type": "path_too_long",
+                            "pathTooLong": True,
+                            "destination": r"C:\Manga\매우 긴 회차 폴더",
+                        }
+                    ],
+                },
+                "Windows 안전 경로 길이 초과",
+            ),
+        ]
+
+        for label, plan, expected in cases:
+            with self.subTest(label=label):
+                harness = type("EpisodeRenameBlockedHarness", (), {})()
+                with (
+                    patch.object(toki_gui.QMessageBox, "warning") as warning,
+                    patch.object(toki_gui.QMessageBox, "question") as question,
+                ):
+                    MainWindow._present_episode_folder_rename_plan(
+                        harness, "j1", plan
+                    )
+
+                question.assert_not_called()
+                warning.assert_called_once()
+                self.assertIn(expected, str(warning.call_args.args[2]))
+
     def test_job_context_menu_snapshot_recurses_into_checked_organize_leaves(
         self,
     ) -> None:
@@ -616,12 +1306,49 @@ class WorkSchedulerTests(unittest.TestCase):
 
         self.assertIn("section.rescan", manga_snapshot["actionIds"])
         self.assertIn("section.files", manga_snapshot["actionIds"])
+        self.assertIn("episodes.rename", manga_snapshot["actionIds"])
         self.assertIn("section.data", manga_snapshot["actionIds"])
         self.assertNotIn("job.retry", manga_snapshot["actionIds"])
         self.assertIn("job.retry", youtube_snapshot["actionIds"])
         self.assertNotIn("section.rescan", youtube_snapshot["actionIds"])
         self.assertNotIn("section.files", youtube_snapshot["actionIds"])
         self.assertNotIn("section.data", youtube_snapshot["actionIds"])
+
+    def test_job_context_menu_disables_file_mutations_while_episode_rename_is_busy(
+        self,
+    ) -> None:
+        job = DownloadJob(
+            job_id="rename-busy",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\rename-busy",
+            state="완료",
+        )
+        harness = _JobContextMenuHarness()
+        harness.episode_rename_tasks[job.job_id] = SimpleNamespace(
+            execute=True,
+            origin="gui",
+        )
+        with (
+            patch("toki_gui.work_collection_for_job", return_value=None),
+            patch("toki_gui.list_work_collections", return_value=[]),
+        ):
+            menu = MainWindow._build_job_context_menu(harness, job)
+            snapshot = MainWindow._menu_snapshot(menu)
+        menu.deleteLater()
+        harness.deleteLater()
+        self.qt_app.processEvents()
+
+        self.assertIn("episodes.rename", snapshot["actionIds"])
+        self.assertFalse(snapshot["enabled"]["episodes.rename"])
+        self.assertFalse(snapshot["enabled"]["folder.move"])
+        self.assertFalse(snapshot["enabled"]["files.verify"])
+        self.assertFalse(snapshot["enabled"]["record.remove"])
+        self.assertNotIn("section.rescan", snapshot["actionIds"])
+        self.assertIn(
+            "회차 폴더명 정리 중…",
+            snapshot["submenus"]["파일 및 회차 도구"],
+        )
 
     def test_open_output_folder_uses_job_output_dir_before_global_default(self) -> None:
         job = DownloadJob(

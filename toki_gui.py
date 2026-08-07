@@ -159,6 +159,7 @@ from toki_core import (
     TAG_COLORS,
     DownloadJob,
     DownloadRun,
+    EpisodeRenameJobSnapshot,
     SleepPreventionController,
     append_bounded_text,
     available_ui_languages,
@@ -250,12 +251,15 @@ from toki_core import (
     open_archive_with_viewer,
     plan_archive_viewer_open,
     persistence_policy_snapshot,
+    episode_rename_job_snapshot,
+    plan_episode_folder_rename,
     plan_job_folder_move,
     plan_metadata_rebuild,
     plan_window_geometry,
     read_log_tail,
     read_run_log,
     rebuild_job_metadata as execute_metadata_rebuild,
+    rename_episode_folders as execute_episode_folder_rename,
     rename_work_collection,
     recover_interrupted_jobs,
     rescan_job_parameters,
@@ -5411,6 +5415,9 @@ class ProcessContext:
 class ImageConversionProcessContext:
     process: QProcess
     execute: bool
+    job_id: str = ""
+    work_key: str = ""
+    output_path: str = ""
     stdout_buffer: str = ""
     stderr_buffer: str = ""
     stdout_dropped_bytes: int = 0
@@ -5424,12 +5431,26 @@ class PdfGenerationProcessContext:
     process: QProcess
     execute: bool
     automatic: bool = False
+    job_id: str = ""
+    work_key: str = ""
+    output_path: str = ""
     stdout_buffer: str = ""
     stderr_buffer: str = ""
     stdout_dropped_bytes: int = 0
     stderr_dropped_bytes: int = 0
     result: dict[str, Any] | None = None
     cancel_requested: bool = False
+
+
+@dataclass
+class EpisodeRenameTaskContext:
+    task: ServiceTask
+    execute: bool
+    origin: str
+    job_id: str = ""
+    work_key: str = ""
+    output_path: str = ""
+    completion: Callable[[str, dict[str, Any], str], None] | None = None
 
 
 class BackgroundWidget(QWidget):
@@ -5507,6 +5528,8 @@ class MainWindow(QMainWindow):
         self.pdf_generation_processes: dict[str, PdfGenerationProcessContext] = {}
         self.pending_pdf_jobs: set[str] = set()
         self.duplicate_image_tasks: dict[str, ServiceTask] = {}
+        self.episode_rename_tasks: dict[str, EpisodeRenameTaskContext] = {}
+        self.exit_after_episode_rename = False
         self.io_thread_pool = QThreadPool(self)
         self.io_thread_pool.setMaxThreadCount(int(self.resource_limits["ioThreads"]))
         self.image_thread_pool = self.io_thread_pool
@@ -6374,6 +6397,18 @@ class MainWindow(QMainWindow):
         provider = detect_download_provider(valid_url)
         if provider == "youtube" and not simulation and not external_request_confirmed:
             raise ValueError("YouTube 외부 요청 실행에는 명시적 확인이 필요합니다.")
+        work_key = build_work_key(valid_url)
+        existing = self.jobs_by_work.get(work_key)
+        if existing is None:
+            existing = load_job_by_work_key(work_key)
+        MainWindow._raise_if_episode_rename_executes(
+            self,
+            existing,
+            work_key=work_key,
+            output_path=str(getattr(existing, "output_path", "") or ""),
+        )
+        if existing and existing.state in ACTIVE_JOB_STATES:
+            raise ValueError("같은 작품이 이미 대기 중이거나 다운로드 중입니다.")
         queue_admission = resource_admission(
             "download_queue",
             queued_count=len(self.pending_jobs),
@@ -6393,13 +6428,6 @@ class MainWindow(QMainWindow):
         output_path.mkdir(parents=True, exist_ok=True)
         if provider != "youtube":
             find_node()
-
-        work_key = build_work_key(valid_url)
-        existing = self.jobs_by_work.get(work_key)
-        if existing is None:
-            existing = load_job_by_work_key(work_key)
-        if existing and existing.state in ACTIVE_JOB_STATES:
-            raise ValueError("같은 작품이 이미 대기 중이거나 다운로드 중입니다.")
 
         job = DownloadJob(
             job_id=uuid.uuid4().hex[:10],
@@ -7215,10 +7243,18 @@ class MainWindow(QMainWindow):
 
     def _start_next_job(self) -> None:
         concurrency = normalize_work_concurrency(self.config.get("workConcurrency"))
+        jobs_to_consider = len(self.pending_jobs)
+        considered = 0
         while self.pending_jobs and available_work_slots(
             len(self.active_contexts), concurrency
-        ):
+        ) and considered < jobs_to_consider:
             job = self.pending_jobs.popleft()
+            considered += 1
+            if MainWindow._episode_rename_execute_conflict(self, job):
+                # Keep the queued job stable until the directory mutation finishes,
+                # while still allowing unrelated works behind it to use free slots.
+                self.pending_jobs.append(job)
+                continue
             job.queue_position = 0
             run = load_run(job.job_id) or DownloadRun.from_job(job)
             context = ProcessContext(job=job, run=run)
@@ -7800,12 +7836,213 @@ class MainWindow(QMainWindow):
             return first_active.job
         return next(reversed(self.jobs.values()), None) if self.jobs else None
 
+    @staticmethod
+    def _normalized_mutation_output_path(output_path: str) -> str:
+        """Return one stable comparison key without requiring the path to exist."""
+
+        value = str(output_path or "").strip()
+        if not value:
+            return ""
+        try:
+            value = str(Path(value).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            value = os.path.abspath(os.path.expanduser(value))
+        return os.path.normcase(os.path.normpath(value))
+
+    @staticmethod
+    def _mutation_identity_match_fields(
+        left: tuple[str, str, str], right: tuple[str, str, str]
+    ) -> list[str]:
+        left_job_id, left_work_key, left_output_path = left
+        right_job_id, right_work_key, right_output_path = right
+        matched: list[str] = []
+        if left_job_id and right_job_id and left_job_id == right_job_id:
+            matched.append("jobId")
+        if (
+            left_work_key
+            and right_work_key
+            and left_work_key.casefold() == right_work_key.casefold()
+        ):
+            matched.append("workKey")
+        left_path_key = MainWindow._normalized_mutation_output_path(left_output_path)
+        right_path_key = MainWindow._normalized_mutation_output_path(right_output_path)
+        if left_path_key and right_path_key and left_path_key == right_path_key:
+            matched.append("outputPath")
+        return matched
+
+    @staticmethod
+    def _job_mutation_identity(
+        job: DownloadJob | None = None,
+        *,
+        job_id: str = "",
+        work_key: str = "",
+        output_path: str = "",
+    ) -> tuple[str, str, str]:
+        return (
+            str(job_id or getattr(job, "job_id", "") or ""),
+            str(work_key or getattr(job, "work_key", "") or ""),
+            str(output_path or getattr(job, "output_path", "") or ""),
+        )
+
+    def _known_mutation_job(self, job_id: str) -> DownloadJob | None:
+        selected_id = str(job_id or "")
+        if not selected_id:
+            return None
+        job = getattr(self, "jobs", {}).get(selected_id)
+        if job is not None:
+            return job
+        for pending in getattr(self, "pending_jobs", ()):
+            if pending.job_id == selected_id:
+                return pending
+        active = getattr(self, "active_contexts", {}).get(selected_id)
+        if active is not None:
+            return getattr(active, "job", None)
+        for known in getattr(self, "jobs_by_work", {}).values():
+            if known.job_id == selected_id:
+                return known
+        return None
+
+    def _context_mutation_identity(
+        self, registered_job_id: str, context: Any
+    ) -> tuple[str, str, str]:
+        context_job = getattr(context, "job", None)
+        known_job = context_job or MainWindow._known_mutation_job(
+            self, str(getattr(context, "job_id", "") or registered_job_id)
+        )
+        return MainWindow._job_mutation_identity(
+            known_job,
+            job_id=str(getattr(context, "job_id", "") or registered_job_id),
+            work_key=str(getattr(context, "work_key", "") or ""),
+            output_path=str(getattr(context, "output_path", "") or ""),
+        )
+
+    def _episode_rename_execute_conflict(
+        self,
+        job: DownloadJob | None = None,
+        *,
+        job_id: str = "",
+        work_key: str = "",
+        output_path: str = "",
+    ) -> dict[str, Any] | None:
+        """Find an executing rename by work identity, not only transient job ID."""
+
+        requested = MainWindow._job_mutation_identity(
+            job,
+            job_id=job_id,
+            work_key=work_key,
+            output_path=output_path,
+        )
+        for registered_job_id, context in getattr(
+            self, "episode_rename_tasks", {}
+        ).items():
+            if not bool(getattr(context, "execute", False)):
+                continue
+            active = MainWindow._context_mutation_identity(
+                self, registered_job_id, context
+            )
+            matched_by = MainWindow._mutation_identity_match_fields(
+                requested, active
+            )
+            if matched_by:
+                return {
+                    "errorCode": "episode_rename_in_progress",
+                    "error": (
+                        "같은 작품 또는 저장 폴더의 회차 폴더명 정리가 실행 중입니다. "
+                        "완료 후 다시 시도해주세요."
+                    ),
+                    "conflictJobId": active[0] or registered_job_id,
+                    "conflictWorkKey": active[1],
+                    "conflictOutputPath": active[2],
+                    "matchedBy": matched_by,
+                }
+        return None
+
+    @staticmethod
+    def _episode_rename_blocked_start(
+        job: DownloadJob,
+        operation: str,
+        conflict: dict[str, Any],
+        *,
+        execute: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "started": False,
+            "jobId": job.job_id,
+            "execute": bool(execute),
+            "mutationBlocked": True,
+            "blockedBy": "episodeFolderRename",
+            "operation": operation,
+            **conflict,
+        }
+
+    def _raise_if_episode_rename_executes(
+        self,
+        job: DownloadJob | None = None,
+        *,
+        job_id: str = "",
+        work_key: str = "",
+        output_path: str = "",
+    ) -> None:
+        conflict = MainWindow._episode_rename_execute_conflict(
+            self,
+            job,
+            job_id=job_id,
+            work_key=work_key,
+            output_path=output_path,
+        )
+        if conflict:
+            raise ValueError(f"[{conflict['errorCode']}] {conflict['error']}")
+
+    def _conflicting_operations_for_episode_rename(
+        self, job: DownloadJob
+    ) -> list[str]:
+        requested = MainWindow._job_mutation_identity(job)
+        conflicts: list[str] = []
+
+        def record(name: str, registered_job_id: str, context: Any = None) -> None:
+            identity = (
+                MainWindow._job_mutation_identity(context)
+                if isinstance(context, DownloadJob)
+                else MainWindow._context_mutation_identity(
+                    self, registered_job_id, context if context is not None else object()
+                )
+            )
+            if MainWindow._mutation_identity_match_fields(requested, identity):
+                if name not in conflicts:
+                    conflicts.append(name)
+
+        for active_job_id, active_context in getattr(
+            self, "active_contexts", {}
+        ).items():
+            record("downloadActive", active_job_id, active_context)
+        for pending in getattr(self, "pending_jobs", ()):
+            record("downloadQueued", pending.job_id, pending)
+        for conversion_job_id, conversion in getattr(
+            self, "image_conversion_processes", {}
+        ).items():
+            record("imageConversion", conversion_job_id, conversion)
+        for pdf_job_id, pdf_context in getattr(
+            self, "pdf_generation_processes", {}
+        ).items():
+            record("pdfGeneration", pdf_job_id, pdf_context)
+        for pending_pdf_job_id in getattr(self, "pending_pdf_jobs", set()):
+            record("pdfQueued", pending_pdf_job_id)
+        for name, registry in (
+            ("fileVerification", getattr(self, "file_verify_processes", {})),
+            ("imagePreview", getattr(self, "image_preview_processes", {})),
+            ("duplicateImages", getattr(self, "duplicate_image_tasks", {})),
+        ):
+            for service_job_id, service_context in registry.items():
+                record(name, service_job_id, service_context)
+        return conflicts
+
     def retry_job(self, job_id: str | None = None) -> DownloadJob | None:
         source = self.selected_job(job_id)
         if not source:
             if job_id:
                 raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
             raise ValueError("재시도할 작업을 선택해주세요.")
+        MainWindow._raise_if_episode_rename_executes(self, source)
         return self.enqueue_download(**retry_job_parameters(source))
 
     def rescan_job(
@@ -7822,6 +8059,7 @@ class MainWindow(QMainWindow):
             raise ValueError("재검사할 작품을 선택해주세요.")
         if source.provider == "youtube":
             raise ValueError("YouTube 작업은 회차 재검사 대신 재시도를 사용해주세요.")
+        MainWindow._raise_if_episode_rename_executes(self, source)
         parameters = rescan_job_parameters(source, mode, start, last)
         return self.enqueue_download(**parameters)
 
@@ -7847,6 +8085,7 @@ class MainWindow(QMainWindow):
         source = self.selected_job(job_id)
         if not source:
             raise ValueError("메타데이터를 새로고칠 작품을 선택해주세요.")
+        MainWindow._raise_if_episode_rename_executes(self, source)
         if source.state in ACTIVE_JOB_STATES:
             raise ValueError("대기 또는 실행 중인 작품은 메타데이터를 새로고칠 수 없습니다.")
         return self.enqueue_download(
@@ -8414,6 +8653,11 @@ class MainWindow(QMainWindow):
         job = self.selected_job(job_id)
         if not job:
             raise ValueError("이미지 중복을 검사할 작품을 선택해주세요.")
+        rename_conflict = MainWindow._episode_rename_execute_conflict(self, job)
+        if rename_conflict:
+            return MainWindow._episode_rename_blocked_start(
+                job, "duplicateImages", rename_conflict
+            )
         if job.job_id in self.duplicate_image_tasks:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         tracked = (
@@ -9198,6 +9442,12 @@ class MainWindow(QMainWindow):
     def move_job_folder(
         self, job_id: str, output_dir: str, *, execute: bool = False
     ) -> dict[str, Any]:
+        if execute:
+            MainWindow._raise_if_episode_rename_executes(
+                self,
+                self.selected_job(job_id),
+                job_id=job_id,
+            )
         self._flush_job_history()
         result = (
             execute_job_folder_move(job_id, output_dir)
@@ -9264,9 +9514,412 @@ class MainWindow(QMainWindow):
         except (OSError, RuntimeError, ValueError) as error:
             QMessageBox.critical(self, "작품 폴더 이동 실패", str(error))
 
+    def rename_episode_folders(
+        self,
+        job_id: str,
+        *,
+        execute: bool = False,
+        job_snapshot: EpisodeRenameJobSnapshot | DownloadJob | None = None,
+    ) -> dict[str, Any]:
+        """Run the blocking service operation.
+
+        GUI and local-control callers must use ``start_episode_folder_rename`` so
+        directory scans, backups, and renames never run on Qt's main thread.
+        This small synchronous boundary remains useful inside ``ServiceTask`` and
+        for direct, headless tests.
+        """
+        result = (
+            execute_episode_folder_rename(job_id)
+            if execute
+            else plan_episode_folder_rename(job_id, job_snapshot=job_snapshot)
+        )
+        return result
+
+    def start_episode_folder_rename(
+        self,
+        job_id: str,
+        *,
+        execute: bool = False,
+        origin: str = "gui",
+        completion: Callable[[str, dict[str, Any], str], None] | None = None,
+    ) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("회차 폴더명을 정리할 작품을 선택해주세요.")
+        if not job.output_path:
+            raise ValueError("이 작품에는 아직 저장 폴더가 없습니다.")
+        if self.exit_requested or self.exit_after_episode_rename:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "shuttingDown": True,
+            }
+        rename_conflict = MainWindow._episode_rename_execute_conflict(self, job)
+        if rename_conflict:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "execute": execute,
+                "alreadyRunning": True,
+                "mutationBlocked": True,
+                "blockedBy": "episodeFolderRename",
+                **rename_conflict,
+            }
+        if job.job_id in self.episode_rename_tasks:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "alreadyRunning": True,
+            }
+        active_context = self.active_contexts.get(job.job_id)
+        is_pending = any(item.job_id == job.job_id for item in self.pending_jobs)
+        stale_active_record = bool(
+            not active_context
+            and not is_pending
+            and job.state in ACTIVE_JOB_STATES
+        )
+        if execute:
+            conflicting_services = (
+                MainWindow._conflicting_operations_for_episode_rename(self, job)
+            )
+            if conflicting_services:
+                return {
+                    "started": False,
+                    "jobId": job.job_id,
+                    "execute": True,
+                    "mutationBlocked": True,
+                    "errorCode": "job_mutation_in_progress",
+                    "error": (
+                        "같은 작품 또는 저장 폴더에서 다운로드나 파일 작업이 "
+                        "진행 중이므로 회차 폴더명을 변경할 수 없습니다."
+                    ),
+                    "jobBusy": True,
+                    "conflictingServices": conflicting_services,
+                }
+        if active_context or is_pending or stale_active_record:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "jobBusy": True,
+            }
+
+        tracked = (
+            len(self.file_verify_processes)
+            + len(self.image_preview_processes)
+            + len(self.duplicate_image_tasks)
+            + len(self.episode_rename_tasks)
+        )
+        active = self.io_thread_pool.activeThreadCount()
+        admission = resource_admission(
+            "io",
+            active_count=active,
+            queued_count=max(0, tracked - active),
+            budget=self.resource_limits,
+        )
+        if not admission["allowed"]:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "resourceLimit": True,
+                "resources": admission,
+            }
+
+        # A dry-run receives an isolated immutable snapshot and never touches the
+        # job database.  Execute explicitly flushes first, then reloads from the DB
+        # inside the worker so it cannot act on stale persisted paths.
+        job_snapshot = None
+        if execute:
+            self._flush_job_history()
+        else:
+            job_snapshot = episode_rename_job_snapshot(job)
+        selected_job_id = str(job.job_id)
+        task = ServiceTask(
+            selected_job_id,
+            lambda snapshot=job_snapshot, selected=selected_job_id: (
+                self.rename_episode_folders(
+                    selected,
+                    execute=execute,
+                    job_snapshot=snapshot,
+                )
+            ),
+        )
+        context = EpisodeRenameTaskContext(
+            task=task,
+            execute=execute,
+            origin=str(origin or "gui"),
+            job_id=job.job_id,
+            work_key=job.work_key,
+            output_path=job.output_path,
+            completion=completion,
+        )
+        task.signals.finished.connect(self._episode_folder_rename_finished)
+        self.episode_rename_tasks[job.job_id] = context
+        self.io_thread_pool.start(task)
+        mode_label = "실행" if execute else "안전 검사"
+        self.log(f"회차 폴더명 정리 {mode_label} 시작(자원 풀)", job_id=job.job_id)
+        self.statusBar().showMessage(f"{job.title} 회차 폴더명 {mode_label} 중…")
+        return {
+            "started": True,
+            "jobId": job.job_id,
+            "execute": execute,
+            "resources": admission,
+        }
+
+    def _episode_folder_rename_finished(
+        self, job_id: str, result: dict[str, Any], error: str
+    ) -> None:
+        context = self.episode_rename_tasks.pop(job_id, None)
+        if context is None:
+            return
+        mode_label = "실행" if context.execute else "안전 검사"
+        if error:
+            self.log(f"회차 폴더명 정리 {mode_label} 실패: {error}", "ERROR", job_id)
+            self.statusBar().showMessage(f"회차 폴더명 정리 {mode_label} 실패", 5000)
+        elif context.execute:
+            self.log(
+                "회차 폴더명 정리 완료: "
+                f"{result.get('renamedCount', 0)}개",
+                job_id=job_id,
+            )
+            self.statusBar().showMessage(
+                f"회차 폴더 {result.get('renamedCount', 0)}개 이름 정리 완료",
+                5000,
+            )
+        else:
+            self.log(
+                "회차 폴더명 안전 검사 완료: "
+                f"변경 {result.get('renameCount', 0)}개 · "
+                f"충돌 {result.get('conflictCount', 0)}개",
+                job_id=job_id,
+            )
+            self.statusBar().showMessage("회차 폴더명 안전 검사 완료", 3000)
+        if context.completion:
+            try:
+                context.completion(job_id, result, error)
+            except Exception as callback_error:
+                self.log(
+                    f"회차 폴더명 정리 완료 처리 실패: {callback_error}",
+                    "ERROR",
+                    job_id,
+                )
+        if context.execute and not self.exit_after_episode_rename:
+            start_next = getattr(self, "_start_next_job", None)
+            if callable(start_next):
+                QTimer.singleShot(0, start_next)
+        if self.exit_after_episode_rename and not self.episode_rename_tasks:
+            QTimer.singleShot(100, self.close)
+
+    @staticmethod
+    def _episode_rename_start_error(result: dict[str, Any]) -> str:
+        if result.get("mutationBlocked") and result.get("error"):
+            return str(result["error"])
+        if result.get("alreadyRunning"):
+            return "이 작품의 회차 폴더명 정리가 이미 진행 중입니다."
+        if result.get("shuttingDown"):
+            return "프로그램 종료를 준비 중이어서 새 정리 작업을 시작할 수 없습니다."
+        if result.get("resourceLimit"):
+            return "파일 작업이 많아 지금은 정리를 시작할 수 없습니다. 잠시 후 다시 시도해주세요."
+        if result.get("conflictingServices"):
+            return "이 작품의 다른 파일 작업이 진행 중입니다. 완료 후 다시 시도해주세요."
+        if result.get("jobBusy"):
+            return "이 작품이 다운로드 또는 복구 대기 중이라 정리할 수 없습니다."
+        return "회차 폴더명 정리를 시작하지 못했습니다."
+
+    def confirm_rename_episode_folders(self, job_id: str) -> dict[str, Any]:
+        try:
+            started = self.start_episode_folder_rename(
+                job_id,
+                execute=False,
+                origin="gui",
+                completion=self._episode_folder_rename_plan_ready,
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "회차 폴더명 정리", str(error))
+            return {"started": False, "error": str(error)}
+        if not started.get("started"):
+            message = self._episode_rename_start_error(started)
+            self.statusBar().showMessage(message, 4000)
+            QMessageBox.information(self, "회차 폴더명 정리", message)
+        return started
+
+    def _episode_folder_rename_plan_ready(
+        self, job_id: str, plan: dict[str, Any], error: str
+    ) -> None:
+        if self.exit_after_episode_rename:
+            return
+        if error:
+            QMessageBox.warning(self, "회차 폴더명 정리", error)
+            return
+        self._present_episode_folder_rename_plan(job_id, plan)
+
+    def _present_episode_folder_rename_plan(
+        self, job_id: str, plan: dict[str, Any]
+    ) -> None:
+        if not plan.get("canExecute"):
+            conflicts = [
+                item
+                for item in (plan.get("conflicts") or [])
+                if isinstance(item, dict)
+            ]
+            detail_lines: list[str] = []
+            if plan.get("recoveryRequired"):
+                recovery = plan.get("recovery") or {}
+                detail_lines.append(
+                    str(
+                        recovery.get("message")
+                        or "이전 이름 변경의 복구 자료를 먼저 확인해야 합니다."
+                    )
+                )
+                recovery_paths = [
+                    str(value)
+                    for value in (recovery.get("temporaryFolders") or [])
+                    if value
+                ]
+                recovery_paths.extend(
+                    str(item.get("path") or "")
+                    for item in (recovery.get("transactionFiles") or [])
+                    if isinstance(item, dict) and item.get("path")
+                )
+                recovery_paths.extend(
+                    str(value)
+                    for value in (recovery.get("unknownArtifacts") or [])
+                    if value
+                )
+                if recovery_paths:
+                    detail_lines.append(
+                        "복구 자료 위치:\n" + "\n".join(recovery_paths[:3])
+                    )
+            unsafe = [item for item in conflicts if item.get("unsafeSuffix")]
+            if unsafe:
+                examples = ", ".join(
+                    Path(str(item.get("source") or "")).name
+                    for item in unsafe[:3]
+                )
+                detail_lines.append(
+                    f"회차명 판별 실패 {len(unsafe)}개: {examples or '원본 제목 확인 필요'}"
+                )
+            duplicate_numbers = [
+                str(value) for value in (plan.get("duplicateNumbers") or [])
+            ]
+            duplicate_targets = [
+                item for item in conflicts if item.get("duplicateTarget")
+            ]
+            if duplicate_numbers or duplicate_targets:
+                values = duplicate_numbers or [
+                    Path(str(item.get("destination") or "")).name
+                    for item in duplicate_targets[:3]
+                ]
+                detail_lines.append(
+                    "중복 회차 또는 동일 목적지: " + ", ".join(values[:5])
+                )
+            path_too_long = [item for item in conflicts if item.get("pathTooLong")]
+            if path_too_long:
+                examples = ", ".join(
+                    Path(str(item.get("destination") or "")).name
+                    for item in path_too_long[:3]
+                )
+                detail_lines.append(
+                    "Windows 안전 경로 길이 초과: "
+                    + (examples or "목적지 경로 확인 필요")
+                )
+            existing_destinations = [
+                item for item in conflicts if item.get("existingDestination")
+            ]
+            if existing_destinations:
+                examples = ", ".join(
+                    Path(str(item.get("destination") or "")).name
+                    for item in existing_destinations[:3]
+                )
+                detail_lines.append(
+                    "목적지 폴더가 이미 존재함: "
+                    + (examples or "목적지 경로 확인 필요")
+                )
+            if not detail_lines:
+                detail_lines.extend(
+                    str(item.get("message") or item.get("destination") or "")
+                    for item in conflicts[:5]
+                    if item.get("message") or item.get("destination")
+                )
+            detail = "\n".join(detail_lines) or "안전 검사에서 실행이 차단되었습니다."
+            QMessageBox.warning(
+                self,
+                "회차 폴더명 정리",
+                f"안전하게 이름을 바꿀 수 없습니다.\n\n{detail}",
+            )
+            return
+        rename_count = int(plan.get("renameCount") or 0)
+        if rename_count <= 0:
+            QMessageBox.information(
+                self,
+                "회차 폴더명 정리",
+                "이미 전체 작품명과 회차명 형식으로 정리되어 있습니다.",
+            )
+            return
+        examples = [
+            f"{item.get('sourceFolderName', '')}\n  → {item.get('destinationFolderName', '')}"
+            for item in (plan.get("mappings") or [])[:5]
+            if not item.get("samePath")
+        ]
+        fallback_text = (
+            f"\n\n회차명을 판별하지 못해 목록 순번을 쓸 폴더가 "
+            f"{plan.get('fallbackSuffixCount', 0)}개 있습니다."
+            if int(plan.get("fallbackSuffixCount") or 0) > 0
+            else ""
+        )
+        answer = QMessageBox.question(
+            self,
+            "회차 폴더명 정리",
+            f"{rename_count}개 회차 폴더를 다음 규칙으로 바꿀까요?\n"
+            "전체 작품명 + 실제 회차/부제\n\n"
+            + "\n\n".join(examples)
+            + fallback_text
+            + "\n\nmetadata.json과 완료 상태는 먼저 백업합니다. "
+            "이미지 파일 내용은 변경하지 않습니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            started = self.start_episode_folder_rename(
+                job_id,
+                execute=True,
+                origin="gui",
+                completion=self._episode_folder_rename_execute_ready,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.critical(self, "회차 폴더명 정리 실패", str(error))
+            return
+        if not started.get("started"):
+            QMessageBox.warning(
+                self,
+                "회차 폴더명 정리",
+                self._episode_rename_start_error(started),
+            )
+
+    def _episode_folder_rename_execute_ready(
+        self, _job_id: str, result: dict[str, Any], error: str
+    ) -> None:
+        if self.exit_after_episode_rename:
+            return
+        if error:
+            QMessageBox.critical(self, "회차 폴더명 정리 실패", error)
+            return
+        QMessageBox.information(
+            self,
+            "회차 폴더명 정리",
+            f"회차 폴더 {result.get('renamedCount', 0)}개의 이름을 정리했습니다.\n\n"
+            f"상태 백업: {result.get('stateBackupPath') or '새 파일'}\n"
+            f"메타데이터 백업: {result.get('metadataBackupPath') or '새 파일'}",
+        )
+
     def rebuild_job_metadata(
         self, job_id: str, *, execute: bool = False
     ) -> dict[str, Any]:
+        if execute:
+            MainWindow._raise_if_episode_rename_executes(
+                self,
+                self.selected_job(job_id),
+                job_id=job_id,
+            )
         self._flush_job_history()
         result = (
             execute_metadata_rebuild(job_id)
@@ -9319,6 +9972,11 @@ class MainWindow(QMainWindow):
         job = self.selected_job(job_id)
         if not job:
             raise ValueError("파일을 검사할 작품을 선택해주세요.")
+        rename_conflict = MainWindow._episode_rename_execute_conflict(self, job)
+        if rename_conflict:
+            return MainWindow._episode_rename_blocked_start(
+                job, "fileVerification", rename_conflict
+            )
         if job.job_id in self.file_verify_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         tracked = len(self.file_verify_processes) + len(self.image_preview_processes)
@@ -9393,6 +10051,11 @@ class MainWindow(QMainWindow):
         job = self.selected_job(job_id)
         if not job:
             raise ValueError("이미지를 미리 볼 작품을 선택해주세요.")
+        rename_conflict = MainWindow._episode_rename_execute_conflict(self, job)
+        if rename_conflict:
+            return MainWindow._episode_rename_blocked_start(
+                job, "imagePreview", rename_conflict
+            )
         if job.job_id in self.image_preview_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         tracked = len(self.file_verify_processes) + len(self.image_preview_processes)
@@ -9478,6 +10141,14 @@ class MainWindow(QMainWindow):
         job = self.selected_job(job_id)
         if not job:
             raise ValueError("이미지를 변환할 작품을 선택해주세요.")
+        rename_conflict = MainWindow._episode_rename_execute_conflict(self, job)
+        if rename_conflict:
+            return MainWindow._episode_rename_blocked_start(
+                job,
+                "imageConversion",
+                rename_conflict,
+                execute=execute,
+            )
         if job.job_id in self.image_conversion_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         admission = resource_admission(
@@ -9538,7 +10209,13 @@ class MainWindow(QMainWindow):
                 selected, exit_code
             )
         )
-        context = ImageConversionProcessContext(process=process, execute=execute)
+        context = ImageConversionProcessContext(
+            process=process,
+            execute=execute,
+            job_id=job.job_id,
+            work_key=job.work_key,
+            output_path=job.output_path,
+        )
         self.image_conversion_processes[job.job_id] = context
         if execute:
             process.readyReadStandardOutput.connect(
@@ -9846,6 +10523,14 @@ class MainWindow(QMainWindow):
         job = self.selected_job(job_id)
         if not job:
             raise ValueError("PDF를 생성할 작품을 선택해주세요.")
+        rename_conflict = MainWindow._episode_rename_execute_conflict(self, job)
+        if rename_conflict:
+            return MainWindow._episode_rename_blocked_start(
+                job,
+                "pdfGeneration",
+                rename_conflict,
+                execute=execute,
+            )
         if job.job_id in self.pdf_generation_processes:
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         admission = resource_admission(
@@ -9889,6 +10574,9 @@ class MainWindow(QMainWindow):
             process=process,
             execute=execute,
             automatic=automatic,
+            job_id=job.job_id,
+            work_key=job.work_key,
+            output_path=job.output_path,
         )
         self.pdf_generation_processes[job.job_id] = context
         if execute:
@@ -10258,7 +10946,12 @@ class MainWindow(QMainWindow):
         stale_active_record = bool(
             not active_context and not is_pending and job.state in ACTIVE_JOB_STATES
         )
-        is_busy = bool(active_context or is_pending or stale_active_record)
+        download_busy = bool(active_context or is_pending or stale_active_record)
+        rename_busy = bool(
+            job.job_id in getattr(self, "episode_rename_tasks", {})
+            or MainWindow._episode_rename_execute_conflict(self, job)
+        )
+        is_busy = bool(download_busy or rename_busy)
         is_youtube = job.provider == "youtube"
 
         if active_context or is_pending:
@@ -10330,6 +11023,10 @@ class MainWindow(QMainWindow):
                 ),
                 "recovery.inspect",
             )
+        elif rename_busy:
+            # File operations below remain visible so the disabled rename action
+            # clearly communicates why a second click cannot start another task.
+            pass
         elif is_youtube:
             mark(
                 menu.addAction(
@@ -10366,7 +11063,7 @@ class MainWindow(QMainWindow):
                 bool(self.start_spin.value() or self.last_spin.value())
             )
 
-        if not is_youtube and not is_busy:
+        if not is_youtube and not download_busy:
             file_menu = menu.addMenu("파일 및 회차 도구")
             mark(file_menu.menuAction(), "section.files")
             move_action = mark(
@@ -10376,7 +11073,18 @@ class MainWindow(QMainWindow):
                 ),
                 "folder.move",
             )
-            move_action.setEnabled(bool(job.output_path))
+            move_action.setEnabled(bool(job.output_path) and not rename_busy)
+            rename_episodes_action = mark(
+                file_menu.addAction(
+                    "회차 폴더명 정리 중…" if rename_busy else "회차 폴더명 정리...",
+                    lambda: self.confirm_rename_episode_folders(job.job_id),
+                ),
+                "episodes.rename",
+            )
+            rename_episodes_action.setToolTip(
+                "CLI: rename-episodes --job ID --dry-run 또는 --execute --yes"
+            )
+            rename_episodes_action.setEnabled(bool(job.output_path) and not rename_busy)
             verify_action = mark(
                 file_menu.addAction(
                     "보유 회차·파일 검사",
@@ -10385,7 +11093,9 @@ class MainWindow(QMainWindow):
                 "files.verify",
             )
             verify_action.setEnabled(
-                bool(job.output_path) and job.job_id not in self.file_verify_processes
+                bool(job.output_path)
+                and not rename_busy
+                and job.job_id not in self.file_verify_processes
             )
             preview_action = mark(
                 file_menu.addAction(
@@ -10395,7 +11105,9 @@ class MainWindow(QMainWindow):
                 "images.preview",
             )
             preview_action.setEnabled(
-                bool(job.output_path) and job.job_id not in self.image_preview_processes
+                bool(job.output_path)
+                and not rename_busy
+                and job.job_id not in self.image_preview_processes
             )
             file_menu.addSeparator()
             duplicate_exact_action = mark(
@@ -10413,7 +11125,9 @@ class MainWindow(QMainWindow):
                 lambda: self.start_duplicate_images(job.job_id, "phash")
             )
             duplicate_enabled = bool(
-                job.output_path and job.job_id not in self.duplicate_image_tasks
+                job.output_path
+                and not rename_busy
+                and job.job_id not in self.duplicate_image_tasks
             )
             duplicate_exact_action.setEnabled(duplicate_enabled)
             duplicate_phash_action.setEnabled(duplicate_enabled)
@@ -10427,6 +11141,7 @@ class MainWindow(QMainWindow):
             )
             convert_action.setEnabled(
                 bool(job.output_path)
+                and not rename_busy
                 and job.job_id not in self.image_conversion_processes
             )
             pdf_action = mark(
@@ -10437,7 +11152,9 @@ class MainWindow(QMainWindow):
                 "pdf.generate",
             )
             pdf_action.setEnabled(
-                bool(job.output_path) and job.job_id not in self.pdf_generation_processes
+                bool(job.output_path)
+                and not rename_busy
+                and job.job_id not in self.pdf_generation_processes
             )
 
             data_menu = menu.addMenu("작품 데이터")
@@ -10455,13 +11172,14 @@ class MainWindow(QMainWindow):
                     and Path(job.cover_path).expanduser().is_file()
                 )
             )
-            mark(
+            metadata_refresh_action = mark(
                 data_menu.addAction(
                     "메타데이터 새로고침",
                     lambda: self.refresh_selected_metadata(job.job_id),
                 ),
                 "metadata.refresh",
             )
+            metadata_refresh_action.setEnabled(not rename_busy)
             rebuild_action = mark(
                 data_menu.addAction(
                     "로컬 메타데이터 재생성...",
@@ -10469,7 +11187,7 @@ class MainWindow(QMainWindow):
                 ),
                 "metadata.rebuild",
             )
-            rebuild_action.setEnabled(bool(job.output_path))
+            rebuild_action.setEnabled(bool(job.output_path) and not rename_busy)
 
         organize_menu = menu.addMenu("작품 정리")
         mark(organize_menu.menuAction(), "section.organize")
@@ -11546,12 +12264,22 @@ class MainWindow(QMainWindow):
         ]
         return {
             "running": bool(active_contexts),
+            "busy": bool(active_contexts or self.pending_jobs or self.episode_rename_tasks),
             "processPid": active_processes[0]["pid"] if active_processes else None,
             "activeJob": active_jobs[0] if active_jobs else None,
             "activeJobs": active_jobs,
             "activeProcesses": active_processes,
             "activeCount": len(active_contexts),
             "pendingCount": len(self.pending_jobs),
+            "episodeFolderRenameCount": len(self.episode_rename_tasks),
+            "episodeFolderRenames": [
+                {
+                    "jobId": job_id,
+                    "execute": context.execute,
+                    "origin": context.origin,
+                }
+                for job_id, context in self.episode_rename_tasks.items()
+            ],
             "pausedJobId": next(
                 (context.job.job_id for context in active_contexts if context.paused),
                 None,
@@ -11987,14 +12715,60 @@ class MainWindow(QMainWindow):
             return
         try:
             request = json.loads(raw.splitlines()[0])
+            if request.get("action") == "rename_episode_folders":
+                self._start_control_episode_folder_rename(socket, request)
+                return
             result = self._handle_control_action(request)
             response = {"ok": True, "result": result}
         except Exception as error:
             self.log(f"CLI 명령 실패: {error}", "ERROR")
             response = {"ok": False, "error": str(error)}
+        self._write_control_response(socket, response)
+
+    def _write_control_response(self, socket: Any, response: dict[str, Any]) -> None:
+        if socket not in self.control_sockets:
+            return
         socket.write((json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8"))
         socket.flush()
         socket.disconnectFromServer()
+
+    def _start_control_episode_folder_rename(
+        self, socket: Any, request: dict[str, Any]
+    ) -> None:
+        job_id = str(request.get("jobId") or "")
+        execute = bool(request.get("execute"))
+        try:
+            if execute and not bool(request.get("confirmed")):
+                raise ValueError("실제 회차 폴더명 변경에는 --execute --yes가 필요합니다.")
+
+            def complete(
+                _job_id: str, result: dict[str, Any], error: str
+            ) -> None:
+                response = (
+                    {"ok": False, "error": error}
+                    if error
+                    else {"ok": True, "result": result}
+                )
+                self._write_control_response(socket, response)
+
+            started = self.start_episode_folder_rename(
+                job_id,
+                execute=execute,
+                origin="cli",
+                completion=complete,
+            )
+            if not started.get("started"):
+                message = self._episode_rename_start_error(started)
+                error_code = str(started.get("errorCode") or "")
+                raise RuntimeError(
+                    f"[{error_code}] {message}" if error_code else message
+                )
+        except Exception as error:
+            self.log(f"CLI 명령 실패: {error}", "ERROR")
+            self._write_control_response(
+                socket,
+                {"ok": False, "error": str(error)},
+            )
 
     def _handle_control_action(self, request: dict[str, Any]) -> Any:
         action = request.get("action")
@@ -12501,6 +13275,21 @@ class MainWindow(QMainWindow):
             self.hide()
             event.ignore()
             self.statusBar().showMessage("시스템 트레이로 숨겼습니다.", 3000)
+            return
+        if self.episode_rename_tasks:
+            first_request = not self.exit_after_episode_rename
+            self.exit_after_episode_rename = True
+            self.exit_requested = True
+            event.ignore()
+            message = (
+                "회차 폴더명 정리가 끝난 뒤 프로그램을 안전하게 종료합니다. "
+                "진행 중인 폴더 변경은 강제로 중단하지 않습니다."
+            )
+            self.statusBar().showMessage(message)
+            if first_request:
+                self.log(message)
+                if self.isVisible() and not self.force_close:
+                    QMessageBox.information(self, "회차 폴더명 정리 중", message)
             return
         if not self.force_close and (
             self.active_contexts

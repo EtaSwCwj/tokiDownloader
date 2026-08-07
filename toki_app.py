@@ -155,6 +155,7 @@ from toki_core import (
     normalize_retry_count,
     normalize_scan_request,
     normalize_work_concurrency,
+    plan_episode_folder_rename,
     plan_job_folder_move,
     plan_metadata_rebuild,
     public_ip_check_plan,
@@ -174,6 +175,7 @@ from toki_core import (
     read_log_tail,
     read_run_log,
     rebuild_job_metadata,
+    rename_episode_folders,
     resolve_cover_path,
     resource_budget,
     reset_app_settings,
@@ -201,6 +203,19 @@ class ControlError(RuntimeError):
     pass
 
 
+class ControlTimeoutError(ControlError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation_may_continue: bool = False,
+        status_command: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.operation_may_continue = bool(operation_may_continue)
+        self.status_command = str(status_command or "")
+
+
 def control_request(request: dict[str, Any], timeout_ms: int = 2500) -> Any:
     socket = QLocalSocket()
     socket.connectToServer(CONTROL_SERVER_NAME)
@@ -221,7 +236,9 @@ def control_request(request: dict[str, Any], timeout_ms: int = 2500) -> Any:
         if socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
             break
     if not received:
-        raise ControlError("GUI가 응답하지 않았습니다.")
+        if time.monotonic() >= deadline:
+            raise ControlTimeoutError("GUI 응답 제한 시간이 초과되었습니다.")
+        raise ControlError("GUI 연결이 응답 없이 종료되었습니다.")
     try:
         response = json.loads(received.decode("utf-8", errors="replace").splitlines()[0])
     except json.JSONDecodeError as error:
@@ -2006,6 +2023,23 @@ def build_parser() -> argparse.ArgumentParser:
     move_mode.add_argument("--execute", action="store_true", help="실제 폴더 이동 실행")
     move_folder.add_argument("--yes", action="store_true", help="실제 이동 확인")
     move_folder.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    rename_episodes = subparsers.add_parser(
+        "rename-episodes",
+        help="기존 숫자 접두어 회차 폴더명을 전체 작품명과 회차 접미사로 변경",
+    )
+    rename_episodes.add_argument("--job", required=True, help="작업 ID")
+    rename_episode_mode = rename_episodes.add_mutually_exclusive_group()
+    rename_episode_mode.add_argument(
+        "--dry-run", action="store_true", help="이름을 바꾸지 않고 충돌과 매핑만 확인"
+    )
+    rename_episode_mode.add_argument(
+        "--execute", action="store_true", help="회차 폴더명을 실제로 변경"
+    )
+    rename_episodes.add_argument(
+        "--yes", action="store_true", help="기존 폴더와 상태 파일 변경 확인"
+    )
+    rename_episodes.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     rebuild_metadata = subparsers.add_parser(
         "rebuild-metadata",
@@ -4154,6 +4188,80 @@ def run_cli(args: argparse.Namespace) -> int:
                 )
             )
         return 0
+    if command == "rename-episodes":
+        execute = bool(args.execute)
+        if execute and not args.yes:
+            raise ControlError(
+                "실제 회차 폴더명 변경에는 --execute --yes가 모두 필요합니다."
+            )
+        if gui_is_running():
+            try:
+                result = control_request(
+                    {
+                        "action": "rename_episode_folders",
+                        "jobId": args.job,
+                        "execute": execute,
+                        "confirmed": bool(args.yes) if execute else False,
+                    },
+                    timeout_ms=120000 if execute else 30000,
+                )
+            except ControlTimeoutError as error:
+                if not execute:
+                    raise
+                status_command = r".\toki-cli.cmd status --json"
+                raise ControlTimeoutError(
+                    "GUI 응답 제한 시간이 초과되었습니다. 회차 폴더명 변경은 "
+                    "백그라운드에서 계속될 수 있으니 status를 확인하세요: "
+                    + status_command,
+                    operation_may_continue=True,
+                    status_command=status_command,
+                ) from error
+        else:
+            result = (
+                rename_episode_folders(args.job)
+                if execute
+                else plan_episode_folder_rename(args.job)
+            )
+        if args.json:
+            print_json({"ok": True, **result})
+        else:
+            print(f"작품 폴더: {result['outputPath']}")
+            print(f"전체 작품명: {result['title']}")
+            print(
+                f"회차 폴더: {result['folderCount']}개 · "
+                f"변경 {result['renameCount']}개 · 충돌 {result['conflictCount']}개"
+            )
+            print(
+                "결과: 이름 변경 완료"
+                if result.get("executed")
+                else "결과: 변경 가능(dry-run)"
+                if result.get("canExecute")
+                else "결과: 충돌 해결 필요(dry-run)"
+            )
+            if not result.get("executed") and not result.get("canExecute"):
+                if result.get("recoveryRequired"):
+                    recovery = result.get("recovery") or {}
+                    reason = str(
+                        recovery.get("message")
+                        or "이전 이름 변경의 복구 자료를 먼저 확인해야 합니다."
+                    )
+                elif int(result.get("unsafeSuffixCount") or 0) > 0:
+                    reason = (
+                        "원본 제목에서 실제 회차명을 판별하지 못한 폴더가 있습니다."
+                    )
+                elif result.get("duplicateNumbers"):
+                    reason = "중복 회차 번호: " + ", ".join(
+                        str(value) for value in result["duplicateNumbers"][:10]
+                    )
+                else:
+                    first_conflict = next(iter(result.get("conflicts") or []), {})
+                    reason = str(
+                        first_conflict.get("message")
+                        or first_conflict.get("destination")
+                        or "안전 검사에서 실행이 차단되었습니다."
+                    )
+                print(f"원인: {reason}")
+        return 0
     if command == "rebuild-metadata":
         execute = bool(args.execute)
         if execute and not args.yes:
@@ -5120,7 +5228,16 @@ def main() -> int:
     try:
         return run_cli(args)
     except (ControlError, ValueError, RuntimeError, OSError) as error:
-        print(f"오류: {error}", file=sys.stderr)
+        if bool(getattr(args, "json", False)):
+            payload: dict[str, Any] = {"ok": False, "error": str(error)}
+            if isinstance(error, ControlTimeoutError):
+                payload["timeout"] = True
+                payload["operationMayContinue"] = error.operation_may_continue
+                if error.status_command:
+                    payload["statusCommand"] = error.status_command
+            print_json(payload)
+        else:
+            print(f"오류: {error}", file=sys.stderr)
         return 1
 
 

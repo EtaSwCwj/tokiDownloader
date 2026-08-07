@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import py_compile
+import re
 import subprocess
 import sys
 import time
@@ -126,14 +127,14 @@ def _check_node_syntax() -> dict[str, Any]:
 
 
 def _check_node_tests() -> dict[str, Any]:
+    test_files = sorted((ROOT_DIR / "tests").glob("downloader_*.test.js"))
+    if not test_files:
+        raise RuntimeError("다운로더 JavaScript 테스트 파일을 찾을 수 없습니다.")
     completed = subprocess.run(
         [
             find_node(),
             "--test",
-            str(ROOT_DIR / "tests" / "downloader_policy.test.js"),
-            str(ROOT_DIR / "tests" / "downloader_errors.test.js"),
-            str(ROOT_DIR / "tests" / "downloader_naming.test.js"),
-            str(ROOT_DIR / "tests" / "downloader_network.test.js"),
+            *(str(path) for path in test_files),
         ],
         cwd=str(ROOT_DIR),
         capture_output=True,
@@ -148,7 +149,16 @@ def _check_node_tests() -> dict[str, Any]:
     )
     if completed.returncode:
         raise RuntimeError(output or f"종료 코드 {completed.returncode}")
-    return {"detail": "다운로더 JavaScript 테스트 16건 통과", "tests": 16}
+    summary = re.search(
+        r"(?:^|\n)(?:ℹ|#)?\s*tests\s+(\d+)\b",
+        output,
+        re.IGNORECASE,
+    )
+    test_count = int(summary.group(1)) if summary else output.count("✔ ")
+    return {
+        "detail": f"다운로더 JavaScript 테스트 {test_count}건 통과",
+        "tests": test_count,
+    }
 
 
 def _check_unit_tests() -> dict[str, Any]:
