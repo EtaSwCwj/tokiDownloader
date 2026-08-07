@@ -558,6 +558,15 @@ status|set|select`, GUI 공급자 체크박스·메타데이터 결과·`status 
 보존했으며 외부 요청은 수행하지 않았다.
 Python 225건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
+2026-08-07 Hitomi 공통 메타데이터 파일: 설정 스키마 v21에 `metadata_json`, `info_txt`,
+`both`, `disabled` 정책을 추가했다. 공용 서비스는 toki 스키마 v1 JSON과 UTF-8 텍스트를
+계획하고 각 임시 파일 완성 후 원자 교체하며, 기존 파일은 명시적 교체 확인 없이 거부한다.
+`hitomi metadata-files status|set|plan|write`, GUI 설정·메타데이터 저장 버튼·`status --json`을
+연결하고 임시 한글 작품 폴더에서 실제 두 파일 생성, ExHentai 토큰 비노출, 재실행 충돌과
+임시 파일 정리를 검증했다. 기본 `metadata_json`으로 복원했고 화면은
+`logs/hitomi-metadata-file-settings.png`, `logs/hitomi-metadata-file-dialog.png`에 보존했다.
+Python 228건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

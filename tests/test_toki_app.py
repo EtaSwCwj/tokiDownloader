@@ -16,6 +16,86 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_metadata_file_cli_plans_and_writes_only_with_confirmation(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "hitomi" / "galleryinfo_1234567.js"
+        status_args = build_parser().parse_args(
+            ["hitomi", "metadata-files", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertEqual(json.loads(stdout.getvalue())["mode"], "metadata_json")
+
+        set_args = build_parser().parse_args(
+            ["hitomi", "metadata-files", "set", "--mode", "both", "--json"]
+        )
+        saved = {**default_config(), "hitomiMetadataFileMode": "both"}
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"hitomiMetadataFileMode": "both"},
+                "reset": False,
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            plan_args = build_parser().parse_args(
+                [
+                    "hitomi", "metadata-files", "plan", "--input", "1234567",
+                    "--fixture", str(fixture), "--output", temporary,
+                    "--mode", "both", "--json",
+                ]
+            )
+            with (
+                patch("toki_app.gui_is_running", return_value=False),
+                patch("toki_app.settings_snapshot", return_value=default_config()),
+                redirect_stdout(StringIO()) as stdout,
+            ):
+                self.assertEqual(run_cli(plan_args), 0)
+            self.assertEqual(json.loads(stdout.getvalue())["fileCount"], 2)
+            self.assertFalse((Path(temporary) / "metadata.json").exists())
+
+            unconfirmed_args = build_parser().parse_args(
+                [
+                    "hitomi", "metadata-files", "write", "--input", "1234567",
+                    "--fixture", str(fixture), "--output", temporary, "--json",
+                ]
+            )
+            with (
+                patch("toki_app.gui_is_running", return_value=False),
+                patch("toki_app.settings_snapshot", return_value=default_config()),
+            ):
+                with self.assertRaises(ControlError):
+                    run_cli(unconfirmed_args)
+
+            write_args = build_parser().parse_args(
+                [
+                    "hitomi", "metadata-files", "write", "--input", "1234567",
+                    "--fixture", str(fixture), "--output", temporary,
+                    "--mode", "both", "--yes", "--json",
+                ]
+            )
+            with (
+                patch("toki_app.gui_is_running", return_value=False),
+                patch("toki_app.settings_snapshot", return_value=default_config()),
+                redirect_stdout(StringIO()) as stdout,
+            ):
+                self.assertEqual(run_cli(write_args), 0)
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result["writtenCount"], 2)
+            self.assertTrue((Path(temporary) / "metadata.json").is_file())
+            self.assertTrue((Path(temporary) / "info.txt").is_file())
+
     def test_hitomi_title_cli_selects_from_local_metadata(self) -> None:
         status_args = build_parser().parse_args(
             ["hitomi", "title", "status", "--json"]

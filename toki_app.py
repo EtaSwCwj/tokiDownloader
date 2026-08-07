@@ -28,6 +28,7 @@ from hitomi_provider import (
     hitomi_excluded_tag_policy_snapshot,
     hitomi_filename_policy_snapshot,
     hitomi_metadata_policy_snapshot,
+    hitomi_metadata_file_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_provider_capabilities,
     hitomi_server_policy_snapshot,
@@ -35,8 +36,10 @@ from hitomi_provider import (
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
     plan_hitomi_image_filenames,
+    plan_hitomi_metadata_files,
     plan_hitomi_server,
     select_hitomi_display_title,
+    write_hitomi_metadata_files,
 )
 from toki_core import (
     APP_VERSION,
@@ -1005,6 +1008,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="저장 설정 대신 이 선택에만 적용",
     )
     hitomi_title_select.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_metadata_files = hitomi_commands.add_parser(
+        "metadata-files", help="공통 metadata.json과 info.txt 계획·저장"
+    )
+    hitomi_metadata_file_commands = hitomi_metadata_files.add_subparsers(
+        dest="hitomi_metadata_file_command", required=True
+    )
+    hitomi_metadata_file_status = hitomi_metadata_file_commands.add_parser(
+        "status", help="현재 메타데이터 파일 생성 정책 조회"
+    )
+    hitomi_metadata_file_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_metadata_file_set = hitomi_metadata_file_commands.add_parser(
+        "set", help="metadata.json·info.txt 생성 방식 저장"
+    )
+    hitomi_metadata_file_set.add_argument(
+        "--mode", choices=("metadata_json", "info_txt", "both", "disabled"), required=True
+    )
+    hitomi_metadata_file_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name, help_text in (
+        ("plan", "파일을 만들지 않고 대상·충돌 계산"),
+        ("write", "명시적 확인 후 작품 폴더에 메타데이터 파일 저장"),
+    ):
+        metadata_file_command = hitomi_metadata_file_commands.add_parser(name, help=help_text)
+        metadata_file_command.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+        metadata_file_command.add_argument(
+            "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+        )
+        metadata_file_command.add_argument("--fixture", required=True, help="로컬 JS/JSON 픽스처 경로")
+        metadata_file_command.add_argument("--output", required=True, help="기존 작품 폴더 경로")
+        metadata_file_command.add_argument(
+            "--mode", choices=("metadata_json", "info_txt", "both", "disabled"),
+            help="저장 설정 대신 이 작업에만 적용",
+        )
+        metadata_file_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+        if name == "write":
+            metadata_file_command.add_argument("--yes", action="store_true", help="파일 생성 확인")
+            metadata_file_command.add_argument(
+                "--overwrite", action="store_true", help="기존 파일 교체 확인"
+            )
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2606,6 +2647,53 @@ def run_cli(args: argparse.Namespace) -> int:
                             else args.prefer_japanese == "on"
                         ),
                     )
+                except HitomiReferenceError as error:
+                    result = error.to_dict()
+        elif args.hitomi_command == "metadata-files":
+            current = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            subcommand = args.hitomi_metadata_file_command
+            if subcommand == "status":
+                result = hitomi_metadata_file_policy_snapshot(current)
+            elif subcommand == "set":
+                updates = {"hitomiMetadataFileMode": args.mode}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **hitomi_metadata_file_policy_snapshot(saved)}
+            else:
+                try:
+                    metadata = load_hitomi_metadata_fixture(
+                        args.input,
+                        Path(args.fixture),
+                        provider_hint=args.provider,
+                    )
+                    if subcommand == "plan":
+                        result = plan_hitomi_metadata_files(
+                            metadata,
+                            Path(args.output),
+                            config=current,
+                            mode=args.mode,
+                        )
+                    else:
+                        if not args.yes:
+                            raise ControlError(
+                                "메타데이터 파일 저장에는 --yes가 필요합니다."
+                            )
+                        result = write_hitomi_metadata_files(
+                            metadata,
+                            Path(args.output),
+                            config=current,
+                            mode=args.mode,
+                            overwrite=args.overwrite,
+                        )
                 except HitomiReferenceError as error:
                     result = error.to_dict()
         elif args.show_gui:

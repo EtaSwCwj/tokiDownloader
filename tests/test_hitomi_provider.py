@@ -13,6 +13,7 @@ from hitomi_provider import (
     hitomi_filename_policy_snapshot,
     hitomi_excluded_tag_policy_snapshot,
     hitomi_metadata_policy_snapshot,
+    hitomi_metadata_file_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_server_policy_snapshot,
     hitomi_title_policy_snapshot,
@@ -21,9 +22,11 @@ from hitomi_provider import (
     normalize_hitomi_server_priority,
     normalize_hitomi_excluded_tags,
     plan_hitomi_image_filenames,
+    plan_hitomi_metadata_files,
     parse_hitomi_metadata_payload,
     plan_hitomi_server,
     select_hitomi_display_title,
+    write_hitomi_metadata_files,
 )
 from toki_core import default_config, normalize_config, validate_app_setting_updates
 
@@ -91,6 +94,7 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertTrue(result["referenceInspection"])
         self.assertFalse(result["networkRequest"])
         self.assertFalse(result["download"])
+        self.assertTrue(result["metadataFileGeneration"])
         self.assertFalse(result["authenticationBypass"])
         self.assertIn("exhentai.org", result["supportedHosts"])
 
@@ -394,6 +398,81 @@ class HitomiReferenceTests(unittest.TestCase):
             validate_app_setting_updates({"hitomiPreferJapaneseTitle": "yes"})
         migrated = normalize_config({"configVersion": 19})
         self.assertFalse(migrated["hitomiPreferJapaneseTitle"])
+
+    def test_common_metadata_json_and_info_text_are_planned_and_written_safely(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "1234567", FIXTURE_DIR / "galleryinfo_1234567.js"
+        )
+        self.assertEqual(default_config()["hitomiMetadataFileMode"], "metadata_json")
+        self.assertEqual(
+            hitomi_metadata_file_policy_snapshot(default_config())["fileNames"],
+            ["metadata.json"],
+        )
+        config = {
+            **default_config(),
+            "hitomiMetadataFileMode": "both",
+            "hitomiPreferJapaneseTitle": True,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "한글 작품 폴더"
+            output.mkdir()
+            plan = plan_hitomi_metadata_files(metadata, output, config=config)
+            self.assertFalse(plan["executed"])
+            self.assertEqual(plan["fileCount"], 2)
+            self.assertEqual(plan["wouldOverwriteCount"], 0)
+            self.assertTrue(all(not item["exists"] for item in plan["files"]))
+
+            written = write_hitomi_metadata_files(metadata, output, config=config)
+            self.assertTrue(written["executed"])
+            self.assertEqual(written["writtenCount"], 2)
+            common = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(common["schemaVersion"], 1)
+            self.assertEqual(common["title"], "日本語タイトル")
+            self.assertEqual(common["titleSource"], "japaneseTitle")
+            self.assertEqual(common["author"], "artist one")
+            self.assertEqual(common["group"], "circle name")
+            self.assertEqual(common["source"]["workKey"], "hitomi:1234567")
+            info = (output / "info.txt").read_text(encoding="utf-8")
+            self.assertIn("제목: 日本語タイトル", info)
+            self.assertIn("갤러리 ID: 1234567", info)
+
+            with self.assertRaises(HitomiReferenceError) as caught:
+                write_hitomi_metadata_files(metadata, output, config=config)
+            self.assertEqual(caught.exception.code, "hitomi.metadata_file_exists")
+            replaced = write_hitomi_metadata_files(
+                metadata, output, config=config, overwrite=True
+            )
+            self.assertEqual(replaced["wouldOverwriteCount"], 2)
+            self.assertTrue(all(item["overwritten"] for item in replaced["written"]))
+            self.assertEqual(list(output.glob("*.tmp")), [])
+
+    def test_metadata_file_policy_validates_mode_directory_and_migration(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "1234567", FIXTURE_DIR / "galleryinfo_1234567.js"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            disabled = plan_hitomi_metadata_files(
+                metadata, Path(temporary), mode="disabled"
+            )
+            self.assertEqual(disabled["fileCount"], 0)
+            self.assertFalse(disabled["enabled"])
+            missing = Path(temporary) / "missing"
+            with self.assertRaises(FileNotFoundError):
+                write_hitomi_metadata_files(metadata, missing)
+            exhentai = load_hitomi_metadata_fixture(
+                "https://exhentai.org/g/987654/abcdef1234/",
+                FIXTURE_DIR / "ehentai_gdata_987654.json",
+            )
+            secret_output = Path(temporary) / "exhentai"
+            secret_output.mkdir()
+            write_hitomi_metadata_files(exhentai, secret_output)
+            exported = (secret_output / "metadata.json").read_text(encoding="utf-8")
+            self.assertNotIn("abcdef1234", exported)
+            self.assertIn("exhentai:987654", exported)
+        with self.assertRaises(ValueError):
+            validate_app_setting_updates({"hitomiMetadataFileMode": "xml"})
+        migrated = normalize_config({"configVersion": 20})
+        self.assertEqual(migrated["hitomiMetadataFileMode"], "metadata_json")
 
 
 if __name__ == "__main__":

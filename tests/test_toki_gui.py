@@ -759,6 +759,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("이미지 파일명 원본 숫자"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("제외 태그 규칙"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("일본어 제목 우선"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("metadata.json info.txt 파일 저장"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
         self.assertEqual(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,7 @@ HITOMI_FILENAME_PLAN_MAX_FILES = 100_000
 HITOMI_FILENAME_SAMPLE_LIMIT = 1_000
 HITOMI_EXCLUDED_TAG_MAX_RULES = 500
 HITOMI_EXCLUDED_TAG_MAX_LENGTH = 100
+HITOMI_METADATA_FILE_MODES = ("metadata_json", "info_txt", "both", "disabled")
 HITOMI_METADATA_ENDPOINT = "https://ltn.hitomi.la/galleries/{gallery_id}.js"
 EHENTAI_METADATA_ENDPOINT = "https://api.e-hentai.org/api.php"
 _GALLERY_ID = re.compile(r"^[0-9]{1,18}$")
@@ -87,6 +90,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "imageFilenamePolicy": True,
         "excludedTagPolicy": True,
         "japaneseTitlePolicy": True,
+        "metadataFileGeneration": True,
         "metadataExternalRequestRequiresConfirmation": True,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
@@ -99,6 +103,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
             "이미지 파일명 계획은 로컬 메타데이터만 사용하며 Windows 충돌을 방지합니다.",
             "제외 태그 판정은 정규화한 로컬 메타데이터에만 적용합니다.",
             "표시 제목은 일본어 우선 여부와 명시적 폴백 근거를 함께 반환합니다.",
+            "metadata.json과 info.txt 저장은 기존 파일 교체 전 별도 확인을 요구합니다.",
         ],
     }
 
@@ -424,6 +429,231 @@ def select_hitomi_display_title(
         "selectedTitle": selected_title,
         "selectedField": selected_field,
         "usedFallback": selected_field != policy["primaryField"],
+    }
+
+
+def normalize_hitomi_metadata_file_mode(value: str | None) -> str:
+    normalized = str(value or "metadata_json").strip().lower().replace("-", "_")
+    aliases = {"json": "metadata_json", "info": "info_txt", "none": "disabled"}
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in HITOMI_METADATA_FILE_MODES:
+        raise ValueError(
+            "Hitomi 메타데이터 파일 방식은 metadata_json, info_txt, both 또는 disabled여야 합니다."
+        )
+    return normalized
+
+
+def hitomi_metadata_file_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    mode = normalize_hitomi_metadata_file_mode(source.get("hitomiMetadataFileMode"))
+    names = {
+        "metadata_json": ["metadata.json"],
+        "info_txt": ["info.txt"],
+        "both": ["metadata.json", "info.txt"],
+        "disabled": [],
+    }
+    return {
+        "ok": True,
+        "mode": mode,
+        "enabled": mode != "disabled",
+        "fileNames": names[mode],
+        "supportedModes": list(HITOMI_METADATA_FILE_MODES),
+        "overwriteRequiresConfirmation": True,
+        "networkRequested": False,
+    }
+
+
+def _common_hitomi_metadata(
+    metadata: dict[str, Any], config: dict[str, Any] | None
+) -> dict[str, Any]:
+    selected = select_hitomi_display_title(metadata, config=config)
+    artists = [str(value) for value in metadata.get("artists") or []]
+    groups = [str(value) for value in metadata.get("groups") or []]
+    tags = [str(value) for value in metadata.get("tags") or []]
+    provider = str(metadata.get("provider") or "hitomi")
+    gallery_id = str(metadata.get("galleryId") or "")
+    return {
+        "schemaVersion": 1,
+        "title": selected["selectedTitle"],
+        "originalTitle": str(metadata.get("title") or ""),
+        "japaneseTitle": str(metadata.get("japaneseTitle") or ""),
+        "titleSource": selected["selectedField"],
+        "author": artists[0] if artists else "N／A",
+        "group": groups[0] if groups else "N／A",
+        "category": str(metadata.get("category") or ""),
+        "genres": tags,
+        "description": "",
+        "coverUrl": str(metadata.get("thumbnailUrl") or ""),
+        "source": {
+            "site": provider,
+            "siteTitle": "Hitomi.la" if provider == "hitomi" else "ExHentai / E-Hentai",
+            "workId": gallery_id,
+            "workKey": str(metadata.get("workKey") or f"{provider}:{gallery_id}"),
+            "url": "",
+        },
+        "pageCount": int(metadata.get("pageCount") or 0),
+        "files": list(metadata.get("files") or []),
+        "providerMetadata": {
+            "artists": artists,
+            "groups": groups,
+            "parodies": list(metadata.get("parodies") or []),
+            "characters": list(metadata.get("characters") or []),
+            "language": str(metadata.get("language") or ""),
+            "postedAt": str(metadata.get("postedAt") or ""),
+            "rating": str(metadata.get("rating") or ""),
+            "uploader": str(metadata.get("uploader") or ""),
+        },
+        "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "generatedBy": "tokiDownloader-hitomi-provider",
+    }
+
+
+def _hitomi_metadata_file_contents(
+    metadata: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    mode: str | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    policy = hitomi_metadata_file_policy_snapshot(
+        {"hitomiMetadataFileMode": mode} if mode is not None else config
+    )
+    if not isinstance(metadata, dict) or not metadata.get("ok"):
+        raise HitomiReferenceError(
+            "hitomi.metadata_file_input_invalid",
+            "파일 생성에는 정상적으로 정규화된 갤러리 메타데이터가 필요합니다.",
+        )
+    common = _common_hitomi_metadata(metadata, config)
+    contents: dict[str, str] = {}
+    if "metadata.json" in policy["fileNames"]:
+        contents["metadata.json"] = json.dumps(
+            common, ensure_ascii=False, indent=2
+        ) + "\n"
+    if "info.txt" in policy["fileNames"]:
+        provider = common["source"]
+        contents["info.txt"] = "\n".join(
+            [
+                f"제목: {common['title']}",
+                f"원제: {common['originalTitle'] or '-'}",
+                f"일본어 제목: {common['japaneseTitle'] or '-'}",
+                f"작가: {common['author']}",
+                f"그룹: {common['group']}",
+                f"분류: {common['category'] or '-'}",
+                f"언어: {common['providerMetadata']['language'] or '-'}",
+                f"페이지: {common['pageCount']}",
+                f"태그: {', '.join(common['genres']) or '-'}",
+                f"공급자: {provider['siteTitle']}",
+                f"갤러리 ID: {provider['workId']}",
+                f"작품 키: {provider['workKey']}",
+            ]
+        ) + "\n"
+    return policy, contents
+
+
+def plan_hitomi_metadata_files(
+    metadata: dict[str, Any],
+    output_dir: Path,
+    *,
+    config: dict[str, Any] | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    raw_output = str(output_dir or "").strip()
+    if not raw_output:
+        raise ValueError("메타데이터 파일을 저장할 작품 폴더를 지정해주세요.")
+    output = Path(raw_output).expanduser().resolve()
+    policy, contents = _hitomi_metadata_file_contents(
+        metadata, config=config, mode=mode
+    )
+    files = [
+        {
+            "name": name,
+            "path": str(output / name),
+            "bytes": len(content.encode("utf-8")),
+            "exists": (output / name).is_file(),
+        }
+        for name, content in contents.items()
+    ]
+    return {
+        **policy,
+        "galleryId": str(metadata.get("galleryId") or ""),
+        "workKey": str(metadata.get("workKey") or ""),
+        "outputPath": str(output),
+        "outputExists": output.is_dir(),
+        "files": files,
+        "fileCount": len(files),
+        "wouldOverwriteCount": sum(1 for item in files if item["exists"]),
+        "executed": False,
+    }
+
+
+def write_hitomi_metadata_files(
+    metadata: dict[str, Any],
+    output_dir: Path,
+    *,
+    config: dict[str, Any] | None = None,
+    mode: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    plan = plan_hitomi_metadata_files(
+        metadata, output_dir, config=config, mode=mode
+    )
+    output = Path(plan["outputPath"])
+    if not output.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output}")
+    existing = [item for item in plan["files"] if item["exists"]]
+    if existing and not overwrite:
+        raise HitomiReferenceError(
+            "hitomi.metadata_file_exists",
+            "기존 메타데이터 파일이 있습니다. 명시적 덮어쓰기 확인이 필요합니다.",
+        )
+    _policy, contents = _hitomi_metadata_file_contents(
+        metadata, config=config, mode=mode
+    )
+    temporary_paths: list[Path] = []
+    written: list[dict[str, Any]] = []
+    try:
+        staged: list[tuple[Path, Path, str]] = []
+        for name, content in contents.items():
+            target = output / name
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="\n",
+                prefix=f".{name}.",
+                suffix=".tmp",
+                dir=output,
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary = Path(handle.name)
+            temporary_paths.append(temporary)
+            staged.append((temporary, target, content))
+        for temporary, target, content in staged:
+            os.replace(temporary, target)
+            temporary_paths.remove(temporary)
+            written.append(
+                {
+                    "name": target.name,
+                    "path": str(target),
+                    "bytes": len(content.encode("utf-8")),
+                    "overwritten": any(item["name"] == target.name for item in existing),
+                }
+            )
+    finally:
+        for temporary in temporary_paths:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return {
+        **plan,
+        "executed": True,
+        "overwriteConfirmed": bool(overwrite),
+        "writtenCount": len(written),
+        "written": written,
     }
 
 

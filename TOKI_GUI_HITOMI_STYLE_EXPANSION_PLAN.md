@@ -549,7 +549,7 @@ memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부
 - [x] 원본/숫자/숫자+원본 파일명
 - [x] 제외 태그 관리
 - [x] 일본어 제목 우선
-- [ ] info.txt 또는 공통 metadata.json 생성
+- [x] info.txt 또는 공통 metadata.json 생성
 - [ ] 원본 이미지 선택
 - [ ] 인증이 필요한 사이트의 사용자 소유 쿠키 처리
 
@@ -621,6 +621,19 @@ title status|set|select`, GUI 공급자 체크박스, 메타데이터 결과의 
 `logs/hitomi-japanese-title-settings.png`, `logs/hitomi-japanese-title-selection.png`에서
 한글·일본어 글꼴과 대비를 검토했으며 외부 요청은 없었다.
 Python 225건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 공통 메타데이터 파일 생성 구현: 설정 스키마 v21에 기본 `metadata.json`,
+`info.txt`, 둘 다, 사용 안 함 방식을 추가했다. 공용 JSON은 기존 toki 스키마 v1의 제목·작가·
+그룹·장르·표지·source 구조에 Hitomi 페이지·파일·공급자 메타데이터를 더하고, 제목 우선
+정책의 선택 결과를 반영한다. `info.txt`는 같은 핵심 필드를 UTF-8로 기록하며 ExHentai 토큰은
+어느 형식에도 포함하지 않는다. `hitomi metadata-files status|set|plan|write`, GUI 공급자
+설정과 메타데이터 대화상자의 저장 버튼, `status --json`이 같은 서비스를 사용한다. 계획은
+읽기 전용이고 실제 저장은 `--yes`/GUI 확인, 기존 파일 교체는 `--overwrite`/교체 재확인을
+요구한다. 임시 한글 작품 폴더에서 각 파일을 원자 저장하고 재실행 거부·UTF-8·공통 필드·
+임시 파일 정리를 검증했다. `logs/hitomi-metadata-file-settings.png`,
+`logs/hitomi-metadata-file-dialog.png`에서 생성 방식과 모든 버튼의 CLI 대응을 확인한 뒤 기본
+`metadata_json`으로 복원했다. 외부 요청과 사용자 작품 파일 변경은 없었다.
+Python 228건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ### 단계 H. YouTube 선택형 공급자
 

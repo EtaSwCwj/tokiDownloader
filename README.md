@@ -149,6 +149,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi title status --json
 .\toki-cli.cmd hitomi title set --prefer-japanese on --json
 .\toki-cli.cmd hitomi title select --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
+.\toki-cli.cmd hitomi metadata-files status --json
+.\toki-cli.cmd hitomi metadata-files set --mode metadata_json --json
+.\toki-cli.cmd hitomi metadata-files plan --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --output "C:\작품 폴더" --mode both --json
+.\toki-cli.cmd hitomi metadata-files write --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --output "C:\작품 폴더" --mode both --yes --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -732,7 +736,8 @@ ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에
 힌트만 표시합니다. `--show-gui`로 같은 분석기를 GUI 대화상자에서 열고 `hitomi close`로
 닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
 false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`,
-`excludedTagPolicy: true`, `japaneseTitlePolicy: true`로 구현 범위를 명확히 표시합니다.
+`excludedTagPolicy: true`, `japaneseTitlePolicy: true`, `metadataFileGeneration: true`로 구현
+범위를 명확히 표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
@@ -790,6 +795,17 @@ status|set|select`, 공급자 설정의 체크박스, 메타데이터 대화상�
 GUI 설정을 켜 로컬 픽스처의 `日本語タイトル` 선택을 확인한 뒤 기본 꺼짐으로 복원했습니다.
 검증 화면은 `logs\hitomi-japanese-title-settings.png`와
 `logs\hitomi-japanese-title-selection.png`에 있습니다.
+
+설정 스키마 v21은 `metadata_json`, `info_txt`, `both`, `disabled` 생성 방식을 저장하며 기본은
+기존 toki 작품 정보와 같은 스키마 v1 `metadata.json`입니다. 공통 JSON에는 선택 제목·원제·
+일본어 제목, 작가·그룹·태그, 표지 주소, 페이지·파일 목록과 공급자 작품 키를 기록하고,
+`info.txt`는 같은 핵심 정보를 사람이 읽는 UTF-8 텍스트로 만듭니다. ExHentai 갤러리 토큰은
+어느 파일에도 기록하지 않습니다. `hitomi metadata-files plan`은 경로·크기·기존 파일 충돌만
+계산하고, `write --yes`만 기존 작품 폴더에 임시 파일을 완성한 뒤 원자 교체합니다. 기존
+파일이 있으면 `--overwrite`가 없을 때 `hitomi.metadata_file_exists`로 거부합니다. GUI의
+`폴더에 정보 저장...` 버튼도 대상 파일과 교체 개수를 다시 확인합니다. 임시 한글 폴더에서
+두 파일의 실제 생성·UTF-8·공통 필드·재실행 거부와 정리를 확인했고, 화면은
+`logs\hitomi-metadata-file-settings.png`, `logs\hitomi-metadata-file-dialog.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows
