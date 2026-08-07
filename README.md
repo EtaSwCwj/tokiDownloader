@@ -109,6 +109,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd archive-viewer set --mode custom --path "C:\Program Files\7-Zip\7zFM.exe" --json
 .\toki-cli.cmd archive-viewer open --path "D:\Manga\work.cbz" --json
 .\toki-cli.cmd archive-viewer open --path "D:\Manga\work.cbz" --execute --yes --json
+.\toki-cli.cmd persistence status --json
+.\toki-cli.cmd persistence set --autosave-seconds 3 --startup-recovery on --json
+.\toki-cli.cmd persistence recover --json
+.\toki-cli.cmd persistence recover --show-gui
+.\toki-cli.cmd persistence recover --execute --yes --json
+.\toki-cli.cmd persistence recover --close
 .\toki-cli.cmd duplicates works --json
 .\toki-cli.cmd duplicates works --show-gui
 .\toki-cli.cmd duplicates works --close
@@ -624,10 +630,17 @@ GUI의 `검사 방식` 선택, 작업 메뉴, 작품 우클릭 `작품 재검사
 파일·폴더명 앞의 회차 번호를 최초 1회 완료 상태로 가져옵니다. 이전 폴더가 불완전하면
 `전체 재검사`를 사용해 누락 파일을 복구하세요.
 
-GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `실행 중`, `일시정지`
-작품과 실행 이력을 `중지됨`으로 복구합니다. 목록의 첫 페이지에 보이지 않는 기록도
-누락하지 않으며 `status --json`의 `startupRecovery`에서 복구 개수와 ID를 확인할 수
-있습니다.
+변경된 작품 상태는 기본 1초 주기로 묶어 SQLite에 자동 저장합니다. `persistence set
+--autosave-seconds N`으로 1~300초 범위에서 바꿀 수 있고, 설정을 적용하면 실행 중 타이머에도
+즉시 반영됩니다. 매번 전체 목록을 다시 쓰지 않고 변경된 작품 ID만 저장합니다.
+
+GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `실행 중`, `일시정지`,
+`재시도 대기` 작품과 실행 이력을 `중지됨`으로 복구합니다. 목록의 첫 페이지에 보이지 않는
+기록도 누락하지 않으며 진행률과 다운로드 파일은 그대로 보존합니다. `persistence status`와
+`status --json`의 `startupRecovery`에서 복구 개수와 ID를 확인할 수 있습니다. 시작 복구는
+고급 설정 또는 `persistence set --startup-recovery on|off`로 제어합니다. 수동
+`persistence recover`는 기본 읽기 전용 미리보기이고 실제 DB 상태 변경에는 `--execute
+--yes`가 모두 필요합니다. 현재 GUI에 실행·대기 작업이 있으면 수동 복구를 차단합니다.
 
 `set-retry-policy --count N --backoff S`는 프로세스 실패 후 자동 재시도 횟수와
 기본 대기 초를 설정합니다. 기본값은 2회·2초이고, 대기는 2초→4초→8초처럼 2배씩

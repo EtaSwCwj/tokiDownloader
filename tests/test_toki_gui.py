@@ -56,6 +56,28 @@ class _SignalStub:
         self.callbacks.append(callback)
 
 
+class _TimerStub:
+    def __init__(self) -> None:
+        self.interval = 0
+        self.started = 0
+        self.stopped = 0
+        self.active = False
+
+    def setInterval(self, interval: int) -> None:
+        self.interval = interval
+
+    def start(self) -> None:
+        self.started += 1
+        self.active = True
+
+    def stop(self) -> None:
+        self.stopped += 1
+        self.active = False
+
+    def isActive(self) -> bool:
+        return self.active
+
+
 class _ProcessStub:
     instances = []
 
@@ -284,6 +306,75 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertEqual(len(messages), 1)
 
+    def test_persistence_ipc_and_manual_recovery_block_current_work(self) -> None:
+        calls = []
+        harness = type("PersistenceHarness", (), {})()
+        harness.persistence_status_snapshot = lambda: {"ok": True, "dirtyJobCount": 0}
+        harness.recover_interrupted_records = (
+            lambda execute=False: calls.append(("recover", execute))
+            or {"ok": True, "executed": execute}
+        )
+        harness.show_recovery_dialog = lambda: calls.append(("show",)) or True
+        harness.close_recovery_dialog = lambda: calls.append(("close",)) or True
+
+        status = MainWindow._handle_control_action(
+            harness, {"action": "persistence_status"}
+        )
+        preview = MainWindow._handle_control_action(
+            harness, {"action": "recover_interrupted", "execute": False}
+        )
+        executed = MainWindow._handle_control_action(
+            harness, {"action": "recover_interrupted", "execute": True}
+        )
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_recovery_dialog"}
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_recovery_dialog"}
+        )
+
+        self.assertTrue(status["ok"])
+        self.assertFalse(preview["executed"])
+        self.assertTrue(executed["executed"])
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(
+            calls, [("recover", False), ("recover", True), ("show",), ("close",)]
+        )
+
+        blocked_harness = type("BlockedRecoveryHarness", (), {})()
+        blocked_harness.active_contexts = {"active": object()}
+        blocked_harness.pending_jobs = deque()
+        blocked = MainWindow.recover_interrupted_records(
+            blocked_harness, execute=True
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertTrue(blocked["blocked"])
+        self.assertEqual(blocked["activeJobIds"], ["active"])
+
+    def test_autosave_failure_keeps_dirty_jobs_and_schedules_retry(self) -> None:
+        job = DownloadJob(
+            job_id="dirty",
+            url="https://newtoki1.org/manhwa/7000",
+            output_dir=r"C:\Manga",
+        )
+        harness = type("AutosaveHarness", (), {})()
+        harness.dirty_job_ids = {job.job_id}
+        harness.jobs = {job.job_id: job}
+        harness.persist_timer = _TimerStub()
+        harness.last_autosave = {}
+        logs = []
+        harness.log = lambda *args: logs.append(args)
+
+        with patch("toki_gui.save_jobs", side_effect=OSError("disk busy")):
+            MainWindow._flush_job_history(harness)
+
+        self.assertEqual(harness.dirty_job_ids, {job.job_id})
+        self.assertTrue(harness.persist_timer.active)
+        self.assertFalse(harness.last_autosave["ok"])
+        self.assertIn("disk busy", harness.last_autosave["error"])
+        self.assertEqual(len(logs), 1)
+
     def test_group_ipc_routes_all_manager_and_assignment_actions(self) -> None:
         calls = []
         harness = type("GroupHarness", (), {})()
@@ -390,6 +481,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("프록시 속도 공급자"), [1])
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("존재하지않음"), [])
         self.assertEqual(SettingsDialog.matching_tab_indexes(""), [0, 1, 2, 3, 4])
 
@@ -917,6 +1009,7 @@ class WorkSchedulerTests(unittest.TestCase):
             "thumbnailSize": "large",
             "alwaysOnTop": True,
             "windowOpacity": 85,
+            "autosaveIntervalSeconds": 7,
         }
         harness = type("SettingsHarness", (), {})()
         harness.config = {}
@@ -945,6 +1038,8 @@ class WorkSchedulerTests(unittest.TestCase):
         harness.resolved_theme = "light"
         harness.theme_mode = "system"
         harness.active_settings_dialog = None
+        harness.persist_timer = _TimerStub()
+        harness.dirty_job_ids = {"dirty"}
 
         with (
             patch("toki_gui.update_app_settings", return_value=result) as update,
@@ -962,6 +1057,9 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(harness.work_concurrency_spin.value, 3)
         self.assertFalse(harness.log_box.value)
         self.assertEqual(display_updates, [result])
+        self.assertEqual(harness.persist_timer.interval, 7000)
+        self.assertEqual(harness.persist_timer.started, 1)
+        self.assertEqual(harness.persist_timer.stopped, 1)
         self.assertTrue(
             all(
                 not widget.blocked

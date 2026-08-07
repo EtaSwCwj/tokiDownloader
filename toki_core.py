@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 9
+CONFIG_SCHEMA_VERSION = 10
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -117,6 +117,8 @@ SETTING_KEYS = frozenset(
         "imageExcludedExtensions",
         "archiveViewerMode",
         "archiveViewerPath",
+        "autosaveIntervalSeconds",
+        "recoverInterruptedOnStartup",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -402,6 +404,8 @@ def default_config() -> dict[str, Any]:
         "imageExcludedExtensions": [],
         "archiveViewerMode": "system",
         "archiveViewerPath": "",
+        "autosaveIntervalSeconds": 1,
+        "recoverInterruptedOnStartup": True,
     }
 
 
@@ -1265,6 +1269,13 @@ def normalize_archive_viewer_path(value: str | os.PathLike[str] | None) -> str:
     return normalized
 
 
+def normalize_autosave_interval_seconds(value: int | None) -> int:
+    normalized = 1 if value is None else int(value)
+    if not 1 <= normalized <= 300:
+        raise ValueError("자동 저장 주기는 1~300초여야 합니다.")
+    return normalized
+
+
 def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
@@ -1336,6 +1347,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "thumbnailsVisible",
         "alwaysOnTop",
         "clipboardMonitor",
+        "recoverInterruptedOnStartup",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1443,6 +1455,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_archive_viewer_path,
         source.get("archiveViewerPath"),
         defaults["archiveViewerPath"],
+    )
+    normalized["autosaveIntervalSeconds"] = _safe_normalize(
+        normalize_autosave_interval_seconds,
+        source.get("autosaveIntervalSeconds"),
+        defaults["autosaveIntervalSeconds"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -1596,6 +1613,7 @@ def validate_app_setting_updates(
         "thumbnailsVisible",
         "alwaysOnTop",
         "clipboardMonitor",
+        "recoverInterruptedOnStartup",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -1631,6 +1649,7 @@ def validate_app_setting_updates(
         "imageExcludedExtensions": normalize_image_excluded_extensions,
         "archiveViewerMode": normalize_archive_viewer_mode,
         "archiveViewerPath": normalize_archive_viewer_path,
+        "autosaveIntervalSeconds": normalize_autosave_interval_seconds,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -4829,12 +4848,13 @@ def recover_interrupted_jobs(
     reason: str = "이전 GUI가 종료되어 작업이 중단되었습니다.",
     *,
     database_path: Path | None = None,
+    execute: bool = True,
 ) -> dict[str, Any]:
     interrupted_states = tuple(sorted(ACTIVE_JOB_STATES))
     placeholders = ", ".join("?" for _ in interrupted_states)
     now = datetime.now().astimezone().isoformat(timespec="seconds")
-    recovered_jobs: list[DownloadJob] = []
-    recovered_run_ids: list[str] = []
+    candidate_jobs: list[tuple[str, DownloadJob]] = []
+    candidate_runs: list[tuple[str, DownloadRun]] = []
     job_field_names = set(DownloadJob.__dataclass_fields__)
     connection = _connect_job_db(database_path)
     try:
@@ -4846,61 +4866,84 @@ def recover_interrupted_jobs(
             f"SELECT run_id, payload FROM runs WHERE state IN ({placeholders})",
             interrupted_states,
         ).fetchall()
-        with connection:
-            for job_id, payload in job_rows:
-                try:
-                    data = json.loads(payload)
-                    job = DownloadJob(
-                        **{
-                            key: value
-                            for key, value in data.items()
-                            if key in job_field_names
-                        }
-                    )
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                job.state = "중지됨"
-                job.error = job.error or reason
-                connection.execute(
-                    "UPDATE jobs SET state = ?, updated_at = ?, payload = ? WHERE job_id = ?",
-                    (
-                        job.state,
-                        now,
-                        json.dumps(job.to_dict(), ensure_ascii=False),
-                        job_id,
-                    ),
+        for job_id, payload in job_rows:
+            try:
+                data = json.loads(payload)
+                job = DownloadJob(
+                    **{
+                        key: value
+                        for key, value in data.items()
+                        if key in job_field_names
+                    }
                 )
-                recovered_jobs.append(job)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            candidate_jobs.append((str(job_id), job))
+        for run_id, payload in run_rows:
+            run = _decode_run(payload)
+            if run is not None:
+                candidate_runs.append((str(run_id), run))
 
-            for run_id, payload in run_rows:
-                run = _decode_run(payload)
-                if run is None:
-                    continue
-                run.state = "중지됨"
-                run.error = run.error or reason
-                run.finished_at = run.finished_at or now
-                connection.execute(
-                    """
-                    UPDATE runs
-                    SET state = ?, finished_at = ?, updated_at = ?, payload = ?
-                    WHERE run_id = ?
-                    """,
-                    (
-                        run.state,
-                        run.finished_at,
-                        now,
-                        json.dumps(run.to_dict(), ensure_ascii=False),
-                        run_id,
-                    ),
-                )
-                recovered_run_ids.append(run_id)
+        if execute:
+            with connection:
+                for job_id, job in candidate_jobs:
+                    job.state = "중지됨"
+                    job.error = job.error or reason
+                    connection.execute(
+                        "UPDATE jobs SET state = ?, updated_at = ?, payload = ? WHERE job_id = ?",
+                        (
+                            job.state,
+                            now,
+                            json.dumps(job.to_dict(), ensure_ascii=False),
+                            job_id,
+                        ),
+                    )
+
+                for run_id, run in candidate_runs:
+                    run.state = "중지됨"
+                    run.error = run.error or reason
+                    run.finished_at = run.finished_at or now
+                    connection.execute(
+                        """
+                        UPDATE runs
+                        SET state = ?, finished_at = ?, updated_at = ?, payload = ?
+                        WHERE run_id = ?
+                        """,
+                        (
+                            run.state,
+                            run.finished_at,
+                            now,
+                            json.dumps(run.to_dict(), ensure_ascii=False),
+                            run_id,
+                        ),
+                    )
     finally:
         connection.close()
     return {
-        "jobCount": len(recovered_jobs),
-        "runCount": len(recovered_run_ids),
-        "jobIds": [job.job_id for job in recovered_jobs],
-        "runIds": recovered_run_ids,
+        "ok": True,
+        "executed": bool(execute),
+        "jobCount": len(candidate_jobs),
+        "runCount": len(candidate_runs),
+        "jobIds": [job_id for job_id, _job in candidate_jobs],
+        "runIds": [run_id for run_id, _run in candidate_runs],
+        "activeStates": list(interrupted_states),
+        "reason": reason,
+        "filesChanged": False,
+    }
+
+
+def persistence_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    return {
+        "autosaveIntervalSeconds": int(source["autosaveIntervalSeconds"]),
+        "autosaveEnabled": True,
+        "startupRecoveryEnabled": bool(source["recoverInterruptedOnStartup"]),
+        "recoveryAction": "mark_stopped",
+        "preservesProgress": True,
+        "preservesDownloadedFiles": True,
+        "requiresConfirmationForManualRecovery": True,
     }
 
 

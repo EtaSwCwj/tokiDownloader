@@ -195,6 +195,7 @@ from toki_core import (
     open_in_explorer,
     open_archive_with_viewer,
     plan_archive_viewer_open,
+    persistence_policy_snapshot,
     plan_job_folder_move,
     plan_metadata_rebuild,
     plan_window_geometry,
@@ -1849,6 +1850,94 @@ class ArchiveInspectionDialog(QDialog):
         }
 
 
+class RecoveryStatusDialog(QDialog):
+    def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.result = result
+        self.setWindowTitle("불완전 작업 복구")
+        self.resize(650, 430)
+        layout = QVBoxLayout(self)
+        self.heading = QLabel("불완전 작업 복구 미리보기")
+        self.heading.setObjectName("sectionTitle")
+        layout.addWidget(self.heading)
+        self.summary = QLabel("")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        layout.addWidget(self.details, 1)
+        note = QLabel(
+            "복구는 DB의 상태만 중지됨으로 바꾸고 진행률과 다운로드 파일을 보존합니다. "
+            "현재 실행·대기 작업이 있으면 수동 복구를 차단합니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        refresh_button = buttons.addButton(
+            "다시 확인", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        refresh_button.setToolTip("CLI: persistence recover --show-gui")
+        refresh_button.clicked.connect(self.refresh)
+        self.execute_button = buttons.addButton(
+            "복구 실행...", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.execute_button.setToolTip(
+            "CLI: persistence recover --execute --yes --json"
+        )
+        self.execute_button.clicked.connect(self._execute)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.set_result(result)
+
+    def set_result(self, result: dict[str, Any]) -> None:
+        self.result = result
+        blocked = bool(result.get("blocked"))
+        executed = bool(result.get("executed"))
+        job_count = int(result.get("jobCount") or 0)
+        run_count = int(result.get("runCount") or 0)
+        self.heading.setText(
+            "불완전 작업 복구 완료" if executed else "불완전 작업 복구 미리보기"
+        )
+        self.summary.setText(
+            str(result.get("error") or "현재 작업이 있어 확인할 수 없습니다.")
+            if blocked
+            else f"작품 {job_count}개 · 실행 이력 {run_count}개 · "
+            f"{'복구 완료' if executed else '변경 전 미리보기'}"
+        )
+        lines = [
+            f"실행 여부: {'예' if executed else '아니요'}",
+            "복구 상태: 중지됨",
+            "진행률 보존: 예",
+            "다운로드 파일 변경: 없음",
+        ]
+        if result.get("jobIds"):
+            lines.extend(["", "[작품 ID]", *map(str, result["jobIds"][:100])])
+        if result.get("runIds"):
+            lines.extend(["", "[실행 ID]", *map(str, result["runIds"][:100])])
+        self.details.setPlainText("\n".join(lines))
+        self.execute_button.setEnabled(
+            not blocked and not executed and bool(job_count or run_count)
+        )
+
+    def refresh(self) -> None:
+        self.set_result(self.owner.recover_interrupted_records(execute=False))
+
+    def _execute(self) -> None:
+        self.set_result(self.owner.confirm_recover_interrupted_records())
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "executed": bool(self.result.get("executed")),
+            "blocked": bool(self.result.get("blocked")),
+            "jobCount": int(self.result.get("jobCount") or 0),
+            "runCount": int(self.result.get("runCount") or 0),
+        }
+
+
 class DuplicateWorksDialog(QDialog):
     def __init__(self, result: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2497,7 +2586,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2796,10 +2885,29 @@ class SettingsDialog(QDialog):
         )
         archive_viewer_row.addWidget(self.archive_viewer_clear_button)
         advanced_form.addRow("지정 프로그램", archive_viewer_row)
+        self.autosave_interval_spin = QSpinBox()
+        self.autosave_interval_spin.setRange(1, 300)
+        self.autosave_interval_spin.setSuffix("초")
+        self.autosave_interval_spin.setToolTip(
+            "CLI: persistence set --autosave-seconds N"
+        )
+        advanced_form.addRow("자동 저장 주기", self.autosave_interval_spin)
+        self.startup_recovery_check = QCheckBox(
+            "시작할 때 대기·실행 중·일시정지 기록을 중지됨으로 복구"
+        )
+        self.startup_recovery_check.setToolTip(
+            "CLI: persistence set --startup-recovery on|off"
+        )
+        advanced_form.addRow("불완전 작업 복구", self.startup_recovery_check)
+        recovery_preview_button = QPushButton("불완전 기록 확인...")
+        recovery_preview_button.setToolTip("CLI: persistence recover --show-gui")
+        recovery_preview_button.clicked.connect(owner.show_recovery_dialog)
+        advanced_form.addRow("복구 확인", recovery_preview_button)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
-            "방법만 정하며 Windows 시스템 연결은 변경하지 않습니다."
+            "방법만 정하며 Windows 시스템 연결은 변경하지 않습니다. 자동 저장은 변경된 작업만 "
+            "묶어서 저장하고 복구는 다운로드 파일을 수정하지 않습니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -2966,6 +3074,10 @@ class SettingsDialog(QDialog):
         self.archive_viewer_mode_combo.setCurrentIndex(max(0, archive_mode_index))
         self.archive_viewer_path_edit.setText(str(values["archiveViewerPath"]))
         self._update_archive_viewer_controls()
+        self.autosave_interval_spin.setValue(int(values["autosaveIntervalSeconds"]))
+        self.startup_recovery_check.setChecked(
+            bool(values["recoverInterruptedOnStartup"])
+        )
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3148,6 +3260,8 @@ class SettingsDialog(QDialog):
             ],
             "archiveViewerMode": str(self.archive_viewer_mode_combo.currentData()),
             "archiveViewerPath": self.archive_viewer_path_edit.text(),
+            "autosaveIntervalSeconds": self.autosave_interval_spin.value(),
+            "recoverInterruptedOnStartup": self.startup_recovery_check.isChecked(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -3554,11 +3668,14 @@ class MainWindow(QMainWindow):
         self.last_stability_test: dict[str, Any] | None = None
         self.public_ip_task: ServiceTask | None = None
         self.startup_recovery: dict[str, Any] = {
+            "ok": True,
+            "executed": False,
             "jobCount": 0,
             "runCount": 0,
             "jobIds": [],
             "runIds": [],
         }
+        self.last_manual_recovery: dict[str, Any] = {}
         self.force_close = False
         self.exit_requested = False
         self.tray_icon: QSystemTrayIcon | None = None
@@ -3581,6 +3698,7 @@ class MainWindow(QMainWindow):
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
         self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
         self.active_archive_inspection_dialog: ArchiveInspectionDialog | None = None
+        self.active_recovery_dialog: RecoveryStatusDialog | None = None
         self.active_duplicate_works_dialog: DuplicateWorksDialog | None = None
         self.active_duplicate_images_dialog: DuplicateImagesDialog | None = None
         self.active_completion_dialog: CompletionCountdownDialog | None = None
@@ -3594,9 +3712,12 @@ class MainWindow(QMainWindow):
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
         self.dirty_job_ids: set[str] = set()
+        self.last_autosave: dict[str, Any] = {}
         self.persist_timer = QTimer(self)
         self.persist_timer.setSingleShot(True)
-        self.persist_timer.setInterval(600)
+        self.persist_timer.setInterval(
+            int(self.config.get("autosaveIntervalSeconds") or 1) * 1000
+        )
         self.persist_timer.timeout.connect(self._flush_job_history)
         self.pending_job_ui_updates: set[str] = set()
         self.job_ui_update_timer = QTimer(self)
@@ -4624,7 +4745,14 @@ class MainWindow(QMainWindow):
     def _restore_job_history(self) -> None:
         self._update_list_view_state(loading=True)
         try:
-            self.startup_recovery = recover_interrupted_jobs()
+            recovery_enabled = bool(
+                self.config.get("recoverInterruptedOnStartup", True)
+            )
+            self.startup_recovery = {
+                **recover_interrupted_jobs(execute=recovery_enabled),
+                "automatic": True,
+                "enabled": recovery_enabled,
+            }
             metadata_updates: list[DownloadJob] = []
             self.history_all_total = count_jobs()
             self.history_total = count_jobs(self.history_query, self.history_state)
@@ -4650,7 +4778,10 @@ class MainWindow(QMainWindow):
         changed_jobs = {job.job_id: job for job in metadata_updates}
         if changed_jobs:
             save_jobs(list(changed_jobs.values()))
-        if self.startup_recovery["jobCount"] or self.startup_recovery["runCount"]:
+        if self.startup_recovery.get("executed") and (
+            self.startup_recovery["jobCount"]
+            or self.startup_recovery["runCount"]
+        ):
             self.log(
                 "이전 종료 작업 복구: "
                 f"작품 {self.startup_recovery['jobCount']}개, "
@@ -4857,7 +4988,25 @@ class MainWindow(QMainWindow):
         try:
             save_jobs(pending)
         except (OSError, sqlite3.Error) as error:
+            self.dirty_job_ids.update(job_ids)
+            self.last_autosave = {
+                "ok": False,
+                "savedCount": 0,
+                "pendingCount": len(self.dirty_job_ids),
+                "error": str(error),
+                "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
             self.log(f"작업 기록 저장 실패: {error}", "ERROR")
+            if not self.persist_timer.isActive():
+                self.persist_timer.start()
+            return
+        self.last_autosave = {
+            "ok": True,
+            "savedCount": len(pending),
+            "pendingCount": len(self.dirty_job_ids),
+            "error": "",
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
 
     def _update_job_card(self, job: DownloadJob) -> None:
         was_visible = self.task_model.contains_work_key(job.work_key)
@@ -5835,6 +5984,108 @@ class MainWindow(QMainWindow):
         self.active_archive_inspection_dialog.close()
         return True
 
+    def recover_interrupted_records(self, *, execute: bool = False) -> dict[str, Any]:
+        active_ids = sorted(getattr(self, "active_contexts", {}))
+        pending_ids = [
+            job.job_id for job in getattr(self, "pending_jobs", ())
+        ]
+        if active_ids or pending_ids:
+            return {
+                "ok": False,
+                "executed": False,
+                "blocked": True,
+                "jobCount": 0,
+                "runCount": 0,
+                "jobIds": [],
+                "runIds": [],
+                "activeJobIds": active_ids,
+                "pendingJobIds": pending_ids,
+                "error": "현재 실행 또는 대기 작업이 있어 불완전 기록 복구를 차단했습니다.",
+                "filesChanged": False,
+            }
+        if execute:
+            self._flush_job_history()
+        result = {
+            **recover_interrupted_jobs(execute=execute),
+            "blocked": False,
+        }
+        if execute:
+            for job_id in result["jobIds"]:
+                stored = load_job_by_id(job_id)
+                if stored is None:
+                    continue
+                previous = self.jobs.get(job_id)
+                if previous is not None:
+                    self.jobs_by_work.pop(previous.work_key, None)
+                self.jobs[job_id] = stored
+                self.jobs_by_work[stored.work_key] = stored
+                self.task_model.update_job(stored)
+            self.last_manual_recovery = result
+            self._update_summary()
+            self.log(
+                "수동 불완전 기록 복구: "
+                f"작품 {result['jobCount']}개, 실행 {result['runCount']}개"
+            )
+        return result
+
+    def persistence_status_snapshot(self) -> dict[str, Any]:
+        recovery = self.recover_interrupted_records(execute=False)
+        return {
+            "ok": True,
+            "policy": persistence_policy_snapshot(self.config),
+            "recovery": recovery,
+            "startupRecovery": self.startup_recovery,
+            "lastManualRecovery": self.last_manual_recovery,
+            "dirtyJobCount": len(self.dirty_job_ids),
+            "autosaveTimerActive": self.persist_timer.isActive(),
+            "autosaveRemainingMs": max(0, int(self.persist_timer.remainingTime())),
+            "lastAutosave": self.last_autosave,
+            "guiRunning": True,
+        }
+
+    def show_recovery_dialog(self) -> bool:
+        result = self.recover_interrupted_records(execute=False)
+        if self.active_recovery_dialog:
+            self.active_recovery_dialog.close()
+        dialog = RecoveryStatusDialog(self, result)
+        self.active_recovery_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_recovery_dialog", None)
+                if self.active_recovery_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_recovery_dialog(self) -> bool:
+        if not self.active_recovery_dialog:
+            return False
+        self.active_recovery_dialog.close()
+        return True
+
+    def confirm_recover_interrupted_records(self) -> dict[str, Any]:
+        preview = self.recover_interrupted_records(execute=False)
+        if not preview.get("ok") or not (
+            preview.get("jobCount") or preview.get("runCount")
+        ):
+            return preview
+        answer = QMessageBox.question(
+            self,
+            "불완전 기록 복구",
+            f"작품 {preview['jobCount']}개와 실행 이력 {preview['runCount']}개를 "
+            "중지됨으로 복구하시겠습니까?\n\n진행률과 다운로드 파일은 보존됩니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return preview
+        return self.recover_interrupted_records(execute=True)
+
     def show_duplicate_works(self) -> bool:
         result = find_duplicate_works()
         if self.active_duplicate_works_dialog:
@@ -6127,6 +6378,14 @@ class MainWindow(QMainWindow):
         self._apply_style()
         self._apply_display_preferences(result)
         self._apply_keyboard_shortcuts()
+        persist_timer = getattr(self, "persist_timer", None)
+        if persist_timer is not None:
+            persist_timer.setInterval(
+                int(result.get("autosaveIntervalSeconds") or 1) * 1000
+            )
+            if getattr(self, "dirty_job_ids", set()):
+                persist_timer.stop()
+                persist_timer.start()
         delegate = self.task_list.itemDelegate()
         if isinstance(delegate, JobItemDelegate):
             delegate.set_density(str(result["rowDensity"]))
@@ -7719,6 +7978,11 @@ class MainWindow(QMainWindow):
         ):
             screenshot = self.active_archive_inspection_dialog.grab()
         elif (
+            self.active_recovery_dialog
+            and self.active_recovery_dialog.isVisible()
+        ):
+            screenshot = self.active_recovery_dialog.grab()
+        elif (
             self.active_duplicate_works_dialog
             and self.active_duplicate_works_dialog.isVisible()
         ):
@@ -8165,6 +8429,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd group list|create|rename|assign|unassign|manage [options]\n"
             "toki-cli.cmd local inspect [--path ARCHIVE --json|--show-gui|--close]\n"
             "toki-cli.cmd archive-viewer status|set|open [options]\n"
+            "toki-cli.cmd persistence status|set|recover [options]\n"
             "toki-cli.cmd duplicates works [--json|--show-gui|--close]\n"
             "toki-cli.cmd duplicates images --job ID [--algorithm sha256|phash --json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
@@ -8343,6 +8608,7 @@ class MainWindow(QMainWindow):
                 "lastInspection": self.last_clipboard_inspection,
             },
             "startupRecovery": self.startup_recovery,
+            "persistence": self.persistence_status_snapshot(),
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
             "screenshotPath": str(LOG_PATH.parent / "gui-screenshot.png"),
@@ -8461,6 +8727,11 @@ class MainWindow(QMainWindow):
             "archiveInspection": (
                 self.active_archive_inspection_dialog.state_snapshot()
                 if self.active_archive_inspection_dialog
+                else {"open": False}
+            ),
+            "recoveryDialog": (
+                self.active_recovery_dialog.state_snapshot()
+                if self.active_recovery_dialog
                 else {"open": False}
             ),
             "duplicateWorksOpen": bool(
@@ -8828,6 +9099,16 @@ class MainWindow(QMainWindow):
             return {"closed": self.close_archive_inspection()}
         if action == "archive_viewer_policy":
             return archive_viewer_policy_snapshot(self.config)
+        if action == "persistence_status":
+            return self.persistence_status_snapshot()
+        if action == "recover_interrupted":
+            return self.recover_interrupted_records(
+                execute=bool(request.get("execute"))
+            )
+        if action == "show_recovery_dialog":
+            return {"shown": self.show_recovery_dialog()}
+        if action == "close_recovery_dialog":
+            return {"closed": self.close_recovery_dialog()}
         if action == "show_duplicate_works":
             return {"shown": self.show_duplicate_works()}
         if action == "close_duplicate_works":

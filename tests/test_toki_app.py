@@ -652,6 +652,111 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(execute_args), 0)
         open_viewer.assert_called_once_with(Path("work.cbz"), execute=True)
 
+    def test_persistence_cli_reports_sets_previews_and_confirms_recovery(self) -> None:
+        policy = {
+            "autosaveIntervalSeconds": 1,
+            "startupRecoveryEnabled": True,
+        }
+        recovery = {
+            "ok": True,
+            "executed": False,
+            "jobCount": 1,
+            "runCount": 1,
+            "jobIds": ["stale"],
+            "runIds": ["stale-run"],
+        }
+        status_args = build_parser().parse_args(
+            ["persistence", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.persistence_policy_snapshot", return_value=policy),
+            patch("toki_app.recover_interrupted_jobs", return_value=recovery) as recover,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        recover.assert_called_once_with(execute=False)
+
+        set_args = build_parser().parse_args(
+            [
+                "persistence",
+                "set",
+                "--autosave-seconds",
+                "9",
+                "--startup-recovery",
+                "off",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                side_effect=[
+                    {"autosaveIntervalSeconds": 9},
+                    {"ok": True, "policy": policy, "recovery": recovery},
+                ],
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[0].args[0],
+            {
+                "action": "set_settings",
+                "updates": {
+                    "autosaveIntervalSeconds": 9,
+                    "recoverInterruptedOnStartup": False,
+                },
+                "reset": False,
+            },
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[0], {"action": "persistence_status"}
+        )
+
+        preview_args = build_parser().parse_args(
+            ["persistence", "recover", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.recover_interrupted_jobs", return_value=recovery) as recover,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(preview_args), 0)
+        recover.assert_called_once_with(execute=False)
+
+        unconfirmed = build_parser().parse_args(
+            ["persistence", "recover", "--execute"]
+        )
+        with self.assertRaisesRegex(ValueError, "--execute --yes"):
+            run_cli(unconfirmed)
+
+        execute_args = build_parser().parse_args(
+            ["persistence", "recover", "--execute", "--yes", "--json"]
+        )
+        executed = {**recovery, "executed": True}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch(
+                "toki_app.recover_interrupted_jobs", return_value=executed
+            ) as recover,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(execute_args), 0)
+        recover.assert_called_once_with(execute=True)
+
+        show_args = build_parser().parse_args(
+            ["persistence", "recover", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_args), 0)
+        request.assert_called_once_with({"action": "show_recovery_dialog"})
+
     def test_group_cli_routes_service_and_gui_management_contracts(self) -> None:
         create_args = build_parser().parse_args(
             ["group", "create", "--name", "나중에 읽기", "--json"]

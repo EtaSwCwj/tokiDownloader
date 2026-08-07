@@ -105,12 +105,14 @@ from toki_core import (
     update_job_markers,
     open_in_explorer,
     open_archive_with_viewer,
+    persistence_policy_snapshot,
     read_log_tail,
     read_run_log,
     rebuild_job_metadata,
     resolve_cover_path,
     resource_budget,
     reset_app_settings,
+    recover_interrupted_jobs,
     rename_work_collection,
     retry_backoff_seconds,
     run_job_database_benchmark,
@@ -575,6 +577,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="외부 프로그램 실행 확인"
     )
     archive_viewer_open.add_argument("--json", action="store_true", help="JSON으로 출력")
+    persistence = subparsers.add_parser(
+        "persistence", help="자동 저장 주기와 불완전 작업 복구"
+    )
+    persistence_commands = persistence.add_subparsers(
+        dest="persistence_command", required=True
+    )
+    persistence_status = persistence_commands.add_parser(
+        "status", help="저장·복구 정책과 복구 후보 조회"
+    )
+    persistence_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    persistence_set = persistence_commands.add_parser(
+        "set", help="자동 저장과 시작 복구 설정"
+    )
+    persistence_set.add_argument(
+        "--autosave-seconds", type=int, help="변경 작업 자동 저장 주기(1~300초)"
+    )
+    persistence_set.add_argument(
+        "--startup-recovery", choices=("on", "off"), help="시작 시 불완전 기록 복구"
+    )
+    persistence_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    persistence_recover = persistence_commands.add_parser(
+        "recover", help="불완전 기록 미리보기 또는 확인 후 중지됨으로 복구"
+    )
+    persistence_recover_mode = persistence_recover.add_mutually_exclusive_group()
+    persistence_recover_mode.add_argument(
+        "--execute", action="store_true", help="DB의 불완전 기록을 실제 복구"
+    )
+    persistence_recover_mode.add_argument(
+        "--show-gui", action="store_true", help="GUI 복구 미리보기 표시"
+    )
+    persistence_recover_mode.add_argument(
+        "--close", action="store_true", help="GUI 복구 미리보기 닫기"
+    )
+    persistence_recover.add_argument("--yes", action="store_true", help="실제 복구 확인")
+    persistence_recover.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -1741,6 +1778,80 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             print_json(result)
         return 0 if result.get("ok", result.get("available", True)) else 2
+    if command == "persistence":
+        if args.persistence_command == "status":
+            result = (
+                control_request({"action": "persistence_status"})
+                if gui_is_running()
+                else {
+                    "ok": True,
+                    "policy": persistence_policy_snapshot(),
+                    "recovery": recover_interrupted_jobs(execute=False),
+                    "guiRunning": False,
+                }
+            )
+        elif args.persistence_command == "set":
+            updates: dict[str, Any] = {}
+            if args.autosave_seconds is not None:
+                updates["autosaveIntervalSeconds"] = args.autosave_seconds
+            if args.startup_recovery is not None:
+                updates["recoverInterruptedOnStartup"] = (
+                    args.startup_recovery == "on"
+                )
+            if not updates:
+                raise ValueError(
+                    "--autosave-seconds 또는 --startup-recovery를 지정하세요."
+                )
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request({"action": "persistence_status"})
+            else:
+                saved = update_app_settings(updates)
+                result = {
+                    "ok": True,
+                    "policy": persistence_policy_snapshot(saved),
+                    "recovery": recover_interrupted_jobs(execute=False),
+                    "guiRunning": False,
+                }
+        else:
+            if args.close or args.show_gui:
+                ensure_gui_running()
+                action = (
+                    "close_recovery_dialog"
+                    if args.close
+                    else "show_recovery_dialog"
+                )
+                result = control_request({"action": action})
+            else:
+                if args.execute and not args.yes:
+                    raise ValueError(
+                        "불완전 기록을 복구하려면 --execute --yes를 함께 지정하세요."
+                    )
+                result = (
+                    control_request(
+                        {
+                            "action": "recover_interrupted",
+                            "execute": bool(args.execute),
+                        }
+                    )
+                    if gui_is_running()
+                    else recover_interrupted_jobs(execute=bool(args.execute))
+                )
+        if (
+            args.json
+            or args.persistence_command != "recover"
+            or getattr(args, "show_gui", False)
+            or getattr(args, "close", False)
+        ):
+            print_json(result)
+        else:
+            print(
+                f"{'복구 완료' if result.get('executed') else '복구 미리보기'} | "
+                f"작품 {result.get('jobCount', 0)} | 실행 {result.get('runCount', 0)}"
+            )
+        return 0 if result.get("ok", True) else 2
     if command == "duplicates":
         if args.close:
             ensure_gui_running()

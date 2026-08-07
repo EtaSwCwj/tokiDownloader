@@ -82,6 +82,7 @@ from toki_core import (
     normalize_background_image,
     open_archive_with_viewer,
     plan_archive_viewer_open,
+    persistence_policy_snapshot,
     normalize_font_family,
     normalize_proxy_url,
     normalize_provider_policies,
@@ -510,6 +511,29 @@ class CoreContractTests(unittest.TestCase):
                     }
                 )
                 self.assertEqual(saved["archiveViewerMode"], "custom")
+
+    def test_persistence_policy_validates_autosave_and_startup_recovery(self) -> None:
+        policy = persistence_policy_snapshot(default_config())
+        self.assertEqual(policy["autosaveIntervalSeconds"], 1)
+        self.assertTrue(policy["startupRecoveryEnabled"])
+        self.assertTrue(policy["preservesProgress"])
+        self.assertTrue(policy["preservesDownloadedFiles"])
+        with self.assertRaisesRegex(ValueError, "1~300초"):
+            toki_core.normalize_autosave_interval_seconds(0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "config.json"
+            with patch.object(toki_core, "CONFIG_PATH", config_path):
+                toki_core.save_config(default_config())
+                saved = toki_core.update_app_settings(
+                    {
+                        "autosaveIntervalSeconds": 12,
+                        "recoverInterruptedOnStartup": False,
+                    }
+                )
+                updated = persistence_policy_snapshot(saved)
+                self.assertEqual(updated["autosaveIntervalSeconds"], 12)
+                self.assertFalse(updated["startupRecoveryEnabled"])
 
     def test_settings_export_import_preview_apply_and_reset_are_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1632,8 +1656,15 @@ class JobRepositoryTests(unittest.TestCase):
             {job.job_id for job in load_jobs_page(limit=200)},
         )
 
+        preview = recover_interrupted_jobs(execute=False)
+        self.assertFalse(preview["executed"])
+        self.assertEqual(preview["jobIds"], [interrupted.job_id])
+        self.assertEqual(toki_core.load_job_by_id(interrupted.job_id).state, "실행 중")
+        self.assertEqual(load_run(interrupted.job_id).state, "실행 중")
+
         result = recover_interrupted_jobs()
 
+        self.assertTrue(result["executed"])
         self.assertEqual(result["jobIds"], [interrupted.job_id])
         self.assertEqual(result["runIds"], [interrupted.job_id])
         recovered_job = toki_core.load_job_by_id(interrupted.job_id)

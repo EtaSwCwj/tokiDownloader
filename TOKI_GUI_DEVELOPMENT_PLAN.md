@@ -442,6 +442,15 @@ status|set|open`과 압축 검사창의 열기 버튼은 같은 서비스와 명
 않았다. `logs/archive-viewer-settings.png`, `logs/archive-viewer-preview.png`에서 화면을 확인했고
 Python 180건과 Node 16건을 통과했다.
 
+2026-08-07 자동 저장·불완전 작업 복구: 설정 스키마 v10의 1~300초 주기를 기존 변경 작품
+ID 전용 묶음 저장 타이머에 연결하고, 시작 복구를 설정으로 제어한다. 복구 서비스와
+`persistence status|set|recover`는 기본 미리보기, `--execute --yes` 확인, 실행·대기 작업 중
+차단 규칙을 공유한다. 복구 시 DB 상태와 실행 종료 시각만 원자 갱신하며 진행률과 다운로드
+파일은 보존한다. 실제 DB 후보는 0건이라 변경하지 않았고 기본 1초·시작 복구 켜짐을 유지했다.
+`logs/persistence-settings.png`, `logs/persistence-recovery-preview.png`에서 설정과 빈 복구
+미리보기를 확인했다. 저장 실패는 dirty ID와 오류 상태를 유지해 다음 주기에 재시도하며
+Python 184건과 Node 16건을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와
