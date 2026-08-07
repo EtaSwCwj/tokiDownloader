@@ -1,6 +1,9 @@
 import { connect } from "puppeteer-real-browser";
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
+import { ProxyAgent } from 'proxy-agent';
 import { selectEpisodeLinks } from './downloader_policy.js';
 import { classifyDownloaderError } from './downloader_errors.js';
 import {
@@ -8,6 +11,13 @@ import {
     renderFolderTemplate,
     sanitizePathSegment,
 } from './downloader_naming.js';
+import {
+    GlobalBandwidthLimiter,
+    RequestPacer,
+    normalizeProxyUrl,
+    normalizeRequestDelayMs,
+    normalizeSpeedLimitKib,
+} from './downloader_network.js';
 
 let info = {
     url: '',
@@ -26,8 +36,16 @@ let info = {
     contentPathOverride: '',
     folderTemplate: DEFAULT_FOLDER_TEMPLATE,
     imageConcurrency: 5,
-    scanMode: ''
+    scanMode: '',
+    proxyUrl: '',
+    speedLimitKib: 0,
+    requestDelayMs: 0,
+    providerBackoffSeconds: 2,
 }
+
+let bandwidthLimiter = new GlobalBandwidthLimiter(0);
+let requestPacer = new RequestPacer(0);
+let outboundProxyAgent = null;
 
 function sleep(ms) {
     return new Promise(function (resolve) {
@@ -41,7 +59,7 @@ function consoleGrey(val) {
     console.log(`\x1b[100m${val}\x1b[0m`);
 }
 function help() {
-    console.log(`사용법: node down -url "URL" [-scan-mode new|full|range] [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-folder-template "[{author}][{group}] {title}"] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
+    console.log(`사용법: node down -url "URL" [-scan-mode new|full|range] [-start STARTINDEX] [-last LASTINDEX] [-output "폴더 경로"] [-folder-template "[{author}][{group}] {title}"] [-proxy URL] [-speed-limit-kib 0|32~1048576] [-request-delay-ms 0~5000] [-provider-backoff 1~60] [-show-browser] [-image-concurrency 1~16] [-metadata-only] [-content-path "기존 작품 폴더"] [-json-events]`);
     process.exit();
 }
 function emitEvent(event, data = {}) {
@@ -100,6 +118,30 @@ function analyseArguments() {
                 i++;
             }
         }
+        else if (process.argv[i] == '-proxy') {
+            if ((i + 1) < argL) {
+                info.proxyUrl = process.argv[i + 1];
+                i++;
+            }
+        }
+        else if (process.argv[i] == '-speed-limit-kib') {
+            if ((i + 1) < argL) {
+                info.speedLimitKib = parseInt(process.argv[i + 1]);
+                i++;
+            }
+        }
+        else if (process.argv[i] == '-request-delay-ms') {
+            if ((i + 1) < argL) {
+                info.requestDelayMs = parseInt(process.argv[i + 1]);
+                i++;
+            }
+        }
+        else if (process.argv[i] == '-provider-backoff') {
+            if ((i + 1) < argL) {
+                info.providerBackoffSeconds = parseInt(process.argv[i + 1]);
+                i++;
+            }
+        }
         else if (process.argv[i] == '-image-concurrency') {
             if ((i + 1) < argL) {
                 info.imageConcurrency = parseInt(process.argv[i + 1]);
@@ -149,6 +191,14 @@ function analyseArguments() {
         consoleGrey('이미지 동시 다운로드 수는 1~16 사이여야 합니다.');
         process.exit(1);
     }
+    info.proxyUrl = normalizeProxyUrl(info.proxyUrl);
+    info.speedLimitKib = normalizeSpeedLimitKib(info.speedLimitKib);
+    info.requestDelayMs = normalizeRequestDelayMs(info.requestDelayMs);
+    if (!Number.isInteger(info.providerBackoffSeconds)
+        || info.providerBackoffSeconds < 1 || info.providerBackoffSeconds > 60) {
+        consoleGrey('공급자 백오프는 1~60초여야 합니다.');
+        process.exit(1);
+    }
     if (!info.scanMode)
         info.scanMode = (info.startIndex !== 0 || info.lastIndex !== 99999) ? 'range' : 'full';
     if (!['new', 'full', 'range'].includes(info.scanMode)) {
@@ -168,6 +218,13 @@ function analyseArguments() {
         info.startIndex = 0;
         info.lastIndex = 99999;
     }
+}
+function configureNetworkRuntime() {
+    bandwidthLimiter = new GlobalBandwidthLimiter(info.speedLimitKib);
+    requestPacer = new RequestPacer(info.requestDelayMs);
+    outboundProxyAgent = info.proxyUrl
+        ? new ProxyAgent({ getProxyForUrl: () => info.proxyUrl })
+        : null;
 }
 function buildContentFolderName(metadata) {
     return renderFolderTemplate(info.folderTemplate, metadata);
@@ -251,21 +308,16 @@ async function saveImage(path, fileName, src) {
     let lastError;
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const response = await fetch(src, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0',
-                    'Referer': `${info.protocolDomain}/`
-                }
+            imageBuffer = await downloadBuffer(src, {
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': `${info.protocolDomain}/`
             });
-            if (!response.ok)
-                throw new Error(`HTTP ${response.status}`);
-            imageBuffer = Buffer.from(await response.arrayBuffer());
             break;
         }
         catch (error) {
             lastError = error;
             if (attempt < 3)
-                await sleep(attempt * 1000);
+                await sleep(Math.min(60, info.providerBackoffSeconds * (2 ** (attempt - 1))) * 1000);
         }
     }
     if (!imageBuffer)
@@ -274,6 +326,45 @@ async function saveImage(path, fileName, src) {
     if (!fs.existsSync(path))
         fs.mkdirSync(path, { recursive: true });
     fs.writeFileSync(`${path}/${fileName}`, imageBuffer);
+}
+
+async function downloadBuffer(src, headers, redirectCount = 0) {
+    if (redirectCount > 5)
+        throw new Error('이미지 리디렉션이 너무 많습니다.');
+    await requestPacer.wait();
+    const target = new URL(src);
+    const transport = target.protocol === 'http:' ? http : https;
+    return await new Promise((resolve, reject) => {
+        const request = transport.get(target, {
+            headers,
+            agent: outboundProxyAgent || undefined,
+        }, async response => {
+            try {
+                if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+                    response.resume();
+                    resolve(await downloadBuffer(
+                        new URL(response.headers.location, target).href,
+                        headers,
+                        redirectCount + 1,
+                    ));
+                    return;
+                }
+                if (response.statusCode < 200 || response.statusCode >= 300)
+                    throw new Error(`HTTP ${response.statusCode}`);
+                const chunks = [];
+                for await (const chunk of response) {
+                    await bandwidthLimiter.consume(chunk.length);
+                    chunks.push(Buffer.from(chunk));
+                }
+                resolve(Buffer.concat(chunks));
+            }
+            catch (error) {
+                reject(error);
+            }
+        });
+        request.setTimeout(60000, () => request.destroy(new Error('이미지 요청 시간 초과')));
+        request.on('error', reject);
+    });
 }
 
 async function runDownloadTasks(tasks, concurrency = 5) {
@@ -301,7 +392,7 @@ async function runDownloadTasks(tasks, concurrency = 5) {
 async function main() {
     const { browser, page } = await connect({
         headless: info.showBrowser ? false : 'new',
-        args: [],
+        args: info.proxyUrl ? [`--proxy-server=${info.proxyUrl}`] : [],
         customConfig: {},
         turnstile: true, //captcha를 자동으로 풀것인지
         connectOption: { defaultViewport: null },
@@ -309,6 +400,7 @@ async function main() {
     })
     try {
         // await page.goto('https://booktoki350.com/');
+        await requestPacer.wait();
         await Promise.all([page.waitForNavigation(), page.goto(info.url)]);
         // cloudflare에 막히기때문에 title이 바뀌기전까지 기다린다.
         const challengeDeadline = Date.now() + 60000;
@@ -445,6 +537,7 @@ async function main() {
         }
         // 페이지 방문하기
         for (let i = 0; i < link.length; i++) {
+            await requestPacer.wait();
             await Promise.all([page.goto(link[i].src), page.waitForNavigation()]);
             await sleep(2000);
             const safeEpisodeName = sanitizePathSegment(link[i].fileName, '회차');
@@ -569,4 +662,5 @@ async function main() {
 }
 
 analyseArguments();
+configureNetworkRuntime();
 main();

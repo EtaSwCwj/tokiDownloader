@@ -67,11 +67,15 @@ from toki_core import (
     normalize_folder_name_template,
     normalize_background_image,
     normalize_font_family,
+    normalize_proxy_url,
+    normalize_provider_policies,
+    normalize_speed_limit_kib,
     normalize_ui_language,
     normalize_ui_scale,
     normalize_config,
     normalize_work_concurrency,
     move_job_folder,
+    network_policy_snapshot,
     plan_job_folder_move,
     plan_image_conversion,
     plan_metadata_rebuild,
@@ -106,6 +110,34 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_network_policy_validates_proxy_speed_and_provider_pacing(self) -> None:
+        config = default_config()
+        config["proxyUrl"] = "socks5://127.0.0.1:1080"
+        config["speedLimitKib"] = 2048
+        config["providerPolicies"]["manatoki"] = {
+            "requestDelayMs": 250,
+            "backoffSeconds": 4,
+        }
+        result = network_policy_snapshot(
+            config, url="https://newtoki1.org/manhwa/34360"
+        )
+        self.assertTrue(result["proxyEnabled"])
+        self.assertFalse(result["proxyAuthenticationStored"])
+        self.assertEqual(result["provider"], "manatoki")
+        self.assertEqual(result["providerPolicy"]["requestDelayMs"], 250)
+        self.assertEqual(result["providerPolicy"]["backoffSeconds"], 4)
+        self.assertEqual(
+            normalize_proxy_url("http://localhost:8080/"),
+            "http://localhost:8080",
+        )
+        self.assertEqual(normalize_speed_limit_kib(0), 0)
+        with self.assertRaises(ValueError):
+            normalize_proxy_url("http://user:secret@localhost:8080")
+        with self.assertRaises(ValueError):
+            normalize_speed_limit_kib(1)
+        with self.assertRaises(ValueError):
+            normalize_provider_policies({"unknown": {}})
+
     def test_browser_policy_defaults_to_hidden_isolated_automation_profile(self) -> None:
         headless = browser_launch_policy(False)
         self.assertEqual(headless["mode"], "headless")
@@ -685,10 +717,32 @@ class CoreContractTests(unittest.TestCase):
         self.assertIn("-json-events", args)
         template_index = args.index("-folder-template")
         self.assertEqual(args[template_index + 1], "[{author}][{group}] {title}")
+        self.assertIn("-speed-limit-kib", args)
+        self.assertIn("-request-delay-ms", args)
+        self.assertIn("-provider-backoff", args)
         concurrency_index = args.index("-image-concurrency")
         self.assertEqual(args[concurrency_index + 1], "5")
         mode_index = args.index("-scan-mode")
         self.assertEqual(args[mode_index + 1], "new")
+
+    def test_downloader_arguments_include_selected_network_policy(self) -> None:
+        job = DownloadJob(
+            job_id="network",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+        )
+        config = default_config()
+        config["proxyUrl"] = "http://127.0.0.1:8080"
+        config["speedLimitKib"] = 4096
+        config["providerPolicies"]["manatoki"] = {
+            "requestDelayMs": 300,
+            "backoffSeconds": 5,
+        }
+        args = build_downloader_args(job, network_config=config)
+        self.assertEqual(args[args.index("-proxy") + 1], "http://127.0.0.1:8080")
+        self.assertEqual(args[args.index("-speed-limit-kib") + 1], "4096")
+        self.assertEqual(args[args.index("-request-delay-ms") + 1], "300")
+        self.assertEqual(args[args.index("-provider-backoff") + 1], "5")
 
     def test_image_concurrency_has_safe_bounds(self) -> None:
         self.assertEqual(normalize_image_concurrency(None), 5)

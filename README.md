@@ -204,6 +204,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd language set ko --json
 .\toki-cli.cmd browser-mode status --json
 .\toki-cli.cmd browser-mode set headless --json
+.\toki-cli.cmd network-policy status --url "https://newtoki1.org/manhwa/34360" --json
+.\toki-cli.cmd network-policy set --speed-limit-kib 2048 --provider manatoki --request-delay-ms 250 --backoff 4 --json
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -283,6 +285,13 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 `browser-mode set visible`은 사이트 인증이나 화면 선택자 문제를 직접 확인할 때만 사용하는
 진단 모드이며 개인 Chrome 계정·프로필을 연결하지 않습니다. 확인 후
 `browser-mode set headless`로 되돌리면 다음 실행부터 다시 백그라운드로 동작합니다.
+
+`network-policy`는 HTTP/HTTPS/SOCKS4/SOCKS5 프록시, 전체 이미지 대역폭 제한과
+마나토끼·뉴토끼·북토끼별 최소 요청 간격·지수 백오프를 관리합니다. 속도 0은 무제한이고
+그 외에는 32~1048576 KiB/s입니다. 대역폭 제한기는 동시 이미지 스레드 전체가 하나의
+스케줄을 공유하므로 연결 수만큼 제한이 배로 늘지 않습니다. 프록시는 브라우저 탐색과 별도
+이미지 요청에 함께 적용됩니다. 사용자명·비밀번호가 든 URL은 평문 저장을 막기 위해 현재
+거부하며, 인증 프록시는 OS 보안 저장소 기능이 추가된 뒤 활성화합니다.
 
 일반 설정의 작품 폴더명은 기본적으로 `[작가][그룹] 제목` 규칙을 사용합니다.
 `{author}`, `{group}`, `{title}`, `{site}`, `{id}`를 조합할 수 있고 `{title}`은 필수입니다.

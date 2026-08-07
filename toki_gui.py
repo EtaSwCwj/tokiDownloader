@@ -1753,7 +1753,7 @@ class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
-        "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
+        "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
@@ -1860,6 +1860,35 @@ class SettingsDialog(QDialog):
         self.retry_backoff_spin.setRange(1, 60)
         self.retry_backoff_spin.setSuffix("초")
         network_form.addRow("기본 재시도 대기", self.retry_backoff_spin)
+        self.proxy_edit = QLineEdit()
+        self.proxy_edit.setPlaceholderText("사용 안 함 · 예: http://127.0.0.1:8080")
+        network_form.addRow("프록시", self.proxy_edit)
+        self.speed_limit_spin = QSpinBox()
+        self.speed_limit_spin.setRange(0, 1_048_576)
+        self.speed_limit_spin.setSpecialValueText("무제한")
+        self.speed_limit_spin.setSuffix(" KiB/s")
+        network_form.addRow("전체 이미지 속도", self.speed_limit_spin)
+        self.provider_policy_values: dict[str, dict[str, int]] = {}
+        self._provider_current_key = ""
+        self.provider_policy_combo = QComboBox()
+        for label, value in (
+            ("마나토끼", "manatoki"),
+            ("뉴토끼", "newtoki"),
+            ("북토끼", "booktoki"),
+        ):
+            self.provider_policy_combo.addItem(label, value)
+        self.provider_policy_combo.currentIndexChanged.connect(
+            self._provider_policy_selection_changed
+        )
+        network_form.addRow("공급자 정책", self.provider_policy_combo)
+        self.provider_delay_spin = QSpinBox()
+        self.provider_delay_spin.setRange(0, 5000)
+        self.provider_delay_spin.setSuffix(" ms")
+        network_form.addRow("최소 요청 간격", self.provider_delay_spin)
+        self.provider_backoff_spin = QSpinBox()
+        self.provider_backoff_spin.setRange(1, 60)
+        self.provider_backoff_spin.setSuffix("초")
+        network_form.addRow("공급자 백오프", self.provider_backoff_spin)
         network_note = QLabel(
             "동시성 상한은 사이트와 PC 부하를 고려한 안전 범위입니다. 재시도 대기는 실패마다 지수 증가합니다."
         )
@@ -2065,6 +2094,16 @@ class SettingsDialog(QDialog):
         self.image_spin.setValue(int(values["imageConcurrency"]))
         self.retry_count_spin.setValue(int(values["retryCount"]))
         self.retry_backoff_spin.setValue(int(values["retryBackoffSeconds"]))
+        self.proxy_edit.setText(str(values["proxyUrl"]))
+        self.speed_limit_spin.setValue(int(values["speedLimitKib"]))
+        self.provider_policy_values = {
+            key: dict(policy)
+            for key, policy in values["providerPolicies"].items()
+        }
+        self._provider_current_key = str(
+            self.provider_policy_combo.currentData() or "manatoki"
+        )
+        self._load_current_provider_policy()
         self.log_max_spin.setValue(int(values["logMaxMiB"]))
         self.log_backups_spin.setValue(int(values["logBackupCount"]))
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
@@ -2129,6 +2168,35 @@ class SettingsDialog(QDialog):
             if self.quick_action_list.item(row).checkState() == Qt.CheckState.Checked
         ]
 
+    def _store_current_provider_policy(self) -> None:
+        if not self._provider_current_key or not self.provider_policy_values:
+            return
+        self.provider_policy_values[self._provider_current_key] = {
+            "requestDelayMs": self.provider_delay_spin.value(),
+            "backoffSeconds": self.provider_backoff_spin.value(),
+        }
+
+    def _load_current_provider_policy(self) -> None:
+        policy = self.provider_policy_values.get(
+            self._provider_current_key,
+            {"requestDelayMs": 0, "backoffSeconds": 2},
+        )
+        self.provider_delay_spin.blockSignals(True)
+        self.provider_backoff_spin.blockSignals(True)
+        try:
+            self.provider_delay_spin.setValue(int(policy["requestDelayMs"]))
+            self.provider_backoff_spin.setValue(int(policy["backoffSeconds"]))
+        finally:
+            self.provider_delay_spin.blockSignals(False)
+            self.provider_backoff_spin.blockSignals(False)
+
+    def _provider_policy_selection_changed(self, _index: int) -> None:
+        self._store_current_provider_policy()
+        self._provider_current_key = str(
+            self.provider_policy_combo.currentData() or "manatoki"
+        )
+        self._load_current_provider_policy()
+
     def _load_defaults(self) -> None:
         from toki_core import default_config
 
@@ -2154,6 +2222,7 @@ class SettingsDialog(QDialog):
             self.background_edit.setText(selected)
 
     def _collect_updates(self) -> dict[str, Any]:
+        self._store_current_provider_policy()
         return {
             "outputDir": self.output_edit.text(),
             "uiLanguage": str(self.language_combo.currentData()),
@@ -2172,6 +2241,12 @@ class SettingsDialog(QDialog):
             "imageConcurrency": self.image_spin.value(),
             "retryCount": self.retry_count_spin.value(),
             "retryBackoffSeconds": self.retry_backoff_spin.value(),
+            "proxyUrl": self.proxy_edit.text(),
+            "speedLimitKib": self.speed_limit_spin.value(),
+            "providerPolicies": {
+                key: dict(policy)
+                for key, policy in self.provider_policy_values.items()
+            },
             "logMaxMiB": self.log_max_spin.value(),
             "logBackupCount": self.log_backups_spin.value(),
             "rowDensity": str(self.row_density_combo.currentData()),
@@ -3963,6 +4038,7 @@ class MainWindow(QMainWindow):
                 folder_template=str(
                     getattr(self, "config", {}).get("folderNameTemplate") or ""
                 ),
+                network_config=getattr(self, "config", {}),
             )
         )
         process.readyReadStandardOutput.connect(

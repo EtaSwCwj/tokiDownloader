@@ -40,7 +40,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 4
+CONFIG_SCHEMA_VERSION = 5
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -49,6 +49,7 @@ _WINDOWS_RESERVED_SEGMENT = re.compile(
     r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.IGNORECASE
 )
 _WINDOWS_INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+NETWORK_PROVIDERS = ("manatoki", "newtoki", "booktoki")
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
     2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
@@ -88,6 +89,9 @@ SETTING_KEYS = frozenset(
         "uiScale",
         "fontFamily",
         "backgroundImage",
+        "proxyUrl",
+        "speedLimitKib",
+        "providerPolicies",
         "quickActions",
         "completionAction",
         "completionCountdownSeconds",
@@ -353,6 +357,12 @@ def default_config() -> dict[str, Any]:
         "uiScale": 100,
         "fontFamily": "Malgun Gothic",
         "backgroundImage": "",
+        "proxyUrl": "",
+        "speedLimitKib": 0,
+        "providerPolicies": {
+            provider: {"requestDelayMs": 0, "backoffSeconds": 2}
+            for provider in NETWORK_PROVIDERS
+        },
         "quickActions": [
             "download.start",
             "job.stop",
@@ -520,6 +530,94 @@ def browser_launch_policy(show_browser: bool | None = None) -> dict[str, Any]:
             if visible
             else "백그라운드 다운로드"
         ),
+    }
+
+
+def normalize_proxy_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    if parsed.scheme.lower() not in {"http", "https", "socks", "socks4", "socks5"}:
+        raise ValueError("프록시는 HTTP, HTTPS, SOCKS4 또는 SOCKS5만 지원합니다.")
+    if not parsed.hostname or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise ValueError("프록시 URL에는 호스트와 선택적 포트만 입력해주세요.")
+    if parsed.username or parsed.password:
+        raise ValueError("프록시 인증 정보는 URL에 저장할 수 없습니다.")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("프록시 포트가 잘못되었습니다.") from error
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    normalized = f"{parsed.scheme.lower()}://{host}"
+    if port:
+        normalized += f":{port}"
+    return normalized
+
+
+def normalize_speed_limit_kib(value: int | None) -> int:
+    limit = 0 if value is None else int(value)
+    if limit != 0 and not 32 <= limit <= 1_048_576:
+        raise ValueError("속도 제한은 0(무제한) 또는 32~1048576 KiB/s여야 합니다.")
+    return limit
+
+
+def normalize_provider_policies(value: Any) -> dict[str, dict[str, int]]:
+    defaults = {
+        provider: {"requestDelayMs": 0, "backoffSeconds": 2}
+        for provider in NETWORK_PROVIDERS
+    }
+    source = value if isinstance(value, dict) else {}
+    result: dict[str, dict[str, int]] = {}
+    for provider in NETWORK_PROVIDERS:
+        raw = source.get(provider)
+        raw = raw if isinstance(raw, dict) else defaults[provider]
+        delay = int(raw.get("requestDelayMs", 0))
+        backoff = int(raw.get("backoffSeconds", 2))
+        if not 0 <= delay <= 5000:
+            raise ValueError(f"{provider} 요청 간격은 0~5000ms여야 합니다.")
+        if not 1 <= backoff <= 60:
+            raise ValueError(f"{provider} 백오프는 1~60초여야 합니다.")
+        result[provider] = {
+            "requestDelayMs": delay,
+            "backoffSeconds": backoff,
+        }
+    unknown = sorted(set(source) - set(NETWORK_PROVIDERS))
+    if unknown:
+        raise ValueError(f"지원하지 않는 공급자 정책입니다: {', '.join(unknown)}")
+    return result
+
+
+def provider_from_url(url: str) -> str:
+    parsed = urlsplit(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if host.startswith("booktoki") or "/novel/" in path:
+        return "booktoki"
+    if "/webtoon/" in path:
+        return "newtoki"
+    return "manatoki"
+
+
+def network_policy_snapshot(
+    config: dict[str, Any] | None = None,
+    *,
+    url: str = "",
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    policies = normalize_provider_policies(source.get("providerPolicies"))
+    provider = provider_from_url(url) if url else ""
+    return {
+        "proxyUrl": normalize_proxy_url(source.get("proxyUrl")),
+        "proxyEnabled": bool(source.get("proxyUrl")),
+        "proxyAuthenticationStored": False,
+        "speedLimitKib": normalize_speed_limit_kib(source.get("speedLimitKib")),
+        "unlimited": normalize_speed_limit_kib(source.get("speedLimitKib")) == 0,
+        "provider": provider,
+        "providerPolicy": policies.get(provider) if provider else None,
+        "providerPolicies": policies,
     }
 
 
@@ -712,6 +810,21 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_background_image,
         source.get("backgroundImage"),
         defaults["backgroundImage"],
+    )
+    normalized["proxyUrl"] = _safe_normalize(
+        normalize_proxy_url,
+        source.get("proxyUrl"),
+        defaults["proxyUrl"],
+    )
+    normalized["speedLimitKib"] = _safe_normalize(
+        normalize_speed_limit_kib,
+        source.get("speedLimitKib"),
+        defaults["speedLimitKib"],
+    )
+    normalized["providerPolicies"] = _safe_normalize(
+        normalize_provider_policies,
+        source.get("providerPolicies"),
+        defaults["providerPolicies"],
     )
     for key in (
         "logVisible",
@@ -959,6 +1072,9 @@ def validate_app_setting_updates(
         "uiScale": normalize_ui_scale,
         "fontFamily": normalize_font_family,
         "backgroundImage": normalize_background_image,
+        "proxyUrl": normalize_proxy_url,
+        "speedLimitKib": normalize_speed_limit_kib,
+        "providerPolicies": normalize_provider_policies,
         "workConcurrency": normalize_work_concurrency,
         "imageConcurrency": normalize_image_concurrency,
         "retryCount": normalize_retry_count,
@@ -4053,6 +4169,7 @@ def build_downloader_args(
     job: DownloadJob,
     json_events: bool = True,
     folder_template: str | None = None,
+    network_config: dict[str, Any] | None = None,
 ) -> list[str]:
     args = [str(DOWNLOADER_PATH), "-url", job.url, "-output", job.output_dir]
     args.extend(
@@ -4061,6 +4178,16 @@ def build_downloader_args(
             normalize_folder_name_template(folder_template or DEFAULT_FOLDER_TEMPLATE),
         ]
     )
+    network = network_policy_snapshot(network_config or default_config(), url=job.url)
+    if network["proxyUrl"]:
+        args.extend(["-proxy", str(network["proxyUrl"])])
+    args.extend(["-speed-limit-kib", str(network["speedLimitKib"])])
+    provider_policy = network["providerPolicy"] or {
+        "requestDelayMs": 0,
+        "backoffSeconds": 2,
+    }
+    args.extend(["-request-delay-ms", str(provider_policy["requestDelayMs"])])
+    args.extend(["-provider-backoff", str(provider_policy["backoffSeconds"])])
     if job.start is not None:
         args.extend(["-start", str(job.start)])
     if job.last is not None:

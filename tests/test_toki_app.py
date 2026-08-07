@@ -11,9 +11,47 @@ from unittest.mock import patch
 
 import toki_app
 from toki_app import build_parser, run_cli, run_direct_download
+from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_network_policy_cli_merges_provider_values_and_updates_gui(self) -> None:
+        policies = {
+            provider: {"requestDelayMs": 0, "backoffSeconds": 2}
+            for provider in ("manatoki", "newtoki", "booktoki")
+        }
+        current = {
+            **default_config(),
+            "providerPolicies": policies,
+        }
+        args = build_parser().parse_args(
+            [
+                "network-policy", "set", "--proxy", "http://127.0.0.1:8080",
+                "--speed-limit-kib", "2048", "--provider", "manatoki",
+                "--request-delay-ms", "250", "--backoff", "4", "--json",
+            ]
+        )
+        saved = {
+            **current,
+            "proxyUrl": "http://127.0.0.1:8080",
+            "speedLimitKib": 2048,
+            "providerPolicies": {
+                **policies,
+                "manatoki": {"requestDelayMs": 250, "backoffSeconds": 4},
+            },
+        }
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[current, saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(args), 0)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(
+            request.call_args_list[1].args[0]["updates"]["providerPolicies"]["manatoki"],
+            {"requestDelayMs": 250, "backoffSeconds": 4},
+        )
+
     def test_browser_mode_cli_reports_and_sets_shared_policy(self) -> None:
         status = build_parser().parse_args(["browser-mode", "status", "--json"])
         with (

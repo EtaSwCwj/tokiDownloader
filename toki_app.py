@@ -70,6 +70,7 @@ from toki_core import (
     load_run,
     load_runs_page,
     move_job_folder,
+    network_policy_snapshot,
     normalize_image_concurrency,
     normalize_retry_backoff,
     normalize_retry_count,
@@ -257,6 +258,7 @@ def run_direct_download(args: argparse.Namespace) -> int:
             job,
             json_events=False,
             folder_template=str(config.get("folderNameTemplate") or ""),
+            network_config=config,
         ),
     ]
     for attempt in range(1, job.retry_limit + 2):
@@ -892,6 +894,12 @@ def build_parser() -> argparse.ArgumentParser:
     background_group.add_argument(
         "--clear-background", action="store_true", help="GUI 배경 이미지 해제"
     )
+    proxy_group = set_settings.add_mutually_exclusive_group()
+    proxy_group.add_argument("--proxy", help="HTTP/HTTPS/SOCKS 프록시 URL")
+    proxy_group.add_argument("--clear-proxy", action="store_true", help="프록시 해제")
+    set_settings.add_argument(
+        "--speed-limit-kib", type=int, help="전체 이미지 속도 제한 KiB/s; 0은 무제한"
+    )
     set_settings.add_argument(
         "--quick-actions",
         help="빠른 실행 동작 ID를 쉼표로 구분한 표시 순서",
@@ -948,6 +956,27 @@ def build_parser() -> argparse.ArgumentParser:
     browser_mode_set = browser_mode_commands.add_parser("set", help="기본 정책 변경")
     browser_mode_set.add_argument("mode", choices=("headless", "visible"))
     browser_mode_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    network_policy = subparsers.add_parser(
+        "network-policy", help="프록시·속도 제한·공급자별 요청 정책"
+    )
+    network_commands = network_policy.add_subparsers(
+        dest="network_command", required=True
+    )
+    network_status = network_commands.add_parser("status", help="현재 네트워크 정책")
+    network_status.add_argument("--url", default="", help="공급자 정책까지 볼 작품 URL")
+    network_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    network_set = network_commands.add_parser("set", help="네트워크 정책 변경")
+    network_proxy_group = network_set.add_mutually_exclusive_group()
+    network_proxy_group.add_argument("--proxy", help="HTTP/HTTPS/SOCKS 프록시 URL")
+    network_proxy_group.add_argument("--clear-proxy", action="store_true")
+    network_set.add_argument("--speed-limit-kib", type=int)
+    network_set.add_argument(
+        "--provider", choices=("manatoki", "newtoki", "booktoki")
+    )
+    network_set.add_argument("--request-delay-ms", type=int)
+    network_set.add_argument("--backoff", type=int)
+    network_set.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     completion_action = subparsers.add_parser(
         "completion-action", help="모든 작업 완료 후 동작 조회·설정·미리보기"
@@ -2379,10 +2408,14 @@ def run_cli(args: argparse.Namespace) -> int:
             "uiScale": args.ui_scale,
             "fontFamily": args.font,
             "backgroundImage": args.background,
+            "proxyUrl": args.proxy,
+            "speedLimitKib": args.speed_limit_kib,
         }
         updates = {key: value for key, value in mapping.items() if value is not None}
         if args.clear_background:
             updates["backgroundImage"] = ""
+        if args.clear_proxy:
+            updates["proxyUrl"] = ""
         if args.quick_actions is not None:
             updates["quickActions"] = [
                 value.strip() for value in args.quick_actions.split(",") if value.strip()
@@ -2490,6 +2523,61 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             print(f"브라우저 모드: {result['mode']}")
             print("개인 Chrome 프로필 사용: 안 함")
+        return 0
+    if command == "network-policy":
+        if gui_is_running():
+            current = control_request({"action": "settings"})
+        else:
+            current = settings_snapshot()
+        if args.network_command == "status":
+            result = network_policy_snapshot(current, url=args.url)
+        else:
+            updates: dict[str, Any] = {}
+            if args.proxy is not None:
+                updates["proxyUrl"] = args.proxy
+            if args.clear_proxy:
+                updates["proxyUrl"] = ""
+            if args.speed_limit_kib is not None:
+                updates["speedLimitKib"] = args.speed_limit_kib
+            provider_values = (
+                args.request_delay_ms is not None or args.backoff is not None
+            )
+            if provider_values and not args.provider:
+                raise ControlError(
+                    "--request-delay-ms 또는 --backoff에는 --provider가 필요합니다."
+                )
+            if args.provider:
+                policies = {
+                    key: dict(value)
+                    for key, value in current["providerPolicies"].items()
+                }
+                selected = policies[args.provider]
+                if args.request_delay_ms is not None:
+                    selected["requestDelayMs"] = args.request_delay_ms
+                if args.backoff is not None:
+                    selected["backoffSeconds"] = args.backoff
+                if provider_values:
+                    updates["providerPolicies"] = policies
+            if not updates:
+                raise ControlError("변경할 네트워크 정책을 지정해주세요.")
+            if gui_is_running():
+                saved = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                saved = update_app_settings(updates)
+            result = {"saved": True, **network_policy_snapshot(saved)}
+        if args.json:
+            print_json(result)
+        else:
+            print(f"프록시: {result['proxyUrl'] or '사용 안 함'}")
+            speed = result["speedLimitKib"]
+            print(f"속도 제한: {speed if speed else '무제한'}")
+            for provider, policy in result["providerPolicies"].items():
+                print(
+                    f"{provider}: 간격 {policy['requestDelayMs']}ms · "
+                    f"백오프 {policy['backoffSeconds']}초"
+                )
         return 0
     if command == "completion-action":
         subcommand = args.completion_command
