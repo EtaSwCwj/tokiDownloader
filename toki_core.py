@@ -176,6 +176,48 @@ KEYBOARD_SHORTCUTS = (
         "cli": "rescan --job ID --mode full",
     },
     {
+        "id": "job.rescan_new",
+        "label": "선택 작품 신규 회차만 검사",
+        "keys": ("Ctrl+Shift+N",),
+        "cli": "rescan --job ID --mode new",
+    },
+    {
+        "id": "job.rescan_range",
+        "label": "선택 작품 입력 범위 검사",
+        "keys": ("Ctrl+Shift+R",),
+        "cli": "rescan --job ID --mode range --start N --last N",
+    },
+    {
+        "id": "snapshot.export",
+        "label": "작업 스냅샷 내보내기",
+        "keys": ("Ctrl+Alt+E",),
+        "cli": "jobs export --output PATH --json",
+    },
+    {
+        "id": "snapshot.import",
+        "label": "작업 스냅샷 가져오기",
+        "keys": ("Ctrl+Alt+I",),
+        "cli": "jobs import --input PATH --show-gui",
+    },
+    {
+        "id": "group.manage",
+        "label": "작품 그룹 관리",
+        "keys": ("Ctrl+G",),
+        "cli": "group manage --show-gui",
+    },
+    {
+        "id": "archive.inspect",
+        "label": "로컬 압축 작품 검사",
+        "keys": ("Ctrl+Shift+A",),
+        "cli": "local inspect --path PATH --show-gui",
+    },
+    {
+        "id": "duplicates.works",
+        "label": "중복 의심 작품 검사",
+        "keys": ("Ctrl+D",),
+        "cli": "duplicates works --show-gui",
+    },
+    {
         "id": "folder.open",
         "label": "저장 폴더 열기",
         "keys": ("Ctrl+O",),
@@ -1096,6 +1138,43 @@ def keyboard_shortcut_keys(action_id: str) -> list[str]:
         if item["id"] == normalized:
             return list(item["keys"])
     raise ValueError(f"지원하지 않는 단축키 동작입니다: {action_id}")
+
+
+def menu_action_availability(
+    selected_job: DownloadJob | None,
+    *,
+    form_url: str = "",
+    active_job_ids: tuple[str, ...] | list[str] = (),
+    paused_job_ids: tuple[str, ...] | list[str] = (),
+    queued_job_ids: tuple[str, ...] | list[str] = (),
+) -> dict[str, bool]:
+    """Calculate menu/button states without depending on Qt widgets."""
+    active = {str(value) for value in active_job_ids if value}
+    paused = {str(value) for value in paused_job_ids if value} & active
+    queued = {str(value) for value in queued_job_ids if value}
+    selected_id = selected_job.job_id if selected_job else ""
+    selected_busy = bool(selected_id and selected_id in active | queued)
+    can_rescan = bool(selected_job and selected_job.url and not selected_busy)
+    return {
+        "download.start": bool(str(form_url or "").strip()),
+        "job.stop": bool(active),
+        "job.pause": bool(active - paused),
+        "job.resume": bool(paused),
+        "job.rescan_full": can_rescan,
+        "job.rescan_new": can_rescan,
+        "job.rescan_range": can_rescan,
+        "snapshot.export": True,
+        "snapshot.import": not active,
+        "group.manage": True,
+        "archive.inspect": True,
+        "duplicates.works": True,
+        "folder.open": bool(selected_job and selected_job.output_path),
+        "details.open": bool(selected_job),
+        "list.activate": bool(selected_job),
+        "list.refresh": True,
+        "settings.open": True,
+        "screenshot.capture": True,
+    }
 
 
 def plan_window_geometry(

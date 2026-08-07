@@ -125,6 +125,7 @@ from toki_core import (
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
+    menu_action_availability,
     load_config,
     load_job_by_id,
     load_job_by_work_key,
@@ -2270,24 +2271,45 @@ class MainWindow(QMainWindow):
         self.retry_action.triggered.connect(self.retry_selected_job)
 
         self.new_scan_action = QAction("선택 작품 신규 회차만 검사", self)
+        self.new_scan_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("job.rescan_new")]
+        )
         self.new_scan_action.triggered.connect(
             lambda: self.rescan_selected_job("new")
         )
 
         self.range_scan_action = QAction("선택 작품 입력 범위 검사", self)
+        self.range_scan_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("job.rescan_range")]
+        )
         self.range_scan_action.triggered.connect(
             lambda: self.rescan_selected_job("range")
         )
 
         self.export_jobs_action = QAction("작업 스냅샷 내보내기...", self)
+        self.export_jobs_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("snapshot.export")]
+        )
         self.export_jobs_action.triggered.connect(self.choose_jobs_snapshot_export)
         self.import_jobs_action = QAction("작업 스냅샷 가져오기...", self)
+        self.import_jobs_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("snapshot.import")]
+        )
         self.import_jobs_action.triggered.connect(self.choose_jobs_snapshot_import)
         self.group_manager_action = QAction("작품 그룹 관리...", self)
+        self.group_manager_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("group.manage")]
+        )
         self.group_manager_action.triggered.connect(self.show_group_manager)
         self.archive_inspection_action = QAction("로컬 압축 작품 검사...", self)
+        self.archive_inspection_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("archive.inspect")]
+        )
         self.archive_inspection_action.triggered.connect(self.choose_archive_inspection)
         self.duplicate_works_action = QAction("중복 의심 작품 검사...", self)
+        self.duplicate_works_action.setShortcuts(
+            [QKeySequence(key) for key in keyboard_shortcut_keys("duplicates.works")]
+        )
         self.duplicate_works_action.triggered.connect(self.show_duplicate_works)
 
         self.open_folder_action = QAction("저장 폴더 열기", self)
@@ -2466,6 +2488,7 @@ class MainWindow(QMainWindow):
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("작품 회차 목록 URL을 입력하세요")
         self.url_edit.returnPressed.connect(self.start_from_form)
+        self.url_edit.textChanged.connect(lambda _text: self._update_action_states())
 
         self.start_spin = QSpinBox()
         self.start_spin.setRange(0, 999999)
@@ -2661,6 +2684,9 @@ class MainWindow(QMainWindow):
         self.task_list.doubleClicked.connect(self.open_job_index_folder)
         self.task_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.task_list.customContextMenuRequested.connect(self.show_job_context_menu)
+        self.task_list.selectionModel().currentChanged.connect(
+            lambda _current, _previous: self._update_action_states()
+        )
         self.task_list.verticalScrollBar().valueChanged.connect(self._maybe_load_more_history)
 
         self.list_state_panel = QFrame()
@@ -6204,6 +6230,7 @@ class MainWindow(QMainWindow):
             "pausedJobIds": [
                 context.job.job_id for context in active_contexts if context.paused
             ],
+            "actions": self._action_availability_snapshot(),
             "jobs": [job.to_dict() for job in self.jobs.values()],
             "loadedJobCount": len(self.jobs),
             "totalJobCount": self.history_all_total,
@@ -6411,6 +6438,47 @@ class MainWindow(QMainWindow):
             f"일시정지 {states.count('일시정지')} · 완료 {states.count('완료')} · "
             f"문제 {states.count('오류') + states.count('중지됨') + states.count('인증 필요')}"
         )
+        self._update_action_states()
+
+    def _action_availability_snapshot(self) -> dict[str, bool]:
+        return menu_action_availability(
+            self.selected_job(),
+            form_url=self.url_edit.text(),
+            active_job_ids=list(self.active_contexts),
+            paused_job_ids=[
+                job_id for job_id, context in self.active_contexts.items() if context.paused
+            ],
+            queued_job_ids=[job.job_id for job in self.pending_jobs],
+        )
+
+    def _update_action_states(self) -> dict[str, bool]:
+        states = self._action_availability_snapshot()
+        action_map = {
+            "download.start": self.start_action,
+            "job.stop": self.stop_action,
+            "job.pause": self.pause_action,
+            "job.resume": self.resume_action,
+            "job.rescan_full": self.retry_action,
+            "job.rescan_new": self.new_scan_action,
+            "job.rescan_range": self.range_scan_action,
+            "snapshot.export": self.export_jobs_action,
+            "snapshot.import": self.import_jobs_action,
+            "group.manage": self.group_manager_action,
+            "archive.inspect": self.archive_inspection_action,
+            "duplicates.works": self.duplicate_works_action,
+            "folder.open": self.open_folder_action,
+            "details.open": self.details_action,
+            "list.activate": self.activate_selected_action,
+            "list.refresh": self.refresh_list_action,
+            "settings.open": self.settings_action,
+            "screenshot.capture": self.screenshot_action,
+        }
+        for action_id, action in action_map.items():
+            action.setEnabled(states[action_id])
+        self.start_button.setEnabled(states["download.start"])
+        self.stop_button.setEnabled(states["job.stop"])
+        self.retry_button.setEnabled(states["job.rescan_full"])
+        return states
 
     def _start_control_server(self) -> None:
         QLocalServer.removeServer(CONTROL_SERVER_NAME)

@@ -43,6 +43,7 @@ from toki_core import (
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
+    menu_action_availability,
     load_job_by_work_key,
     load_jobs_page,
     list_job_episode_images,
@@ -382,6 +383,34 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(keyboard_shortcut_keys("focus.search"), ["Ctrl+F"])
         with self.assertRaises(ValueError):
             keyboard_shortcut_keys("missing.action")
+
+    def test_menu_action_availability_tracks_selection_queue_and_process_state(self) -> None:
+        job = DownloadJob(
+            job_id="j1",
+            url="https://example.test/work/1",
+            output_dir="D:/Manga",
+            output_path="D:/Manga/work",
+        )
+        idle = menu_action_availability(job, form_url="https://example.test/work/2")
+        running = menu_action_availability(
+            job,
+            form_url="",
+            active_job_ids=["j1", "j2"],
+            paused_job_ids=["j1"],
+        )
+        queued = menu_action_availability(job, queued_job_ids=["j1"])
+        empty = menu_action_availability(None)
+
+        self.assertTrue(idle["download.start"])
+        self.assertTrue(idle["job.rescan_full"])
+        self.assertTrue(idle["folder.open"])
+        self.assertTrue(running["job.stop"])
+        self.assertTrue(running["job.pause"])
+        self.assertTrue(running["job.resume"])
+        self.assertFalse(running["job.rescan_full"])
+        self.assertFalse(running["snapshot.import"])
+        self.assertFalse(queued["job.rescan_new"])
+        self.assertFalse(empty["details.open"])
 
     def test_job_list_view_state_covers_loading_empty_filtered_error_and_content(self) -> None:
         loading = build_job_list_view_state(loading=True, total_count=12)

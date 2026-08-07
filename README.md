@@ -397,11 +397,14 @@ SQLite에서 현재 페이지를 다시 읽고 목록용
 `--preview auto` 또는 `refresh-list`를 실행하면 실제 목록 상태로 돌아갑니다.
 현재 상태는 `status --json`의 `listViewState`에도 포함됩니다.
 
-`도움말 → 키보드 단축키...`는 17개 기본 키와 각 동작의 대응 CLI를 한 표에 표시합니다.
+`도움말 → 키보드 단축키...`는 24개 기본 키와 각 동작의 대응 CLI를 한 표에 표시합니다.
 `Ctrl+L`은 URL, `Ctrl+F`는 작품 검색, `F6`은 URL → 검색 → 목록 → 로그 순서로 포커스를
 옮깁니다. 목록에서는 방향키로 이동하고 Enter로 상세 정보를 열며, `Ctrl+Shift+Up/Down`은
 다른 입력에 포커스가 있어도 이전·다음 작품을 순환 선택합니다. 검색란의 Escape는 검색어를
-지웁니다. `shortcuts --json|--show-gui|--close`와
+지웁니다. 신규·범위 재검사, 작업 스냅샷, 그룹 관리, 압축 검사와 중복 작품 검사에도 메뉴에
+표시되는 전용 단축키가 있습니다. 선택 작품·실행·일시정지·대기 여부에 따라 작업 메뉴와
+상단 다운로드·중지·재검사 버튼을 함께 비활성화하고, 같은 판정은 `status --json`의
+`actions`에서 검사할 수 있습니다. `shortcuts --json|--show-gui|--close`와
 `focus --target url|search|list|log|next|previous|next-section [--clear]`로 같은 기능을
 조회·실행할 수 있고 `status --json`의 `keyboard`에서 포커스와 선택 작업 ID를 확인합니다.
 
