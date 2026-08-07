@@ -120,6 +120,13 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
+.\toki-cli.cmd pdf status --json
+.\toki-cli.cmd pdf set --automatic off --json
+.\toki-cli.cmd pdf plan --job 작업ID --json
+.\toki-cli.cmd pdf generate --job 작업ID --show-gui
+.\toki-cli.cmd pdf generate --job 작업ID --execute --yes --progress-json
+.\toki-cli.cmd pdf cancel --job 작업ID
+.\toki-cli.cmd pdf close
 .\toki-cli.cmd duplicates works --json
 .\toki-cli.cmd duplicates works --show-gui
 .\toki-cli.cmd duplicates works --close
@@ -724,12 +731,28 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 고급 설정의 기본 최대 너비·높이와 제외 확장자는 `image-processing`으로 동일하게 조회·
 변경할 수 있으며, `convert-images`에 직접 지정한 값이 해당 실행에서만 우선합니다.
 
+`pdf`는 작품 폴더의 각 회차 폴더를 자연 숫자 순서로 읽어
+`작품 폴더\_pdf\회차 폴더명.pdf` 하나씩 생성합니다. 원본 이미지는 덮어쓰거나 삭제하지
+않고, PDF를 `.tmp`에 완성한 뒤 원자적으로 교체합니다. 원본이 바뀌지 않은 최신 PDF는
+건너뛰며 원본 이미지의 수정 시각이나 크기가 달라진 회차만 기존 생성 PDF를 교체합니다.
+자동 생성은 기본적으로 꺼져 있고 고급 설정 또는 `pdf set --automatic on`으로 켜면 성공한
+다운로드 후 새롭거나 변경된 회차만 처리합니다. 이미지 변환과 같은 제한형 CPU 프로세스
+예산을 사용하며 슬롯이 찼을 때는 완료 후 동작을 먼저 실행하지 않고 자리가 날 때까지
+대기합니다. `pdf plan`과 GUI의 `회차별 PDF 생성...`은 파일을 만들지 않는 계획 조회이고,
+실제 생성에는 `--execute --yes` 또는 GUI 재확인이 필요합니다. 실행 중지는 원본과 이미
+완성된 PDF를 보존하며 다음 실행에서 남은 임시 파일을 복구합니다.
+
 ```powershell
 .\toki-cli.cmd image-processing status --json
 .\toki-cli.cmd image-processing set --max-width 1600 --max-height 2400 --exclude "gif,bmp,avif" --json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --max-width 1600 --max-height 2400 --exclude-ext gif --dry-run --json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --include-all-types --execute --yes --progress-json
 .\toki-cli.cmd convert-images --close
+.\toki-cli.cmd pdf status --json
+.\toki-cli.cmd pdf plan --job 작업ID --json
+.\toki-cli.cmd pdf generate --job 작업ID --show-gui
+.\toki-cli.cmd pdf generate --job 작업ID --execute --yes --progress-json
+.\toki-cli.cmd pdf cancel --job 작업ID
 ```
 
 크기 `0`은 해당 방향 제한 없음이며, 실제 축소값은 64~16384px 범위입니다. 제외 가능한

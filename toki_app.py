@@ -69,6 +69,7 @@ from toki_core import (
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
+    generate_job_pdfs,
     load_config,
     import_app_settings,
     import_jobs_snapshot,
@@ -100,8 +101,10 @@ from toki_core import (
     public_ip_check_plan,
     lookup_public_ip,
     provider_cookie_status,
+    pdf_generation_policy_snapshot,
     proxy_credential_status,
     plan_image_conversion,
+    plan_job_pdf_generation,
     parse_shortcut_keys_text,
     update_job_markers,
     open_in_explorer,
@@ -1470,6 +1473,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--clear-exclusions", action="store_true", help="제외 확장자 모두 해제"
     )
     image_processing_set.add_argument("--json", action="store_true")
+
+    pdf_parser = subparsers.add_parser(
+        "pdf", help="회차별 PDF 생성 정책·계획·실행"
+    )
+    pdf_commands = pdf_parser.add_subparsers(dest="pdf_command", required=True)
+    pdf_status = pdf_commands.add_parser("status", help="PDF 자동 생성 설정과 의존성 조회")
+    pdf_status.add_argument("--json", action="store_true")
+    pdf_set = pdf_commands.add_parser("set", help="다운로드 완료 후 PDF 자동 생성 설정")
+    pdf_set.add_argument(
+        "--automatic", choices=("on", "off"), required=True, help="자동 생성 사용 여부"
+    )
+    pdf_set.add_argument("--json", action="store_true")
+    pdf_plan = pdf_commands.add_parser("plan", help="파일을 만들지 않고 회차별 PDF 계획 조회")
+    pdf_plan.add_argument("--job", required=True, help="작업 ID")
+    pdf_plan.add_argument("--json", action="store_true")
+    pdf_plan.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
+    pdf_generate = pdf_commands.add_parser("generate", help="회차별 PDF 미리보기 또는 생성")
+    pdf_generate.add_argument("--job", required=True, help="작업 ID")
+    pdf_generate_mode = pdf_generate.add_mutually_exclusive_group()
+    pdf_generate_mode.add_argument("--execute", action="store_true", help="_pdf 폴더에 실제 생성")
+    pdf_generate_mode.add_argument("--show-gui", action="store_true", help="GUI 생성 확인 창 표시")
+    pdf_generate.add_argument("--yes", action="store_true", help="PDF 새 파일 생성 확인")
+    pdf_generate.add_argument("--json", action="store_true")
+    pdf_generate.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
+    pdf_generate.add_argument(
+        "--progress-json",
+        action="store_true",
+        help="진행 이벤트와 최종 결과를 줄 단위 JSON으로 출력",
+    )
+    pdf_cancel = pdf_commands.add_parser("cancel", help="GUI에서 실행 중인 PDF 생성 중지")
+    pdf_cancel.add_argument("--job", required=True, help="작업 ID")
+    pdf_cancel.add_argument("--json", action="store_true")
+    pdf_close = pdf_commands.add_parser("close", help="GUI PDF 계획/진행 창 닫기")
+    pdf_close.add_argument("--json", action="store_true")
 
     cancel_conversion = subparsers.add_parser(
         "cancel-conversion",
@@ -3009,6 +3046,84 @@ def run_cli(args: argparse.Namespace) -> int:
             result = {"saved": True, **image_processing_policy_snapshot(values)}
         print_json(result)
         return 0
+    if command == "pdf":
+        if args.pdf_command == "status":
+            result = (
+                control_request({"action": "pdf_status"})
+                if gui_is_running()
+                else pdf_generation_policy_snapshot()
+            )
+        elif args.pdf_command == "set":
+            updates = {"pdfGenerationEnabled": args.automatic == "on"}
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request({"action": "pdf_status"})
+            else:
+                saved = update_app_settings(updates)
+                result = pdf_generation_policy_snapshot(saved)
+        elif args.pdf_command == "plan":
+            result = plan_job_pdf_generation(args.job)
+        elif args.pdf_command == "cancel":
+            ensure_gui_running()
+            result = control_request(
+                {"action": "cancel_pdf_generation", "jobId": args.job}
+            )
+        elif args.pdf_command == "close":
+            ensure_gui_running()
+            result = control_request({"action": "close_pdf_generation"})
+        else:
+            if args.show_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {"action": "generate_pdf", "jobId": args.job, "execute": False}
+                )
+                print_json(result)
+                return 0
+            if args.execute and not args.yes:
+                raise ControlError("실제 PDF 생성에는 --execute --yes가 모두 필요합니다.")
+            progress_callback = None
+            if args.progress_json:
+                def emit_pdf_progress(event: dict[str, Any]) -> None:
+                    print(
+                        json.dumps(
+                            {"event": "progress", **event}, ensure_ascii=True
+                        ),
+                        flush=True,
+                    )
+
+                progress_callback = emit_pdf_progress
+            result = (
+                generate_job_pdfs(args.job, progress_callback=progress_callback)
+                if args.execute
+                else plan_job_pdf_generation(args.job)
+            )
+            if args.progress_json:
+                print(
+                    json.dumps(
+                        {
+                            "event": "result",
+                            "result": {
+                                "ok": bool(result.get("success", True)),
+                                **result,
+                            },
+                        },
+                        ensure_ascii=True,
+                    ),
+                    flush=True,
+                )
+                if result.get("cancelled"):
+                    return 3
+                return 0 if result.get("success", True) else 2
+        payload = {"ok": bool(result.get("success", True)), **result}
+        if getattr(args, "ascii_json", False):
+            print(json.dumps(payload, ensure_ascii=True, indent=2))
+        else:
+            print_json(payload)
+        if args.pdf_command == "generate" and result.get("cancelled"):
+            return 3
+        return 0 if result.get("success", True) else 2
     if command == "cancel-conversion":
         ensure_gui_running()
         result = control_request(

@@ -50,6 +50,7 @@ from toki_core import (
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
+    generate_job_pdfs,
     hydrate_job_metadata,
     image_processing_policy_snapshot,
     import_jobs_snapshot,
@@ -99,9 +100,11 @@ from toki_core import (
     notification_settings_snapshot,
     plan_job_folder_move,
     plan_image_conversion,
+    plan_job_pdf_generation,
     plan_metadata_rebuild,
     plan_window_geometry,
     public_ip_check_plan,
+    pdf_generation_policy_snapshot,
     lookup_public_ip,
     provider_cookie_status,
     proxy_credential_status,
@@ -2380,6 +2383,79 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertTrue(recovered["success"])
         self.assertEqual(recovered["convertedCount"], 1)
         self.assertEqual(recovered["skippedExistingCount"], 1)
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow optional dependency")
+    def test_pdf_generation_is_per_episode_atomic_and_preserves_originals(self) -> None:
+        from PIL import Image
+
+        workspace = Path(self.temp_dir.name)
+        output = workspace / "마나토끼" / "[작가][그룹] PDF 작품"
+        first = output / "0001 첫 회차"
+        second = output / "0002 둘째 회차"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        sources = [
+            first / "image1.png",
+            first / "image2.jpg",
+            second / "image1.webp",
+        ]
+        Image.new("RGBA", (80, 120), (255, 0, 0, 100)).save(sources[0])
+        Image.new("RGB", (90, 130), (0, 255, 0)).save(sources[1])
+        Image.new("RGB", (100, 140), (0, 0, 255)).save(sources[2])
+        originals = {path: path.read_bytes() for path in sources}
+        job = DownloadJob(
+            job_id="generate-pdf",
+            url="https://newtoki1.org/manhwa/6500",
+            output_dir=str(workspace),
+            output_path=str(output),
+            state="완료",
+        )
+        save_jobs([job])
+
+        policy = pdf_generation_policy_snapshot(default_config())
+        self.assertFalse(policy["automatic"])
+        self.assertTrue(policy["preservesOriginals"])
+        plan = plan_job_pdf_generation(job.job_id)
+        self.assertEqual(plan["episodeCount"], 2)
+        self.assertEqual(plan["sourceCount"], 3)
+        self.assertEqual(plan["pendingCount"], 2)
+        self.assertFalse(Path(plan["targetRoot"]).exists())
+
+        events = []
+        result = generate_job_pdfs(job.job_id, progress_callback=events.append)
+        targets = sorted(Path(result["targetRoot"]).glob("*.pdf"))
+        self.assertTrue(result["success"])
+        self.assertEqual(result["generatedCount"], 2)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(len(targets), 2)
+        self.assertTrue(all(path.read_bytes().startswith(b"%PDF") for path in targets))
+        self.assertEqual(
+            {path: path.read_bytes() for path in sources},
+            originals,
+        )
+
+        stale_temporary = targets[0].with_suffix(".pdf.tmp")
+        stale_temporary.write_bytes(b"partial")
+        repeated = generate_job_pdfs(job.job_id)
+        self.assertEqual(repeated["generatedCount"], 0)
+        self.assertEqual(repeated["skippedCurrentCount"], 2)
+        self.assertEqual(repeated["recoveredTemporaryFiles"], 1)
+        self.assertFalse(stale_temporary.exists())
+
+        time.sleep(0.01)
+        Image.new("RGB", (80, 120), (10, 20, 30)).save(sources[0])
+        changed_source = sources[0].read_bytes()
+        replacement_plan = plan_job_pdf_generation(job.job_id)
+        self.assertEqual(replacement_plan["replacementCount"], 1)
+        replaced = generate_job_pdfs(job.job_id)
+        self.assertEqual(replaced["generatedCount"], 1)
+        self.assertEqual(replaced["replacedCount"], 1)
+        self.assertEqual(sources[0].read_bytes(), changed_source)
+
+        cancelled = generate_job_pdfs(job.job_id, cancel_check=lambda: True)
+        self.assertTrue(cancelled["cancelled"])
+        self.assertEqual(cancelled["processedCount"], 0)
+        self.assertEqual(cancelled["remainingCount"], 2)
 
     @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow optional dependency")
     def test_image_conversion_failure_removes_partial_target_and_reports_progress(self) -> None:

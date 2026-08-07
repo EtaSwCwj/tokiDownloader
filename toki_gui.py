@@ -168,6 +168,7 @@ from toki_core import (
     menu_action_availability,
     quick_action_catalog,
     provider_cookie_status,
+    pdf_generation_policy_snapshot,
     proxy_credential_status,
     load_ui_strings,
     lookup_public_ip,
@@ -2590,7 +2591,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2955,13 +2956,21 @@ class SettingsDialog(QDialog):
         self.sleep_prevention_status_label.setObjectName("mutedLabel")
         self.sleep_prevention_status_label.setWordWrap(True)
         advanced_form.addRow("현재 전원 요청", self.sleep_prevention_status_label)
+        self.pdf_generation_check = QCheckBox(
+            "다운로드 완료 후 새롭거나 변경된 회차를 _pdf 폴더에 자동 생성"
+        )
+        self.pdf_generation_check.setToolTip(
+            "CLI: pdf set --automatic on|off"
+        )
+        advanced_form.addRow("PDF 자동 생성", self.pdf_generation_check)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
             "방법만 정하며 Windows 시스템 연결은 변경하지 않습니다. 자동 저장은 변경된 작업만 "
             "묶어서 저장하고 복구는 다운로드 파일을 수정하지 않습니다. 저사양 모드는 원래 "
             "설정값을 지우지 않고 실행 중 유효 상한과 썸네일 비용만 낮춥니다. 절전 방지는 "
-            "화면을 계속 켜지 않고 실제 다운로드가 실행되는 동안에만 시스템 절전을 막습니다."
+            "화면을 계속 켜지 않고 실제 다운로드가 실행되는 동안에만 시스템 절전을 막습니다. "
+            "PDF는 회차별로 별도 생성하며 원본 이미지를 변경하거나 삭제하지 않습니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -3073,6 +3082,7 @@ class SettingsDialog(QDialog):
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
         targets = (
+            (("pdf", "PDF", "회차"), self.pdf_generation_check),
             (("절전", "전원"), self.prevent_sleep_check),
             (("저사양",), self.low_spec_mode_check),
             (("지연",), self.list_lazy_loading_check),
@@ -3186,6 +3196,7 @@ class SettingsDialog(QDialog):
         self.prevent_sleep_check.setChecked(
             bool(values["preventSleepDuringDownloads"])
         )
+        self.pdf_generation_check.setChecked(bool(values["pdfGenerationEnabled"]))
         self._update_sleep_prevention_status()
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
@@ -3377,6 +3388,7 @@ class SettingsDialog(QDialog):
             "listLazyLoading": self.list_lazy_loading_check.isChecked(),
             "lowSpecMode": self.low_spec_mode_check.isChecked(),
             "preventSleepDuringDownloads": self.prevent_sleep_check.isChecked(),
+            "pdfGenerationEnabled": self.pdf_generation_check.isChecked(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -3673,6 +3685,176 @@ class ImageConversionProgressDialog(QDialog):
         )
 
 
+class PdfGenerationDialog(QDialog):
+    def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.result = result
+        self.setWindowTitle("회차별 PDF 생성")
+        self.resize(720, 500)
+        layout = QVBoxLayout(self)
+        state = "실행 결과" if result.get("executed") else "생성 계획"
+        heading = QLabel(
+            f"{state} · 회차 {result.get('episodeCount', 0)}개 · "
+            f"이미지 {result.get('sourceCount', 0)}장 · "
+            f"최신 PDF {result.get('existingCurrentCount', 0)}개 · "
+            f"생성 예정 {result.get('pendingCount', 0)}개"
+        )
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        target_label = QLabel(f"출력: {result.get('targetRoot', '')}")
+        target_label.setWordWrap(True)
+        layout.addWidget(target_label)
+        dependency = result.get("dependency") or {}
+        note = QLabel(
+            f"Pillow: {dependency.get('version') if dependency.get('available') else '설치 필요'} · "
+            "회차별 PDF를 임시 파일에 완성한 뒤 교체하며 원본 이미지는 보존합니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        lines: list[str] = []
+        if result.get("executed"):
+            lines.extend(
+                [
+                    f"생성 완료: {result.get('generatedCount', 0)}",
+                    f"변경 PDF 교체: {result.get('replacedCount', 0)}",
+                    f"최신 결과 건너뜀: {result.get('skippedCurrentCount', 0)}",
+                    f"실패: {result.get('failedCount', 0)}",
+                    f"복구한 임시 파일: {result.get('recoveredTemporaryFiles', 0)}",
+                    "",
+                ]
+            )
+            for failure in result.get("failures") or []:
+                lines.append(
+                    f"[실패] {Path(str(failure.get('episodeFolder') or '')).name}\n"
+                    f"  {failure.get('error')}"
+                )
+        else:
+            for item in result.get("sample") or []:
+                marker = "최신" if item.get("current") else "교체" if item.get("exists") else "예정"
+                lines.append(
+                    f"[{marker}] {Path(str(item.get('episodeFolder') or '')).name} · "
+                    f"{int(item.get('pageCount') or 0)}쪽\n"
+                    f"  → {item.get('target')}"
+                )
+            if result.get("sampleTruncated"):
+                lines.append("\n일부 회차만 표시했습니다.")
+        details.setPlainText("\n".join(lines) or "PDF로 만들 회차 이미지가 없습니다.")
+        layout.addWidget(details, 1)
+        buttons = QHBoxLayout()
+        open_button = QPushButton("출력 위치 열기")
+        open_button.clicked.connect(self._open_target)
+        buttons.addWidget(open_button)
+        buttons.addStretch(1)
+        self.execute_button = QPushButton("PDF 생성...")
+        self.execute_button.setToolTip(
+            "CLI: pdf generate --job ID --execute --yes"
+        )
+        self.execute_button.setEnabled(
+            bool(dependency.get("available"))
+            and int(result.get("pendingCount") or 0) > 0
+        )
+        self.execute_button.clicked.connect(self._execute)
+        buttons.addWidget(self.execute_button)
+        close_button = QPushButton("닫기")
+        close_button.setToolTip("CLI: pdf close")
+        close_button.clicked.connect(self.close)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def _execute(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "PDF 생성",
+            f"새롭거나 변경된 회차 PDF {self.result.get('pendingCount', 0)}개를 생성할까요?\n\n"
+            f"{self.result.get('targetRoot', '')}\n\n"
+            "원본 이미지와 기존 다운로드 폴더는 변경하거나 삭제하지 않습니다.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.owner.start_pdf_generation(
+                str(self.result.get("jobId") or ""), execute=True
+            )
+
+    def _open_target(self) -> None:
+        target = Path(str(self.result.get("targetRoot") or ""))
+        open_in_explorer(
+            target if target.exists() else Path(str(self.result.get("outputPath") or ""))
+        )
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "jobId": str(self.result.get("jobId") or ""),
+            "episodeCount": int(self.result.get("episodeCount") or 0),
+            "sourceCount": int(self.result.get("sourceCount") or 0),
+            "pendingCount": int(self.result.get("pendingCount") or 0),
+            "preservesOriginals": bool(self.result.get("preservesOriginals")),
+        }
+
+
+class PdfGenerationProgressDialog(QDialog):
+    def __init__(self, owner: "MainWindow", job_id: str) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.job_id = job_id
+        self.setWindowTitle("PDF 생성 진행률")
+        self.setMinimumWidth(580)
+        layout = QVBoxLayout(self)
+        self.heading_label = QLabel("PDF 생성을 준비하고 있습니다.")
+        self.heading_label.setObjectName("sectionTitle")
+        layout.addWidget(self.heading_label)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        layout.addWidget(self.progress)
+        self.summary_label = QLabel("생성 0 · 교체 0 · 건너뜀 0 · 실패 0")
+        layout.addWidget(self.summary_label)
+        self.detail_label = QLabel("회차 이미지 확인 중…")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.cancel_button = QPushButton("PDF 생성 중지")
+        self.cancel_button.setToolTip("CLI: pdf cancel --job ID")
+        self.cancel_button.clicked.connect(
+            lambda: self.owner.cancel_pdf_generation(self.job_id)
+        )
+        buttons.addWidget(self.cancel_button)
+        layout.addLayout(buttons)
+
+    def update_progress(self, event: dict[str, Any]) -> None:
+        total = max(0, int(event.get("total") or 0))
+        current = max(0, int(event.get("current") or 0))
+        self.heading_label.setText("회차별 PDF 생성 중")
+        self.progress.setRange(0, max(1, total))
+        self.progress.setValue(min(current, max(1, total)))
+        self.progress.setFormat(f"{current} / {total} (%p%)")
+        self.summary_label.setText(
+            f"생성 {event.get('generated', 0)} · 교체 {event.get('replaced', 0)} · "
+            f"건너뜀 {event.get('skipped', 0)} · 실패 {event.get('failed', 0)}"
+        )
+        folder = Path(str(event.get("episodeFolder") or ""))
+        status_labels = {
+            "generated": "PDF 생성 완료",
+            "skipped": "최신 PDF 건너뜀",
+            "failed": "PDF 생성 실패",
+        }
+        self.detail_label.setText(
+            f"{status_labels.get(str(event.get('status')), '처리 중')}: "
+            f"{folder.name} · {int(event.get('pageCount') or 0)}쪽"
+        )
+
+    def mark_cancelling(self) -> None:
+        self.heading_label.setText("PDF 생성 중지 중")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("중지 중…")
+        self.detail_label.setText(
+            "현재 PDF 생성 프로세스를 중지하고 있습니다. 원본 이미지는 변경되지 않습니다."
+        )
+
+
 @dataclass
 class ProcessContext:
     job: DownloadJob
@@ -3692,6 +3874,19 @@ class ProcessContext:
 class ImageConversionProcessContext:
     process: QProcess
     execute: bool
+    stdout_buffer: str = ""
+    stderr_buffer: str = ""
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
+    result: dict[str, Any] | None = None
+    cancel_requested: bool = False
+
+
+@dataclass
+class PdfGenerationProcessContext:
+    process: QProcess
+    execute: bool
+    automatic: bool = False
     stdout_buffer: str = ""
     stderr_buffer: str = ""
     stdout_dropped_bytes: int = 0
@@ -3772,6 +3967,8 @@ class MainWindow(QMainWindow):
         self.file_verify_processes: dict[str, ServiceTask] = {}
         self.image_preview_processes: dict[str, ServiceTask] = {}
         self.image_conversion_processes: dict[str, ImageConversionProcessContext] = {}
+        self.pdf_generation_processes: dict[str, PdfGenerationProcessContext] = {}
+        self.pending_pdf_jobs: set[str] = set()
         self.duplicate_image_tasks: dict[str, ServiceTask] = {}
         self.io_thread_pool = QThreadPool(self)
         self.io_thread_pool.setMaxThreadCount(int(self.resource_limits["ioThreads"]))
@@ -3813,6 +4010,10 @@ class MainWindow(QMainWindow):
         self.active_image_conversion_dialog: ImageConversionDialog | None = None
         self.active_image_conversion_progress_dialog: (
             ImageConversionProgressDialog | None
+        ) = None
+        self.active_pdf_generation_dialog: PdfGenerationDialog | None = None
+        self.active_pdf_generation_progress_dialog: (
+            PdfGenerationProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
         self.active_embedded_browser_dialog: EmbeddedBrowserDialog | None = None
@@ -5216,7 +5417,11 @@ class MainWindow(QMainWindow):
                 "threadLimit": self.io_thread_pool.maxThreadCount(),
             },
             "cpu": {
-                "activeProcesses": len(self.image_conversion_processes),
+                "activeProcesses": (
+                    len(self.image_conversion_processes)
+                    + len(self.pdf_generation_processes)
+                ),
+                "queuedPdfJobs": len(self.pending_pdf_jobs),
                 "processLimit": int(self.resource_limits["cpuProcesses"]),
             },
             "downloads": {
@@ -5253,7 +5458,12 @@ class MainWindow(QMainWindow):
             self._launch_context(context)
         self._refresh_pending_positions()
         self._update_active_summary()
-        if not self.pending_jobs and not self.active_contexts:
+        if (
+            not self.pending_jobs
+            and not self.active_contexts
+            and not self.pdf_generation_processes
+            and not self.pending_pdf_jobs
+        ):
             QTimer.singleShot(0, self._maybe_trigger_completion_action)
 
     def _launch_context(self, context: ProcessContext) -> None:
@@ -5563,6 +5773,8 @@ class MainWindow(QMainWindow):
             self.active_detail_dialog.refresh()
         self._update_active_summary()
         self._notify_job_result(job)
+        if job.state == "완료" and self.config.get("pdfGenerationEnabled", False):
+            self._queue_automatic_pdf_generation(job.job_id)
         QTimer.singleShot(250, self._start_next_job)
 
     def _restart_context(self, job_id: str, generation: int) -> None:
@@ -6386,8 +6598,10 @@ class MainWindow(QMainWindow):
         plan = completion_action_plan(
             str(self.config.get("completionAction") or "none"),
             int(self.config.get("completionCountdownSeconds") or 15),
-            active_count=len(self.active_contexts),
-            pending_count=len(self.pending_jobs),
+            active_count=(
+                len(self.active_contexts) + len(self.pdf_generation_processes)
+            ),
+            pending_count=len(self.pending_jobs) + len(self.pending_pdf_jobs),
             armed=self.completion_action_armed,
         )
         dialog = self.active_completion_dialog
@@ -7375,7 +7589,10 @@ class MainWindow(QMainWindow):
             return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
         admission = resource_admission(
             "cpu",
-            active_count=len(self.image_conversion_processes),
+            active_count=(
+                len(self.image_conversion_processes)
+                + len(self.pdf_generation_processes)
+            ),
             budget=self.resource_limits,
         )
         if not admission["allowed"]:
@@ -7651,6 +7868,359 @@ class MainWindow(QMainWindow):
                 job_id,
             )
 
+    def pdf_status_snapshot(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            **pdf_generation_policy_snapshot(self.config),
+            "runningJobIds": sorted(self.pdf_generation_processes),
+            "pendingAutomaticJobIds": sorted(self.pending_pdf_jobs),
+            "dialog": (
+                self.active_pdf_generation_dialog.state_snapshot()
+                if self.active_pdf_generation_dialog
+                else {"open": False}
+            ),
+            "progressDialog": {
+                "open": bool(
+                    self.active_pdf_generation_progress_dialog
+                    and self.active_pdf_generation_progress_dialog.isVisible()
+                ),
+                "jobId": (
+                    self.active_pdf_generation_progress_dialog.job_id
+                    if self.active_pdf_generation_progress_dialog
+                    else ""
+                ),
+            },
+        }
+
+    def _queue_automatic_pdf_generation(self, job_id: str) -> None:
+        if not self.config.get("pdfGenerationEnabled", False):
+            return
+        if job_id not in self.pending_pdf_jobs:
+            self.pending_pdf_jobs.add(job_id)
+            self.log("자동 PDF 생성 대기열에 추가했습니다.", job_id=job_id)
+        self._try_start_automatic_pdf_generation(job_id)
+
+    def _try_start_automatic_pdf_generation(self, job_id: str) -> None:
+        if job_id not in self.pending_pdf_jobs:
+            return
+        if not self.config.get("pdfGenerationEnabled", False):
+            self.pending_pdf_jobs.discard(job_id)
+            self._schedule_completion_if_idle()
+            return
+        try:
+            result = self.start_pdf_generation(
+                job_id,
+                execute=True,
+                automatic=True,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            self.pending_pdf_jobs.discard(job_id)
+            self.log(f"자동 PDF 생성 시작 실패: {error}", "ERROR", job_id)
+            self._schedule_completion_if_idle()
+            return
+        if result.get("started") or result.get("alreadyRunning"):
+            self.pending_pdf_jobs.discard(job_id)
+            self._schedule_completion_if_idle()
+            return
+        if result.get("resourceLimit"):
+            QTimer.singleShot(
+                500,
+                lambda selected=job_id: self._try_start_automatic_pdf_generation(
+                    selected
+                ),
+            )
+            return
+        self.pending_pdf_jobs.discard(job_id)
+        self.log("자동 PDF 생성을 시작하지 못했습니다.", "ERROR", job_id)
+        self._schedule_completion_if_idle()
+
+    def _schedule_completion_if_idle(self) -> None:
+        if (
+            not self.active_contexts
+            and not self.pending_jobs
+            and not self.pdf_generation_processes
+            and not self.pending_pdf_jobs
+        ):
+            QTimer.singleShot(0, self._maybe_trigger_completion_action)
+
+    def start_pdf_generation(
+        self,
+        job_id: str,
+        *,
+        execute: bool = False,
+        automatic: bool = False,
+    ) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("PDF를 생성할 작품을 선택해주세요.")
+        if job.job_id in self.pdf_generation_processes:
+            return {"started": False, "jobId": job.job_id, "alreadyRunning": True}
+        admission = resource_admission(
+            "cpu",
+            active_count=(
+                len(self.image_conversion_processes)
+                + len(self.pdf_generation_processes)
+            ),
+            budget=self.resource_limits,
+        )
+        if not admission["allowed"]:
+            return {
+                "started": False,
+                "jobId": job.job_id,
+                "resourceLimit": True,
+                "resources": admission,
+            }
+        python = Path(sys.executable).with_name("python.exe")
+        arguments = [
+            str(ROOT_DIR / "toki_app.py"),
+            "pdf",
+            "generate" if execute else "plan",
+            "--job",
+            job.job_id,
+        ]
+        arguments.extend(
+            ["--execute", "--yes", "--progress-json"]
+            if execute
+            else ["--json", "--ascii-json"]
+        )
+        process = create_background_process(self)
+        process.setWorkingDirectory(str(ROOT_DIR))
+        process.setProgram(str(python if python.is_file() else Path(sys.executable)))
+        process.setArguments(arguments)
+        process.finished.connect(
+            lambda exit_code, _status, selected=job.job_id: self._pdf_generation_finished(
+                selected, exit_code
+            )
+        )
+        context = PdfGenerationProcessContext(
+            process=process,
+            execute=execute,
+            automatic=automatic,
+        )
+        self.pdf_generation_processes[job.job_id] = context
+        if execute:
+            process.readyReadStandardOutput.connect(
+                lambda selected=job.job_id: self._read_pdf_generation_stdout(selected)
+            )
+            process.readyReadStandardError.connect(
+                lambda selected=job.job_id: self._read_pdf_generation_stderr(selected)
+            )
+            if not automatic:
+                if self.active_pdf_generation_dialog:
+                    self.active_pdf_generation_dialog.close()
+                if self.active_pdf_generation_progress_dialog:
+                    self.active_pdf_generation_progress_dialog.close()
+                progress_dialog = PdfGenerationProgressDialog(self, job.job_id)
+                self.active_pdf_generation_progress_dialog = progress_dialog
+                progress_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+                progress_dialog.destroyed.connect(
+                    lambda _object=None, selected=progress_dialog: (
+                        setattr(self, "active_pdf_generation_progress_dialog", None)
+                        if self.active_pdf_generation_progress_dialog is selected
+                        else None
+                    )
+                )
+                progress_dialog.show()
+                progress_dialog.raise_()
+                progress_dialog.activateWindow()
+        process.start()
+        self.log(
+            "회차별 PDF 자동 생성 시작(별도 프로세스)"
+            if automatic
+            else "회차별 PDF 생성 시작(별도 프로세스)"
+            if execute
+            else "회차별 PDF 생성 계획 조회(별도 프로세스)",
+            job_id=job.job_id,
+        )
+        return {
+            "started": True,
+            "jobId": job.job_id,
+            "execute": execute,
+            "automatic": automatic,
+            "preservesOriginals": True,
+            "resources": admission,
+        }
+
+    def _read_pdf_generation_stdout(self, job_id: str) -> None:
+        context = self.pdf_generation_processes.get(job_id)
+        if context is None:
+            return
+        addition = bytes(context.process.readAllStandardOutput()).decode(
+            "utf-8", errors="replace"
+        )
+        context.stdout_buffer += addition
+        while "\n" in context.stdout_buffer:
+            line, context.stdout_buffer = context.stdout_buffer.split("\n", 1)
+            self._handle_pdf_generation_output_line(job_id, line)
+        context.stdout_buffer, dropped = append_bounded_text(
+            "",
+            context.stdout_buffer,
+            int(self.resource_limits["maxProcessOutputBytes"]),
+        )
+        context.stdout_dropped_bytes += dropped
+        self.total_output_dropped_bytes += dropped
+
+    def _read_pdf_generation_stderr(self, job_id: str) -> None:
+        context = self.pdf_generation_processes.get(job_id)
+        if context is None:
+            return
+        addition = bytes(context.process.readAllStandardError()).decode(
+            "utf-8", errors="replace"
+        )
+        context.stderr_buffer, dropped = append_bounded_text(
+            context.stderr_buffer,
+            addition,
+            int(self.resource_limits["maxProcessOutputBytes"]),
+        )
+        context.stderr_dropped_bytes += dropped
+        self.total_output_dropped_bytes += dropped
+
+    def _handle_pdf_generation_output_line(self, job_id: str, line: str) -> None:
+        context = self.pdf_generation_processes.get(job_id)
+        if context is None or not line.strip():
+            return
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            context.stderr_buffer, dropped = append_bounded_text(
+                context.stderr_buffer,
+                f"\n잘못된 PDF 진행 출력: {line}",
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            context.stderr_dropped_bytes += dropped
+            self.total_output_dropped_bytes += dropped
+            return
+        if event.get("event") == "result":
+            result = event.get("result")
+            if isinstance(result, dict):
+                context.result = result
+            return
+        if event.get("event") != "progress":
+            return
+        dialog = self.active_pdf_generation_progress_dialog
+        if dialog and dialog.job_id == job_id:
+            dialog.update_progress(event)
+        current = int(event.get("current") or 0)
+        total = int(event.get("total") or 0)
+        if current == 1 or current == total or current % 25 == 0:
+            self.statusBar().showMessage(
+                f"PDF 생성 {current}/{total} · 실패 {event.get('failed', 0)}"
+            )
+
+    def cancel_pdf_generation(self, job_id: str) -> dict[str, Any]:
+        context = self.pdf_generation_processes.get(job_id)
+        if context is None or not context.execute:
+            return {"cancelled": False, "jobId": job_id, "running": False}
+        if not context.cancel_requested:
+            context.cancel_requested = True
+            dialog = self.active_pdf_generation_progress_dialog
+            if dialog and dialog.job_id == job_id:
+                dialog.mark_cancelling()
+            context.process.kill()
+            self.log(
+                "PDF 생성 중지 요청: 원본 보존, 다음 실행에서 임시 파일 복구",
+                "WARNING",
+                job_id,
+            )
+        return {"cancelled": True, "jobId": job_id, "running": True}
+
+    def close_pdf_generation_dialogs(self) -> bool:
+        closed = False
+        for dialog in (
+            self.active_pdf_generation_dialog,
+            self.active_pdf_generation_progress_dialog,
+        ):
+            if dialog:
+                dialog.close()
+                closed = True
+        return closed
+
+    def _pdf_generation_finished(self, job_id: str, exit_code: int) -> None:
+        context = self.pdf_generation_processes.get(job_id)
+        if context is None:
+            return
+        process = context.process
+        if context.execute:
+            self._read_pdf_generation_stdout(job_id)
+            self._read_pdf_generation_stderr(job_id)
+            if context.stdout_buffer.strip():
+                self._handle_pdf_generation_output_line(
+                    job_id, context.stdout_buffer.strip()
+                )
+        else:
+            context.stdout_buffer, dropped_stdout = append_bounded_text(
+                context.stdout_buffer,
+                bytes(process.readAllStandardOutput()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            context.stderr_buffer, dropped_stderr = append_bounded_text(
+                context.stderr_buffer,
+                bytes(process.readAllStandardError()).decode(
+                    "utf-8", errors="replace"
+                ),
+                int(self.resource_limits["maxProcessOutputBytes"]),
+            )
+            context.stdout_dropped_bytes += dropped_stdout
+            context.stderr_dropped_bytes += dropped_stderr
+            self.total_output_dropped_bytes += dropped_stdout + dropped_stderr
+            try:
+                context.result = json.loads(context.stdout_buffer.strip())
+            except json.JSONDecodeError:
+                pass
+        if isinstance(process, HiddenProcess):
+            hidden_drops = process.droppedOutputBytes()
+            context.stdout_dropped_bytes += int(hidden_drops.get("stdout") or 0)
+            context.stderr_dropped_bytes += int(hidden_drops.get("stderr") or 0)
+            self.total_output_dropped_bytes += sum(hidden_drops.values())
+        self.pdf_generation_processes.pop(job_id, None)
+        process.deleteLater()
+        if self.active_pdf_generation_progress_dialog:
+            self.active_pdf_generation_progress_dialog.close()
+        if context.cancel_requested:
+            self.log("PDF 생성이 사용자 요청으로 중지되었습니다.", "WARNING", job_id)
+            self.statusBar().showMessage("PDF 생성을 중지했습니다.", 4000)
+            self._schedule_completion_if_idle()
+            return
+        result = context.result
+        if result is None:
+            message = (
+                context.stderr_buffer.strip()
+                or context.stdout_buffer.strip()
+                or f"종료 코드 {exit_code}"
+            )
+            self.log(f"PDF 생성 실패: {message}", "ERROR", job_id)
+            if not context.automatic:
+                QMessageBox.critical(self, "PDF 생성 실패", message)
+            self._schedule_completion_if_idle()
+            return
+        if not context.automatic:
+            if self.active_pdf_generation_dialog:
+                self.active_pdf_generation_dialog.close()
+            dialog = PdfGenerationDialog(self, result)
+            self.active_pdf_generation_dialog = dialog
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dialog.destroyed.connect(
+                lambda _object=None, selected=dialog: (
+                    setattr(self, "active_pdf_generation_dialog", None)
+                    if self.active_pdf_generation_dialog is selected
+                    else None
+                )
+            )
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+        if context.execute:
+            self.log(
+                f"PDF 생성 종료: 완료 {result.get('generatedCount', 0)}, "
+                f"건너뜀 {result.get('skippedCurrentCount', 0)}, "
+                f"실패 {result.get('failedCount', 0)}",
+                "INFO" if result.get("success") else "ERROR",
+                job_id,
+            )
+        self._schedule_completion_if_idle()
+
     def open_job_source(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
         if not job:
@@ -7791,6 +8361,15 @@ class MainWindow(QMainWindow):
             job.state not in ACTIVE_JOB_STATES
             and bool(job.output_path)
             and job.job_id not in self.image_conversion_processes
+        )
+        pdf_action = menu.addAction(
+            "회차별 PDF 생성...",
+            lambda: self.start_pdf_generation(job.job_id),
+        )
+        pdf_action.setEnabled(
+            job.state not in ACTIVE_JOB_STATES
+            and bool(job.output_path)
+            and job.job_id not in self.pdf_generation_processes
         )
         duplicate_images_menu = menu.addMenu("중복 이미지 검사")
         duplicate_exact_action = duplicate_images_menu.addAction("정확히 같은 파일 (SHA-256)")
@@ -8214,6 +8793,16 @@ class MainWindow(QMainWindow):
         elif self.active_completion_dialog and self.active_completion_dialog.isVisible():
             screenshot = self.active_completion_dialog.grab()
         elif (
+            self.active_pdf_generation_progress_dialog
+            and self.active_pdf_generation_progress_dialog.isVisible()
+        ):
+            screenshot = self.active_pdf_generation_progress_dialog.grab()
+        elif (
+            self.active_pdf_generation_dialog
+            and self.active_pdf_generation_dialog.isVisible()
+        ):
+            screenshot = self.active_pdf_generation_dialog.grab()
+        elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
         ):
@@ -8628,6 +9217,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
             "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd image-processing status|set [options]\n"
+            "toki-cli.cmd pdf status|set|plan|generate|cancel|close [options]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
             "toki-cli.cmd pause --job ID\n"
@@ -8858,6 +9448,7 @@ class MainWindow(QMainWindow):
             "imagePreviewJobs": sorted(self.image_preview_processes),
             "imageConversionJobs": sorted(self.image_conversion_processes),
             "imageProcessing": image_processing_policy_snapshot(self.config),
+            "pdf": self.pdf_status_snapshot(),
             "imageConversionDialog": (
                 self.active_image_conversion_dialog.state_snapshot()
                 if self.active_image_conversion_dialog
@@ -9422,6 +10013,18 @@ class MainWindow(QMainWindow):
             )
         if action == "image_processing_policy":
             return image_processing_policy_snapshot(self.config)
+        if action == "pdf_status":
+            return self.pdf_status_snapshot()
+        if action == "generate_pdf":
+            return self.start_pdf_generation(
+                str(request.get("jobId") or ""),
+                execute=bool(request.get("execute")),
+                automatic=False,
+            )
+        if action == "cancel_pdf_generation":
+            return self.cancel_pdf_generation(str(request.get("jobId") or ""))
+        if action == "close_pdf_generation":
+            return {"closed": self.close_pdf_generation_dialogs()}
         if action == "cancel_image_conversion":
             return self.cancel_image_conversion(str(request.get("jobId") or ""))
         if action == "close_image_conversion":
@@ -9577,6 +10180,8 @@ class MainWindow(QMainWindow):
                     self.stop_active_job(job_id)
                 for context in list(self.image_conversion_processes.values()):
                     context.process.kill()
+                for context in list(self.pdf_generation_processes.values()):
+                    context.process.kill()
             QTimer.singleShot(100, self.close)
             return {"quitting": True}
         raise ValueError(f"지원하지 않는 CLI 동작입니다: {action}")
@@ -9606,12 +10211,14 @@ class MainWindow(QMainWindow):
         if not self.force_close and (
             self.active_contexts
             or self.image_conversion_processes
+            or self.pdf_generation_processes
+            or self.pending_pdf_jobs
             or diagnostic_processes
         ):
             answer = QMessageBox.question(
                 self,
                 "실행 중인 작업",
-                "다운로드·이미지 변환 또는 진단 작업이 진행 중입니다. "
+                "다운로드·이미지 변환·PDF 생성 또는 진단 작업이 진행 중입니다. "
                 "작업을 중지하고 종료할까요?",
             )
             if answer != QMessageBox.StandardButton.Yes:
@@ -9622,6 +10229,9 @@ class MainWindow(QMainWindow):
                 self.stop_active_job(job_id)
             for context in list(self.image_conversion_processes.values()):
                 context.process.kill()
+            for context in list(self.pdf_generation_processes.values()):
+                context.process.kill()
+        self.pending_pdf_jobs.clear()
         for process in diagnostic_processes:
             process.kill()
         window_config = self.window_snapshot()

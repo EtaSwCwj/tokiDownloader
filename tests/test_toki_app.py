@@ -2237,6 +2237,125 @@ class CliParserTests(unittest.TestCase):
         with self.assertRaisesRegex(toki_app.ControlError, "--job과 --format"):
             run_cli(missing)
 
+    def test_pdf_cli_covers_policy_plan_confirm_progress_gui_cancel_and_close(self) -> None:
+        policy = {
+            "automatic": False,
+            "scope": "per_episode",
+            "dependency": {"available": True},
+        }
+        status = build_parser().parse_args(["pdf", "status", "--json"])
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.pdf_generation_policy_snapshot", return_value=policy),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status), 0)
+
+        set_args = build_parser().parse_args(
+            ["pdf", "set", "--automatic", "on", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value={**policy, "automatic": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[0].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"pdfGenerationEnabled": True},
+                "reset": False,
+            },
+        )
+        self.assertEqual(request.call_args_list[1].args[0], {"action": "pdf_status"})
+
+        plan_result = {
+            "jobId": "job-1",
+            "targetRoot": r"C:\Manga\작품\_pdf",
+            "episodeCount": 2,
+            "sourceCount": 10,
+            "pendingCount": 2,
+            "preservesOriginals": True,
+        }
+        plan_args = build_parser().parse_args(
+            ["pdf", "plan", "--job", "job-1", "--json"]
+        )
+        with (
+            patch("toki_app.plan_job_pdf_generation", return_value=plan_result) as planner,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(plan_args), 0)
+        planner.assert_called_once_with("job-1")
+
+        unsafe = build_parser().parse_args(
+            ["pdf", "generate", "--job", "job-1", "--execute"]
+        )
+        with self.assertRaisesRegex(RuntimeError, "--execute --yes"):
+            run_cli(unsafe)
+
+        gui_args = build_parser().parse_args(
+            ["pdf", "generate", "--job", "job-1", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"started": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(gui_args), 0)
+        request.assert_called_once_with(
+            {"action": "generate_pdf", "jobId": "job-1", "execute": False}
+        )
+
+        progress_args = build_parser().parse_args(
+            [
+                "pdf", "generate", "--job", "job-1", "--execute", "--yes",
+                "--progress-json",
+            ]
+        )
+        executed = {
+            **plan_result,
+            "executed": True,
+            "success": True,
+            "generatedCount": 2,
+        }
+
+        def generate_with_progress(_job_id, *, progress_callback=None):
+            progress_callback(
+                {"current": 1, "total": 2, "status": "generated"}
+            )
+            return executed
+
+        output = StringIO()
+        with (
+            patch("toki_app.generate_job_pdfs", side_effect=generate_with_progress),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(run_cli(progress_args), 0)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([event["event"] for event in events], ["progress", "result"])
+
+        cancel = build_parser().parse_args(
+            ["pdf", "cancel", "--job", "job-1", "--json"]
+        )
+        close = build_parser().parse_args(["pdf", "close", "--json"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"cancelled": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(cancel), 0)
+        request.assert_called_once_with(
+            {"action": "cancel_pdf_generation", "jobId": "job-1"}
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close), 0)
+        request.assert_called_once_with({"action": "close_pdf_generation"})
+
     def test_image_processing_policy_cli_reports_and_updates_gui(self) -> None:
         status = build_parser().parse_args(
             ["image-processing", "status", "--json"]

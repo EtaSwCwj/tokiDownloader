@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 12
+CONFIG_SCHEMA_VERSION = 13
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -125,6 +125,7 @@ SETTING_KEYS = frozenset(
         "listLazyLoading",
         "lowSpecMode",
         "preventSleepDuringDownloads",
+        "pdfGenerationEnabled",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -418,6 +419,7 @@ def default_config() -> dict[str, Any]:
         "listLazyLoading": True,
         "lowSpecMode": False,
         "preventSleepDuringDownloads": False,
+        "pdfGenerationEnabled": False,
     }
 
 
@@ -1384,6 +1386,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "listLazyLoading",
         "lowSpecMode",
         "preventSleepDuringDownloads",
+        "pdfGenerationEnabled",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1668,6 +1671,7 @@ def validate_app_setting_updates(
         "listLazyLoading",
         "lowSpecMode",
         "preventSleepDuringDownloads",
+        "pdfGenerationEnabled",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -6451,6 +6455,270 @@ def convert_job_images(
         "remainingCount": total - processed,
         "recoveredTemporaryFiles": recovered_temporary_files,
         "success": not cancelled and processed == total and failure_count == 0,
+    }
+
+
+def pdf_generation_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    try:
+        pillow_version = importlib.metadata.version("Pillow")
+        dependency_available = True
+    except importlib.metadata.PackageNotFoundError:
+        pillow_version = ""
+        dependency_available = False
+    return {
+        "automatic": bool(source["pdfGenerationEnabled"]),
+        "scope": "per_episode",
+        "targetFolder": "_pdf",
+        "preservesOriginals": True,
+        "atomicOutput": True,
+        "replacesGeneratedPdfWhenSourcesChange": True,
+        "dependency": {
+            "name": "Pillow",
+            "available": dependency_available,
+            "version": pillow_version,
+            "requirementsFile": str(ROOT_DIR / "requirements-image-tools.txt"),
+        },
+    }
+
+
+def _natural_path_key(path: Path) -> list[tuple[int, Any]]:
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", path.name)
+    ]
+
+
+def _pdf_episode_mappings(
+    output_path: Path,
+) -> tuple[Path, list[tuple[Path, list[Path], Path]], int]:
+    target_root = output_path / "_pdf"
+    episode_folders: list[Path] = []
+    for entry in os.scandir(output_path):
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        if entry.name in {"_converted", "_pdf"}:
+            continue
+        if re.match(r"^0*(\d+)(?:\s|$)", entry.name):
+            episode_folders.append(Path(entry.path).resolve())
+    episode_folders.sort(key=_natural_path_key)
+    mappings: list[tuple[Path, list[Path], Path]] = []
+    used_targets: set[str] = set()
+    empty_count = 0
+    for folder in episode_folders:
+        with os.scandir(folder) as children:
+            images = [
+                Path(child.path).resolve()
+                for child in children
+                if child.is_file(follow_symlinks=False)
+                and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
+            ]
+        images.sort(key=_natural_path_key)
+        if not images:
+            empty_count += 1
+            continue
+        target = target_root / f"{folder.name}.pdf"
+        suffix = 2
+        while os.path.normcase(str(target)) in used_targets:
+            target = target_root / f"{folder.name}_{suffix}.pdf"
+            suffix += 1
+        used_targets.add(os.path.normcase(str(target)))
+        mappings.append((folder, images, target))
+    return target_root, mappings, empty_count
+
+
+def _pdf_target_is_current(target: Path, images: list[Path]) -> bool:
+    if not target.is_file() or target.stat().st_size <= 4:
+        return False
+    latest_source = max(image.stat().st_mtime_ns for image in images)
+    return target.stat().st_mtime_ns >= latest_source
+
+
+def plan_job_pdf_generation(
+    job_id: str,
+    *,
+    sample_limit: int = 100,
+) -> dict[str, Any]:
+    job = load_job_by_id(job_id)
+    if job is None:
+        raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+    if job.state in ACTIVE_JOB_STATES:
+        raise ValueError("대기 또는 실행 중인 작품은 PDF를 생성할 수 없습니다.")
+    if not job.output_path:
+        raise ValueError("저장된 작품 폴더 경로가 없습니다.")
+    output_path = Path(job.output_path).expanduser().resolve()
+    if not output_path.is_dir():
+        raise FileNotFoundError(f"작품 폴더를 찾을 수 없습니다: {output_path}")
+    clean_sample_limit = max(1, min(1000, int(sample_limit)))
+    target_root, mappings, empty_count = _pdf_episode_mappings(output_path)
+    current_count = 0
+    replacement_count = 0
+    samples: list[dict[str, Any]] = []
+    total_images = 0
+    source_bytes = 0
+    for folder, images, target in mappings:
+        current = _pdf_target_is_current(target, images)
+        current_count += int(current)
+        replacement_count += int(target.exists() and not current)
+        total_images += len(images)
+        source_bytes += sum(image.stat().st_size for image in images)
+        if len(samples) < clean_sample_limit:
+            samples.append(
+                {
+                    "episodeFolder": str(folder),
+                    "target": str(target),
+                    "pageCount": len(images),
+                    "exists": target.exists(),
+                    "current": current,
+                }
+            )
+    policy = pdf_generation_policy_snapshot()
+    return {
+        "jobId": job.job_id,
+        "workKey": job.work_key,
+        "title": job.title,
+        "outputPath": str(output_path),
+        "targetRoot": str(target_root),
+        "scope": "per_episode",
+        "episodeFolderCount": len(mappings) + empty_count,
+        "episodeCount": len(mappings),
+        "emptyEpisodeCount": empty_count,
+        "sourceCount": total_images,
+        "sourceBytes": source_bytes,
+        "existingCurrentCount": current_count,
+        "replacementCount": replacement_count,
+        "pendingCount": len(mappings) - current_count,
+        "preservesOriginals": True,
+        "atomicOutput": True,
+        "dependency": policy["dependency"],
+        "sample": samples,
+        "sampleTruncated": len(mappings) > clean_sample_limit,
+        "executed": False,
+    }
+
+
+def generate_job_pdfs(
+    job_id: str,
+    *,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    plan = plan_job_pdf_generation(job_id, sample_limit=1)
+    if not plan["dependency"]["available"]:
+        raise RuntimeError(
+            "PDF 생성에는 Pillow가 필요합니다. "
+            ".\\.venv\\Scripts\\python.exe -m pip install -r requirements-image-tools.txt"
+        )
+    from PIL import Image, ImageOps
+
+    output_path = Path(plan["outputPath"])
+    target_root, mappings, _empty_count = _pdf_episode_mappings(output_path)
+    generated = 0
+    replaced = 0
+    skipped = 0
+    failed = 0
+    failures: list[dict[str, str]] = []
+    recovered_temporary_files = 0
+    cancelled = False
+    total = len(mappings)
+    for index, (folder, images, target) in enumerate(mappings, start=1):
+        if cancel_check and cancel_check():
+            cancelled = True
+            break
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        if temporary.exists():
+            temporary.unlink()
+            recovered_temporary_files += 1
+        if _pdf_target_is_current(target, images):
+            skipped += 1
+            status = "skipped"
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            pages: list[Any] = []
+            try:
+                for source in images:
+                    if cancel_check and cancel_check():
+                        cancelled = True
+                        break
+                    with Image.open(source) as opened:
+                        page = ImageOps.exif_transpose(opened)
+                        if page.mode in {"RGBA", "LA"} or (
+                            page.mode == "P" and "transparency" in page.info
+                        ):
+                            rgba = page.convert("RGBA")
+                            rgb = Image.new("RGB", rgba.size, "white")
+                            rgb.paste(rgba, mask=rgba.getchannel("A"))
+                            page = rgb
+                        else:
+                            page = page.convert("RGB")
+                        pages.append(page.copy())
+                if cancelled:
+                    status = "cancelled"
+                elif not pages:
+                    raise ValueError("PDF에 넣을 이미지가 없습니다.")
+                else:
+                    pages[0].save(
+                        temporary,
+                        format="PDF",
+                        save_all=True,
+                        append_images=pages[1:],
+                        resolution=100.0,
+                    )
+                    existed = target.exists()
+                    os.replace(temporary, target)
+                    generated += 1
+                    replaced += int(existed)
+                    status = "generated"
+            except Exception as error:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                failed += 1
+                if len(failures) < 100:
+                    failures.append(
+                        {"episodeFolder": str(folder), "error": str(error)}
+                    )
+                status = "failed"
+            finally:
+                for page in pages:
+                    page.close()
+        if progress_callback:
+            progress_callback(
+                {
+                    "current": index,
+                    "total": total,
+                    "generated": generated,
+                    "replaced": replaced,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "pageCount": len(images),
+                    "episodeFolder": str(folder),
+                    "target": str(target),
+                    "status": status,
+                }
+            )
+        if cancelled:
+            break
+    processed = generated + skipped + failed
+    return {
+        **plan,
+        "targetRoot": str(target_root),
+        "executed": True,
+        "generatedCount": generated,
+        "replacedCount": replaced,
+        "skippedCurrentCount": skipped,
+        "failedCount": failed,
+        "failures": failures,
+        "failuresTruncated": failed > len(failures),
+        "processedCount": processed,
+        "cancelled": cancelled,
+        "remainingCount": total - processed,
+        "recoveredTemporaryFiles": recovered_temporary_files,
+        "success": not cancelled and processed == total and failed == 0,
+        "preservesOriginals": True,
     }
 
 

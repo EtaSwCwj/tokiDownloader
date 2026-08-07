@@ -18,6 +18,7 @@ from toki_gui import (
     ImageConversionProcessContext,
     JobListModel,
     MainWindow,
+    PdfGenerationProcessContext,
     ProcessContext,
     SettingsDialog,
     hidden_process_options,
@@ -1173,6 +1174,7 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness = type("ConversionHarness", (), {})()
         harness.image_conversion_processes = {}
+        harness.pdf_generation_processes = {}
         harness.config = default_config()
         harness.resource_limits = {"cpuProcesses": 2}
         harness.active_image_conversion_dialog = None
@@ -1305,6 +1307,141 @@ class WorkSchedulerTests(unittest.TestCase):
 
         self.assertEqual(received[0]["current"], 1)
         self.assertTrue(context.result["success"])
+
+    def test_pdf_gui_uses_confirmed_child_cli_and_all_actions_are_ipc_callable(self) -> None:
+        job = DownloadJob(
+            job_id="pdf-job",
+            url="https://newtoki1.org/manhwa/9200",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\작품",
+            state="완료",
+        )
+        harness = type("PdfHarness", (), {})()
+        harness.pdf_generation_processes = {}
+        harness.image_conversion_processes = {}
+        harness.resource_limits = {"cpuProcesses": 2}
+        harness.active_pdf_generation_dialog = None
+        harness.active_pdf_generation_progress_dialog = None
+        harness.selected_job = lambda _job_id=None: job
+        harness.log = lambda *_args, **_kwargs: None
+        _ProcessStub.instances = []
+
+        with (
+            patch("toki_gui.create_background_process", _ProcessStub),
+            patch("toki_gui.PdfGenerationProgressDialog", _DialogStub),
+        ):
+            result = MainWindow.start_pdf_generation(
+                harness, job.job_id, execute=True, automatic=False
+            )
+
+        process = _ProcessStub.instances[0]
+        self.assertTrue(result["started"])
+        self.assertTrue(result["preservesOriginals"])
+        self.assertIn("pdf", process.arguments)
+        self.assertIn("generate", process.arguments)
+        self.assertIn("--execute", process.arguments)
+        self.assertIn("--yes", process.arguments)
+        self.assertIn("--progress-json", process.arguments)
+
+        ipc_calls = []
+        ipc_harness = type("PdfIpcHarness", (), {})()
+        ipc_harness.pdf_status_snapshot = lambda: {"ok": True, "automatic": False}
+        ipc_harness.start_pdf_generation = lambda *args, **kwargs: (
+            ipc_calls.append((args, kwargs)) or {"started": True}
+        )
+        ipc_harness.cancel_pdf_generation = lambda job_id: {
+            "cancelled": True,
+            "jobId": job_id,
+        }
+        ipc_harness.close_pdf_generation_dialogs = lambda: True
+        self.assertFalse(
+            MainWindow._handle_control_action(
+                ipc_harness, {"action": "pdf_status"}
+            )["automatic"]
+        )
+        MainWindow._handle_control_action(
+            ipc_harness,
+            {"action": "generate_pdf", "jobId": "pdf-job", "execute": False},
+        )
+        self.assertEqual(ipc_calls, [(('pdf-job',), {"execute": False, "automatic": False})])
+        self.assertTrue(
+            MainWindow._handle_control_action(
+                ipc_harness,
+                {"action": "cancel_pdf_generation", "jobId": "pdf-job"},
+            )["cancelled"]
+        )
+        self.assertTrue(
+            MainWindow._handle_control_action(
+                ipc_harness, {"action": "close_pdf_generation"}
+            )["closed"]
+        )
+
+        cancel_process = _ProcessStub()
+        cancel_context = PdfGenerationProcessContext(
+            process=cancel_process, execute=True
+        )
+        cancel_harness = type("PdfCancelHarness", (), {})()
+        cancel_harness.pdf_generation_processes = {"pdf-job": cancel_context}
+        cancel_harness.active_pdf_generation_progress_dialog = None
+        cancel_harness.log = lambda *_args, **_kwargs: None
+        first = MainWindow.cancel_pdf_generation(cancel_harness, "pdf-job")
+        second = MainWindow.cancel_pdf_generation(cancel_harness, "pdf-job")
+        self.assertTrue(first["cancelled"])
+        self.assertTrue(second["cancelled"])
+        self.assertTrue(cancel_process.killed)
+
+    def test_automatic_pdf_waits_for_cpu_capacity_before_completion(self) -> None:
+        harness = type("AutomaticPdfHarness", (), {})()
+        harness.config = {"pdfGenerationEnabled": True}
+        harness.pending_pdf_jobs = set()
+        harness.pdf_generation_processes = {}
+        harness.active_contexts = {}
+        harness.pending_jobs = deque()
+        harness.logs = []
+        harness.log = lambda *args, **kwargs: harness.logs.append((args, kwargs))
+        harness.completion_calls = 0
+        harness._maybe_trigger_completion_action = lambda: setattr(
+            harness, "completion_calls", harness.completion_calls + 1
+        )
+        outcomes = deque([{"started": False, "resourceLimit": True}])
+
+        def start_pdf(job_id: str, **_kwargs: object) -> dict[str, object]:
+            if outcomes:
+                return outcomes.popleft()
+            harness.pdf_generation_processes[job_id] = object()
+            return {"started": True, "jobId": job_id}
+
+        harness.start_pdf_generation = start_pdf
+        harness._try_start_automatic_pdf_generation = lambda job_id: (
+            MainWindow._try_start_automatic_pdf_generation(harness, job_id)
+        )
+        harness._schedule_completion_if_idle = lambda: (
+            MainWindow._schedule_completion_if_idle(harness)
+        )
+        timers: list[tuple[int, object]] = []
+
+        with patch(
+            "toki_gui.QTimer.singleShot",
+            side_effect=lambda delay, callback: timers.append((delay, callback)),
+        ):
+            MainWindow._queue_automatic_pdf_generation(harness, "pdf-job")
+            self.assertEqual(harness.pending_pdf_jobs, {"pdf-job"})
+            self.assertEqual([delay for delay, _callback in timers], [500])
+            self.assertEqual(harness.completion_calls, 0)
+
+            _delay, retry = timers.pop(0)
+            retry()
+            self.assertFalse(harness.pending_pdf_jobs)
+            self.assertIn("pdf-job", harness.pdf_generation_processes)
+            self.assertFalse(timers)
+
+            harness.pdf_generation_processes.clear()
+            MainWindow._schedule_completion_if_idle(harness)
+            self.assertEqual([delay for delay, _callback in timers], [0])
+            _delay, complete = timers.pop(0)
+            complete()
+
+        self.assertEqual(harness.completion_calls, 1)
 
     def test_scheduler_starts_distinct_process_contexts_up_to_work_limit(self) -> None:
         jobs = [
