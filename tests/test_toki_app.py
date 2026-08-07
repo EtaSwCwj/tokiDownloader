@@ -87,6 +87,76 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(status_args), 0)
         self.assertFalse(json.loads(stdout.getvalue())["download"])
 
+        server_status_args = build_parser().parse_args(
+            ["hitomi", "server", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(server_status_args), 0)
+        self.assertEqual(json.loads(stdout.getvalue())["mode"], "auto")
+
+        server_set_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "server",
+                "set",
+                "--mode",
+                "manual",
+                "--manual-server",
+                "ehentai",
+                "--priority",
+                "ehentai,exhentai,hitomi",
+                "--json",
+            ]
+        )
+        saved = {
+            **default_config(),
+            "hitomiServerMode": "manual",
+            "hitomiManualServer": "ehentai",
+            "hitomiServerPriority": ["ehentai", "exhentai", "hitomi"],
+        }
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(server_set_args), 0)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {
+                    "hitomiServerMode": "manual",
+                    "hitomiManualServer": "ehentai",
+                    "hitomiServerPriority": "ehentai,exhentai,hitomi",
+                },
+                "reset": False,
+            },
+        )
+        self.assertEqual(json.loads(stdout.getvalue())["manualServer"], "ehentai")
+
+        server_plan_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "server",
+                "plan",
+                "--input",
+                "https://exhentai.org/g/987654/abcdef1234/",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(server_plan_args), 0)
+        self.assertEqual(json.loads(stdout.getvalue())["candidateServers"], ["exhentai", "ehentai"])
+
     def test_local_api_cli_controls_settings_token_and_loopback_request(self) -> None:
         status = {
             "ok": True,

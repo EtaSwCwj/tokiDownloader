@@ -27,6 +27,13 @@ from urllib.request import Request, urlopen
 
 import psutil
 
+from hitomi_provider import (
+    HITOMI_SERVER_IDS,
+    normalize_hitomi_manual_server,
+    normalize_hitomi_server_mode,
+    normalize_hitomi_server_priority,
+)
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_PATH = ROOT_DIR / "VERSION"
@@ -44,7 +51,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 15
+CONFIG_SCHEMA_VERSION = 16
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -131,6 +138,9 @@ SETTING_KEYS = frozenset(
         "memoryDisplayEnabled",
         "localApiEnabled",
         "localApiPort",
+        "hitomiServerMode",
+        "hitomiManualServer",
+        "hitomiServerPriority",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -428,6 +438,9 @@ def default_config() -> dict[str, Any]:
         "memoryDisplayEnabled": True,
         "localApiEnabled": False,
         "localApiPort": 8765,
+        "hitomiServerMode": "auto",
+        "hitomiManualServer": "hitomi",
+        "hitomiServerPriority": list(HITOMI_SERVER_IDS),
     }
 
 
@@ -1537,6 +1550,21 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("localApiPort"),
         defaults["localApiPort"],
     )
+    normalized["hitomiServerMode"] = _safe_normalize(
+        normalize_hitomi_server_mode,
+        source.get("hitomiServerMode"),
+        defaults["hitomiServerMode"],
+    )
+    normalized["hitomiManualServer"] = _safe_normalize(
+        normalize_hitomi_manual_server,
+        source.get("hitomiManualServer"),
+        defaults["hitomiManualServer"],
+    )
+    normalized["hitomiServerPriority"] = _safe_normalize(
+        normalize_hitomi_server_priority,
+        source.get("hitomiServerPriority", defaults["hitomiServerPriority"]),
+        defaults["hitomiServerPriority"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -1736,6 +1764,9 @@ def validate_app_setting_updates(
         "listLoadedLimit": normalize_list_loaded_limit,
         "listScrollLines": normalize_list_scroll_lines,
         "localApiPort": normalize_local_api_port,
+        "hitomiServerMode": normalize_hitomi_server_mode,
+        "hitomiManualServer": normalize_hitomi_manual_server,
+        "hitomiServerPriority": normalize_hitomi_server_priority,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

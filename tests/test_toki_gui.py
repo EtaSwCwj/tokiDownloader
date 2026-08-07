@@ -748,6 +748,9 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("배율 배경 글꼴"), [2])
         self.assertEqual(SettingsDialog.matching_tab_indexes("프록시 속도 공급자"), [1])
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
+        self.assertEqual(
+            SettingsDialog.matching_tab_indexes("서버 자동 수동 우선순위"), [4]
+        )
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
         self.assertEqual(

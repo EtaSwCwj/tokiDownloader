@@ -24,7 +24,9 @@ from PyQt6.QtWidgets import QApplication
 from hitomi_provider import (
     HitomiReferenceError,
     hitomi_provider_capabilities,
+    hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
+    plan_hitomi_server,
 )
 from toki_core import (
     APP_VERSION,
@@ -831,6 +833,36 @@ def build_parser() -> argparse.ArgumentParser:
         "close", help="열린 Hitomi URL/ID 분석창 닫기"
     )
     hitomi_close.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_server = hitomi_commands.add_parser(
+        "server", help="Hitomi/ExHentai 서버 자동·수동 선택과 우선순위"
+    )
+    hitomi_server_commands = hitomi_server.add_subparsers(
+        dest="hitomi_server_command", required=True
+    )
+    hitomi_server_status = hitomi_server_commands.add_parser(
+        "status", help="현재 서버 선택 정책 조회"
+    )
+    hitomi_server_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_server_set = hitomi_server_commands.add_parser(
+        "set", help="서버 방식·수동 서버·자동 우선순위 저장"
+    )
+    hitomi_server_set.add_argument("--mode", choices=("auto", "manual"))
+    hitomi_server_set.add_argument(
+        "--manual-server", choices=("hitomi", "exhentai", "ehentai")
+    )
+    hitomi_server_set.add_argument(
+        "--priority",
+        help="hitomi,exhentai,ehentai를 중복 없이 쉼표 순서로 지정",
+    )
+    hitomi_server_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_server_plan = hitomi_server_commands.add_parser(
+        "plan", help="외부 접속 없이 입력 작품의 실제 후보 서버 계산"
+    )
+    hitomi_server_plan.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+    hitomi_server_plan.add_argument(
+        "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+    )
+    hitomi_server_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2231,6 +2263,43 @@ def run_cli(args: argparse.Namespace) -> int:
         elif args.hitomi_command == "close":
             ensure_gui_running()
             result = control_request({"action": "close_hitomi_inspector"})
+        elif args.hitomi_command == "server":
+            current = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            if args.hitomi_server_command == "status":
+                result = hitomi_server_policy_snapshot(current)
+            elif args.hitomi_server_command == "plan":
+                try:
+                    result = plan_hitomi_server(
+                        args.input,
+                        provider_hint=args.provider,
+                        config=current,
+                    )
+                except HitomiReferenceError as error:
+                    result = error.to_dict()
+            else:
+                updates: dict[str, Any] = {}
+                if args.mode is not None:
+                    updates["hitomiServerMode"] = args.mode
+                if args.manual_server is not None:
+                    updates["hitomiManualServer"] = args.manual_server
+                if args.priority is not None:
+                    updates["hitomiServerPriority"] = args.priority
+                if not updates:
+                    raise ValueError(
+                        "--mode, --manual-server 또는 --priority 중 하나 이상을 지정하세요."
+                    )
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **hitomi_server_policy_snapshot(saved)}
         elif args.show_gui:
             ensure_gui_running()
             result = control_request(

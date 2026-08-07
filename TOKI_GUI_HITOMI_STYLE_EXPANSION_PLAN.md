@@ -544,7 +544,7 @@ memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 
 - [x] URL과 갤러리 ID 분석
-- [ ] 서버 자동·수동 선택과 우선순위
+- [x] 서버 자동·수동 선택과 우선순위
 - [ ] 갤러리 메타데이터 모드
 - [ ] 원본/숫자/숫자+원본 파일명
 - [ ] 제외 태그 관리
@@ -566,6 +566,17 @@ URL/ID 분석창, GUI IPC·상태·화면 캡처가 모두 같은 서비스를 �
 Hitomi/ExHentai/잘못된 입력 픽스처와 CLI·GUI IPC를 네트워크 없이 검증했고
 `logs/hitomi-reference-inspector.png`, `logs/hitomi-provider-settings.png`에 결과창과 공급자
 탭을 보존했다. Python 207건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
+
+2026-08-07 Hitomi 서버 선택 구현: 설정 스키마 v16에 자동/수동 방식, 수동 서버와
+Hitomi.la·ExHentai·E-Hentai의 중복 없는 전체 우선순위를 추가했다. 공용 서비스는 분석된
+작품 공급자와 호환되는 서버만 우선순위대로 남기고 수동 서버가 호환되지 않으면
+`hitomi.server_incompatible`로 거부한다. ExHentai는 인증 필요, E-Hentai와 Hitomi.la는
+정책상 비인증 후보로 구분하지만 계획 계산은 외부 요청을 실행하지 않는다. `hitomi server
+status|set|plan`, GUI 공급자 설정의 방식·서버·드래그 우선순위, `status --json`이 같은
+정책을 사용한다. 실행 중 GUI에서 수동 E-Hentai와 사용자 순서를 적용해 계획 결과를 확인한
+뒤 기본 자동·Hitomi.la→ExHentai→E-Hentai로 복원했다. `logs/hitomi-server-settings.png`의
+대비와 비활성 상태를 확인했으며 Python 209건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를
+통과했다.
 
 ### 단계 H. YouTube 선택형 공급자
 

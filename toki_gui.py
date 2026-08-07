@@ -100,8 +100,10 @@ except ImportError as error:
     QWebEngineView = None
 
 from hitomi_provider import (
+    HITOMI_SERVER_CATALOG,
     HitomiReferenceError,
     hitomi_provider_capabilities,
+    hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
 )
 
@@ -2934,7 +2936,7 @@ class SettingsDialog(QDialog):
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
-        "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
+        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 id youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
     def __init__(self, owner: "MainWindow") -> None:
@@ -3374,6 +3376,45 @@ class SettingsDialog(QDialog):
         )
         hitomi_status.setWordWrap(True)
         provider_form.addRow(self.strings["provider.hitomi"], hitomi_status)
+        self.hitomi_server_mode_combo = QComboBox()
+        self.hitomi_server_mode_combo.addItem("자동 · 우선순위 사용", "auto")
+        self.hitomi_server_mode_combo.addItem("수동 · 지정 서버만 사용", "manual")
+        self.hitomi_server_mode_combo.setToolTip(
+            "CLI: hitomi server set --mode auto|manual --json"
+        )
+        self.hitomi_server_mode_combo.currentIndexChanged.connect(
+            self._update_hitomi_server_controls
+        )
+        provider_form.addRow("서버 방식", self.hitomi_server_mode_combo)
+        self.hitomi_manual_server_combo = QComboBox()
+        for server in HITOMI_SERVER_CATALOG:
+            self.hitomi_manual_server_combo.addItem(
+                str(server["label"]), str(server["id"])
+            )
+        self.hitomi_manual_server_combo.setToolTip(
+            "CLI: hitomi server set --mode manual --manual-server SERVER --json"
+        )
+        provider_form.addRow("수동 서버", self.hitomi_manual_server_combo)
+        self.hitomi_server_priority_list = QListWidget()
+        self.hitomi_server_priority_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.hitomi_server_priority_list.setMaximumHeight(102)
+        self.hitomi_server_priority_list.setToolTip(
+            "드래그로 정렬 · CLI: hitomi server set --priority hitomi,exhentai,ehentai --json"
+        )
+        provider_form.addRow("자동 우선순위", self.hitomi_server_priority_list)
+        priority_buttons = QHBoxLayout()
+        priority_up = QPushButton("위로")
+        priority_down = QPushButton("아래로")
+        priority_up.setToolTip("선택 서버를 위로 이동 · CLI에서는 --priority로 전체 순서 지정")
+        priority_down.setToolTip("선택 서버를 아래로 이동 · CLI에서는 --priority로 전체 순서 지정")
+        priority_up.clicked.connect(lambda: self._move_hitomi_priority(-1))
+        priority_down.clicked.connect(lambda: self._move_hitomi_priority(1))
+        priority_buttons.addWidget(priority_up)
+        priority_buttons.addWidget(priority_down)
+        priority_buttons.addStretch(1)
+        provider_form.addRow("", priority_buttons)
         hitomi_inspector_button = QPushButton("Hitomi URL / ID 분석...")
         hitomi_inspector_button.setToolTip(
             "CLI: hitomi inspect --input URL_OR_ID --show-gui --json"
@@ -3540,6 +3581,13 @@ class SettingsDialog(QDialog):
                 for index in range(self.tabs.count())
                 if self.tabs.isTabVisible(index)
             ],
+            "hitomiServer": {
+                "mode": str(self.hitomi_server_mode_combo.currentData() or "auto"),
+                "manualServer": str(
+                    self.hitomi_manual_server_combo.currentData() or "hitomi"
+                ),
+                "priority": self._hitomi_server_priority(),
+            },
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -3614,6 +3662,16 @@ class SettingsDialog(QDialog):
         self.local_api_port_spin.setEnabled(self.local_api_check.isChecked())
         self._update_local_api_status()
         self._update_sleep_prevention_status()
+        mode_index = self.hitomi_server_mode_combo.findData(
+            str(values["hitomiServerMode"])
+        )
+        self.hitomi_server_mode_combo.setCurrentIndex(max(0, mode_index))
+        manual_index = self.hitomi_manual_server_combo.findData(
+            str(values["hitomiManualServer"])
+        )
+        self.hitomi_manual_server_combo.setCurrentIndex(max(0, manual_index))
+        self._load_hitomi_server_priority(values["hitomiServerPriority"])
+        self._update_hitomi_server_controls()
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3668,6 +3726,40 @@ class SettingsDialog(QDialog):
                 else Qt.CheckState.Unchecked
             )
             self.quick_action_list.addItem(item)
+
+    def _load_hitomi_server_priority(self, priority: list[str]) -> None:
+        catalog = {str(item["id"]): str(item["label"]) for item in HITOMI_SERVER_CATALOG}
+        self.hitomi_server_priority_list.clear()
+        for server_id in priority:
+            if str(server_id) not in catalog:
+                continue
+            item = QListWidgetItem(catalog[str(server_id)])
+            item.setData(Qt.ItemDataRole.UserRole, str(server_id))
+            self.hitomi_server_priority_list.addItem(item)
+
+    def _hitomi_server_priority(self) -> list[str]:
+        return [
+            str(
+                self.hitomi_server_priority_list.item(row).data(
+                    Qt.ItemDataRole.UserRole
+                )
+            )
+            for row in range(self.hitomi_server_priority_list.count())
+        ]
+
+    def _move_hitomi_priority(self, offset: int) -> None:
+        row = self.hitomi_server_priority_list.currentRow()
+        target = row + int(offset)
+        if row < 0 or not 0 <= target < self.hitomi_server_priority_list.count():
+            return
+        item = self.hitomi_server_priority_list.takeItem(row)
+        self.hitomi_server_priority_list.insertItem(target, item)
+        self.hitomi_server_priority_list.setCurrentRow(target)
+
+    def _update_hitomi_server_controls(self, _index: int = -1) -> None:
+        manual = str(self.hitomi_server_mode_combo.currentData()) == "manual"
+        self.hitomi_manual_server_combo.setEnabled(manual)
+        self.hitomi_server_priority_list.setEnabled(not manual)
 
     def _selected_quick_actions(self) -> list[str]:
         return [
@@ -3808,6 +3900,11 @@ class SettingsDialog(QDialog):
             "memoryDisplayEnabled": self.memory_display_check.isChecked(),
             "localApiEnabled": self.local_api_check.isChecked(),
             "localApiPort": self.local_api_port_spin.value(),
+            "hitomiServerMode": str(self.hitomi_server_mode_combo.currentData()),
+            "hitomiManualServer": str(
+                self.hitomi_manual_server_combo.currentData()
+            ),
+            "hitomiServerPriority": self._hitomi_server_priority(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -9858,7 +9955,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
             "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd image-processing status|set [options]\n"
-            "toki-cli.cmd hitomi status|inspect|close [options]\n"
+            "toki-cli.cmd hitomi status|inspect|close|server status|set|plan [options]\n"
             "toki-cli.cmd pdf status|set|plan|generate|cancel|close [options]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
@@ -10066,6 +10163,7 @@ class MainWindow(QMainWindow):
             "listPerformance": self.list_performance_status_snapshot(),
             "memoryUsage": self.memory_status_snapshot(),
             "localApi": self.local_api_status_snapshot(),
+            "hitomiServer": hitomi_server_policy_snapshot(self.config),
             "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),

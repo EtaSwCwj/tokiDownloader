@@ -16,6 +16,27 @@ EXHENTAI_HOSTS = frozenset(
     }
 )
 HITOMI_SUPPORTED_HOSTS = HITOMI_HOSTS | EXHENTAI_HOSTS
+HITOMI_SERVER_CATALOG = (
+    {
+        "id": "hitomi",
+        "label": "Hitomi.la",
+        "providers": ("hitomi",),
+        "requiresAuthentication": False,
+    },
+    {
+        "id": "exhentai",
+        "label": "ExHentai",
+        "providers": ("exhentai",),
+        "requiresAuthentication": True,
+    },
+    {
+        "id": "ehentai",
+        "label": "E-Hentai",
+        "providers": ("exhentai",),
+        "requiresAuthentication": False,
+    },
+)
+HITOMI_SERVER_IDS = tuple(item["id"] for item in HITOMI_SERVER_CATALOG)
 _GALLERY_ID = re.compile(r"^[0-9]{1,18}$")
 _HITOMI_GALLERY_PATH = re.compile(r"^/galleries/([0-9]+)\.html/?$", re.IGNORECASE)
 _HITOMI_READER_PATH = re.compile(r"^/reader/([0-9]+)\.html/?$", re.IGNORECASE)
@@ -48,12 +69,137 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "metadata": False,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
+        "serverPolicy": True,
         "authenticationBypass": False,
         "notes": [
             "URL 및 갤러리 ID 분석은 외부 네트워크 없이 동작합니다.",
             "ExHentai 갤러리 토큰은 결과와 로그에 원문으로 표시하지 않습니다.",
             "다운로드와 메타데이터 요청은 아직 활성화되지 않았습니다.",
         ],
+    }
+
+
+def normalize_hitomi_server_mode(value: str | None) -> str:
+    normalized = str(value or "auto").strip().lower()
+    if normalized not in {"auto", "manual"}:
+        raise ValueError("Hitomi 서버 방식은 auto 또는 manual이어야 합니다.")
+    return normalized
+
+
+def normalize_hitomi_manual_server(value: str | None) -> str:
+    normalized = str(value or "hitomi").strip().lower()
+    if normalized not in HITOMI_SERVER_IDS:
+        raise ValueError(
+            "Hitomi 수동 서버는 hitomi, exhentai 또는 ehentai여야 합니다."
+        )
+    return normalized
+
+
+def normalize_hitomi_server_priority(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidates = [part.strip().lower() for part in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        candidates = [str(part).strip().lower() for part in value]
+    else:
+        raise ValueError("Hitomi 서버 우선순위는 서버 ID 목록이어야 합니다.")
+    normalized = [candidate for candidate in candidates if candidate]
+    if len(normalized) != len(HITOMI_SERVER_IDS):
+        raise ValueError("Hitomi 서버 우선순위에는 서버 3개를 모두 한 번씩 넣어야 합니다.")
+    if len(set(normalized)) != len(normalized) or set(normalized) != set(
+        HITOMI_SERVER_IDS
+    ):
+        raise ValueError(
+            "Hitomi 서버 우선순위는 hitomi, exhentai, ehentai의 중복 없는 순서여야 합니다."
+        )
+    return normalized
+
+
+def hitomi_server_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    mode = normalize_hitomi_server_mode(source.get("hitomiServerMode"))
+    manual_server = normalize_hitomi_manual_server(source.get("hitomiManualServer"))
+    priority = normalize_hitomi_server_priority(
+        source.get("hitomiServerPriority", list(HITOMI_SERVER_IDS))
+    )
+    by_id = {item["id"]: item for item in HITOMI_SERVER_CATALOG}
+    return {
+        "ok": True,
+        "mode": mode,
+        "manualServer": manual_server,
+        "priority": priority,
+        "servers": [
+            {
+                "id": server_id,
+                "label": str(by_id[server_id]["label"]),
+                "providers": list(by_id[server_id]["providers"]),
+                "requiresAuthentication": bool(
+                    by_id[server_id]["requiresAuthentication"]
+                ),
+            }
+            for server_id in priority
+        ],
+        "networkRequested": False,
+    }
+
+
+def plan_hitomi_server(
+    reference: str | dict[str, Any],
+    *,
+    provider_hint: str = "auto",
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    inspected = (
+        dict(reference)
+        if isinstance(reference, dict)
+        else inspect_hitomi_reference(reference, provider_hint=provider_hint)
+    )
+    if not inspected.get("ok") or inspected.get("provider") not in {
+        "hitomi",
+        "exhentai",
+    }:
+        raise HitomiReferenceError(
+            "hitomi.invalid_reference_result",
+            "서버 계획에 사용할 Hitomi 분석 결과가 올바르지 않습니다.",
+        )
+    policy = hitomi_server_policy_snapshot(config)
+    by_id = {item["id"]: item for item in HITOMI_SERVER_CATALOG}
+    provider = str(inspected["provider"])
+    compatible = [
+        server_id
+        for server_id in policy["priority"]
+        if provider in by_id[server_id]["providers"]
+    ]
+    if policy["mode"] == "manual":
+        selected = str(policy["manualServer"])
+        if selected not in compatible:
+            raise HitomiReferenceError(
+                "hitomi.server_incompatible",
+                f"{selected} 서버는 {provider} 작품 URL과 호환되지 않습니다.",
+            )
+        candidates = [selected]
+        reason = "manual"
+    else:
+        candidates = compatible
+        reason = "priority"
+    if not candidates:
+        raise HitomiReferenceError(
+            "hitomi.no_compatible_server",
+            f"{provider} 작품에 사용할 수 있는 서버가 없습니다.",
+        )
+    return {
+        "ok": True,
+        "provider": provider,
+        "galleryId": str(inspected["galleryId"]),
+        "workKey": str(inspected["workKey"]),
+        "mode": policy["mode"],
+        "selectedServer": candidates[0],
+        "fallbackServers": candidates[1:],
+        "candidateServers": candidates,
+        "selectionReason": reason,
+        "requiresAuthentication": bool(
+            by_id[candidates[0]]["requiresAuthentication"]
+        ),
+        "networkRequested": False,
     }
 
 

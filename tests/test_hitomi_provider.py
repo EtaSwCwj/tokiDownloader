@@ -5,8 +5,12 @@ import unittest
 from hitomi_provider import (
     HitomiReferenceError,
     hitomi_provider_capabilities,
+    hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
+    normalize_hitomi_server_priority,
+    plan_hitomi_server,
 )
+from toki_core import default_config, normalize_config, validate_app_setting_updates
 
 
 class HitomiReferenceTests(unittest.TestCase):
@@ -71,6 +75,52 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertFalse(result["download"])
         self.assertFalse(result["authenticationBypass"])
         self.assertIn("exhentai.org", result["supportedHosts"])
+
+    def test_server_policy_normalizes_complete_unique_priority(self) -> None:
+        config = default_config()
+        self.assertEqual(config["hitomiServerMode"], "auto")
+        self.assertEqual(config["hitomiManualServer"], "hitomi")
+        self.assertEqual(
+            config["hitomiServerPriority"], ["hitomi", "exhentai", "ehentai"]
+        )
+        config["hitomiServerPriority"] = ["ehentai", "exhentai", "hitomi"]
+        policy = hitomi_server_policy_snapshot(config)
+        self.assertEqual(policy["priority"], ["ehentai", "exhentai", "hitomi"])
+        self.assertFalse(policy["networkRequested"])
+        with self.assertRaises(ValueError):
+            normalize_hitomi_server_priority("hitomi,hitomi,exhentai")
+        with self.assertRaises(ValueError):
+            validate_app_setting_updates(
+                {"hitomiServerPriority": ["hitomi", "exhentai"]}
+            )
+        migrated = normalize_config({"configVersion": 15})
+        self.assertEqual(migrated["hitomiServerMode"], "auto")
+
+    def test_server_plan_filters_priority_and_rejects_incompatible_manual_choice(self) -> None:
+        auto = {
+            **default_config(),
+            "hitomiServerPriority": ["ehentai", "exhentai", "hitomi"],
+        }
+        exhentai = plan_hitomi_server(
+            "https://exhentai.org/g/987654/abcdef1234/",
+            config=auto,
+        )
+        self.assertEqual(exhentai["selectedServer"], "ehentai")
+        self.assertEqual(exhentai["fallbackServers"], ["exhentai"])
+        self.assertFalse(exhentai["requiresAuthentication"])
+        self.assertFalse(exhentai["networkRequested"])
+
+        hitomi = plan_hitomi_server("123", config=auto)
+        self.assertEqual(hitomi["candidateServers"], ["hitomi"])
+
+        manual = {
+            **auto,
+            "hitomiServerMode": "manual",
+            "hitomiManualServer": "exhentai",
+        }
+        with self.assertRaises(HitomiReferenceError) as caught:
+            plan_hitomi_server("123", config=manual)
+        self.assertEqual(caught.exception.code, "hitomi.server_incompatible")
 
 
 if __name__ == "__main__":

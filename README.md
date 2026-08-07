@@ -128,6 +128,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi status --json
 .\toki-cli.cmd hitomi inspect --input "https://hitomi.la/manga/sample-1234567.html" --json
 .\toki-cli.cmd hitomi inspect --input "1234567" --provider hitomi --show-gui --json
+.\toki-cli.cmd hitomi server status --json
+.\toki-cli.cmd hitomi server set --mode auto --priority hitomi,exhentai,ehentai --json
+.\toki-cli.cmd hitomi server set --mode manual --manual-server ehentai --json
+.\toki-cli.cmd hitomi server plan --input "https://exhentai.org/g/987654/abcdef1234/" --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -713,6 +717,15 @@ ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에
 false`, `download: false`, `metadata: false`로 아직 연결되지 않은 범위를 명확히 표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
+
+설정 스키마 v16은 Hitomi 서버 방식을 `auto` 또는 `manual`로 저장합니다. 자동 방식은
+`hitomi`, `exhentai`, `ehentai` 세 서버의 중복 없는 전체 우선순위를 사용한 뒤 입력 URL의
+공급자와 호환되는 후보만 남깁니다. 수동 방식은 지정 서버 하나만 사용하며 Hitomi 작품에
+ExHentai 서버를 고르는 것처럼 호환되지 않는 조합은 `hitomi.server_incompatible`로
+거부합니다. `hitomi server status|set|plan`과 공급자 설정 탭의 방식·서버·드래그 우선순위가
+같은 정책을 사용하고, `plan`은 실제 접속 없이 선택 서버와 대체 후보를 계산합니다. 설정
+마이그레이션 후 기본값은 자동, 수동 후보 Hitomi.la, 순서 Hitomi.la → ExHentai → E-Hentai로
+복원됩니다. 화면은 `logs\hitomi-server-settings.png`에 저장됩니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

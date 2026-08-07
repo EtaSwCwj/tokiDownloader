@@ -512,6 +512,15 @@ status|inspect|close`, GUI 공급자 탭과 URL/ID 분석창, IPC·상태·캡�
 `logs/hitomi-provider-settings.png`에 보존했고 Python 207건, Node 16건, 자체 점검 5/5와
 필수 환경 5/5를 통과했다.
 
+2026-08-07 Hitomi 서버 정책: 설정 스키마 v16에 자동/수동 방식, 수동 서버와 Hitomi.la·
+ExHentai·E-Hentai 전체 우선순위를 추가했다. 서비스는 URL 분석 결과의 공급자와 호환되는
+후보만 남기고 자동이면 저장 순서, 수동이면 지정 서버 하나를 사용하며 잘못된 조합을
+`hitomi.server_incompatible`로 거부한다. `hitomi server status|set|plan`, GUI 공급자 탭의
+방식·서버·드래그 우선순위와 `status --json`이 같은 서비스를 사용한다. 실제 외부 접속 없이
+CLI로 실행 중 GUI의 수동 E-Hentai 정책과 순서를 검증한 뒤 기본 자동·Hitomi.la→ExHentai→
+E-Hentai로 복원했다. `logs/hitomi-server-settings.png`를 확인했고 Python 209건, Node 16건,
+자체 점검 5/5와 필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와
