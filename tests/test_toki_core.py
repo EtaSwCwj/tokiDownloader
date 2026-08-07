@@ -28,6 +28,7 @@ from toki_core import (
     completion_action_plan,
     cookie_import_plan,
     clear_provider_cookies,
+    clear_proxy_credentials,
     create_work_collection,
     count_jobs,
     count_runs,
@@ -37,6 +38,7 @@ from toki_core import (
     delete_job_record,
     delete_job_records,
     downloader_event_update_policy,
+    downloader_environment_overrides,
     export_diagnostics,
     export_jobs_snapshot,
     export_provider_cookies,
@@ -87,6 +89,7 @@ from toki_core import (
     public_ip_check_plan,
     lookup_public_ip,
     provider_cookie_status,
+    proxy_credential_status,
     read_run_log,
     rebuild_job_metadata,
     rename_work_collection,
@@ -107,6 +110,7 @@ from toki_core import (
     set_process_tree_paused,
     should_auto_retry,
     settings_snapshot,
+    store_proxy_credentials,
     thumbnail_cache_path,
     update_app_settings,
     update_job_note,
@@ -117,6 +121,49 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_proxy_credentials_use_injected_vault_and_only_reach_matching_runtime(self) -> None:
+        class MemoryCredentialBackend:
+            def __init__(self) -> None:
+                self.values: dict[tuple[str, str], str] = {}
+
+            def set_password(self, service: str, username: str, value: str) -> None:
+                self.values[(service, username)] = value
+
+            def get_password(self, service: str, username: str) -> str | None:
+                return self.values.get((service, username))
+
+            def delete_password(self, service: str, username: str) -> None:
+                self.values.pop((service, username), None)
+
+        backend = MemoryCredentialBackend()
+        proxy_url = "socks5://127.0.0.1:1080"
+        stored = store_proxy_credentials(
+            proxy_url,
+            "proxy-user",
+            "secret-password",
+            backend=backend,
+        )
+        self.assertTrue(stored["stored"])
+        self.assertFalse(stored["valuesExposed"])
+        self.assertNotIn("secret-password", json.dumps(stored))
+        status = proxy_credential_status(proxy_url, backend=backend)
+        self.assertTrue(status["matchesConfiguredProxy"])
+        self.assertEqual(status["username"], "proxy-user")
+        self.assertNotIn("secret-password", json.dumps(status))
+        config = default_config()
+        config["proxyUrl"] = proxy_url
+        self.assertEqual(
+            downloader_environment_overrides(config, backend=backend),
+            {
+                "TOKI_PROXY_USERNAME": "proxy-user",
+                "TOKI_PROXY_PASSWORD": "secret-password",
+            },
+        )
+        config["proxyUrl"] = "http://127.0.0.1:8080"
+        self.assertEqual(downloader_environment_overrides(config, backend=backend), {})
+        self.assertTrue(clear_proxy_credentials(backend=backend)["cleared"])
+        self.assertFalse(proxy_credential_status(proxy_url, backend=backend)["stored"])
+
     def test_cookie_import_status_export_and_clear_use_injected_secure_backend(self) -> None:
         class MemoryCredentialBackend:
             def __init__(self) -> None:

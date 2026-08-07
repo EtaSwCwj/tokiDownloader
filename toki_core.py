@@ -54,6 +54,7 @@ _WINDOWS_INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 NETWORK_PROVIDERS = ("manatoki", "newtoki", "booktoki")
 PUBLIC_IP_ENDPOINT = "https://api.ipify.org?format=json"
 CREDENTIAL_SERVICE = "tokiDownloader"
+PROXY_CREDENTIAL_KEY = "proxy:credentials"
 MAX_COOKIE_IMPORT_BYTES = 5 * 1024 * 1024
 MAX_COOKIE_COUNT = 10_000
 JOB_DB_MIGRATIONS = {
@@ -713,6 +714,136 @@ def _credential_backend(backend: Any | None = None) -> Any:
     if not status["available"]:
         raise RuntimeError("사용 가능한 OS 자격 증명 저장소가 없습니다.")
     return keyring
+
+
+def _normalize_proxy_credentials(
+    proxy_url: str,
+    username: str,
+    password: str,
+) -> dict[str, str]:
+    normalized_proxy = normalize_proxy_url(proxy_url)
+    normalized_username = str(username or "").strip()
+    normalized_password = str(password or "")
+    if not normalized_proxy:
+        raise ValueError("프록시 주소를 먼저 설정해주세요.")
+    if not normalized_username or not normalized_password:
+        raise ValueError("프록시 사용자명과 비밀번호를 모두 입력해주세요.")
+    if any(ord(char) < 32 for char in normalized_username):
+        raise ValueError("프록시 사용자명에는 제어 문자를 사용할 수 없습니다.")
+    if len(normalized_username) > 512 or len(normalized_password) > 4096:
+        raise ValueError("프록시 인증 정보가 안전 길이 한도를 초과합니다.")
+    return {
+        "proxyUrl": normalized_proxy,
+        "username": normalized_username,
+        "password": normalized_password,
+    }
+
+
+def store_proxy_credentials(
+    proxy_url: str,
+    username: str,
+    password: str,
+    *,
+    backend: Any | None = None,
+) -> dict[str, Any]:
+    credentials = _normalize_proxy_credentials(proxy_url, username, password)
+    payload = {
+        "format": "tokiDownloader-proxy-credentials",
+        "formatVersion": 1,
+        **credentials,
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    store = _credential_backend(backend)
+    store.set_password(
+        CREDENTIAL_SERVICE,
+        PROXY_CREDENTIAL_KEY,
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+    return {
+        "stored": True,
+        "proxyUrl": credentials["proxyUrl"],
+        "username": credentials["username"],
+        "updatedAt": payload["updatedAt"],
+        "valuesExposed": False,
+        "executed": True,
+    }
+
+
+def _load_proxy_credential_payload(backend: Any | None = None) -> dict[str, str] | None:
+    store = _credential_backend(backend)
+    secret = store.get_password(CREDENTIAL_SERVICE, PROXY_CREDENTIAL_KEY)
+    if not secret:
+        return None
+    try:
+        payload = json.loads(secret)
+        normalized = _normalize_proxy_credentials(
+            str(payload.get("proxyUrl") or ""),
+            str(payload.get("username") or ""),
+            str(payload.get("password") or ""),
+        )
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("OS 보안 저장소의 프록시 인증 정보가 손상되었습니다.") from error
+    return {
+        **normalized,
+        "updatedAt": str(payload.get("updatedAt") or ""),
+    }
+
+
+def proxy_credential_status(
+    proxy_url: str = "",
+    *,
+    backend: Any | None = None,
+) -> dict[str, Any]:
+    configured_proxy = normalize_proxy_url(proxy_url)
+    payload = _load_proxy_credential_payload(backend)
+    stored_proxy = str(payload.get("proxyUrl") or "") if payload else ""
+    return {
+        "stored": payload is not None,
+        "proxyUrl": stored_proxy,
+        "username": str(payload.get("username") or "") if payload else "",
+        "updatedAt": str(payload.get("updatedAt") or "") if payload else "",
+        "matchesConfiguredProxy": bool(
+            payload and configured_proxy and stored_proxy == configured_proxy
+        ),
+        "configuredProxyUrl": configured_proxy,
+        "valuesExposed": False,
+    }
+
+
+def clear_proxy_credentials(*, backend: Any | None = None) -> dict[str, Any]:
+    store = _credential_backend(backend)
+    existing = store.get_password(CREDENTIAL_SERVICE, PROXY_CREDENTIAL_KEY)
+    if existing:
+        try:
+            store.delete_password(CREDENTIAL_SERVICE, PROXY_CREDENTIAL_KEY)
+        except Exception as error:
+            if type(error).__name__ != "PasswordDeleteError":
+                raise
+    return {
+        "cleared": bool(existing),
+        "executed": True,
+    }
+
+
+def downloader_environment_overrides(
+    config: dict[str, Any] | None = None,
+    *,
+    backend: Any | None = None,
+) -> dict[str, str]:
+    source = normalize_config(config) if config is not None else load_config()
+    configured_proxy = normalize_proxy_url(source.get("proxyUrl"))
+    if not configured_proxy:
+        return {}
+    try:
+        payload = _load_proxy_credential_payload(backend)
+    except RuntimeError:
+        return {}
+    if not payload or payload["proxyUrl"] != configured_proxy:
+        return {}
+    return {
+        "TOKI_PROXY_USERNAME": payload["username"],
+        "TOKI_PROXY_PASSWORD": payload["password"],
+    }
 
 
 def _normalize_cookie(cookie: dict[str, Any]) -> dict[str, Any]:

@@ -22,6 +22,7 @@ from PyQt6.QtCore import (
     QObject,
     QPoint,
     QProcess,
+    QProcessEnvironment,
     QRect,
     QRunnable,
     QSize,
@@ -105,6 +106,7 @@ from toki_core import (
     build_job_list_view_state,
     build_work_key,
     build_downloader_args,
+    clear_proxy_credentials,
     completion_action_plan,
     cookie_import_plan,
     credential_store_status,
@@ -119,6 +121,7 @@ from toki_core import (
     delete_job_records,
     dependency_diagnostics,
     downloader_event_update_policy,
+    downloader_environment_overrides,
     error_category_label,
     export_diagnostics,
     export_jobs_snapshot,
@@ -139,6 +142,7 @@ from toki_core import (
     menu_action_availability,
     quick_action_catalog,
     provider_cookie_status,
+    proxy_credential_status,
     load_ui_strings,
     lookup_public_ip,
     load_config,
@@ -177,6 +181,7 @@ from toki_core import (
     save_jobs,
     save_runs,
     settings_snapshot,
+    store_proxy_credentials,
     set_job_pause_state,
     set_process_tree_paused,
     retry_backoff_seconds,
@@ -218,6 +223,7 @@ class HiddenProcess(QObject):
         self._working_directory = str(ROOT_DIR)
         self._program = ""
         self._arguments: list[str] = []
+        self._environment_overrides: dict[str, str] = {}
         self._process: subprocess.Popen[bytes] | None = None
         self._stdout = bytearray()
         self._stderr = bytearray()
@@ -236,6 +242,9 @@ class HiddenProcess(QObject):
     def setArguments(self, arguments: list[str]) -> None:
         self._arguments = list(arguments)
 
+    def setEnvironmentOverrides(self, values: dict[str, str]) -> None:
+        self._environment_overrides = dict(values)
+
     def start(self) -> None:
         try:
             self._process = subprocess.Popen(
@@ -244,6 +253,7 @@ class HiddenProcess(QObject):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env={**os.environ, **self._environment_overrides},
                 **hidden_process_options(),
             )
         except OSError as error:
@@ -1756,6 +1766,144 @@ class CompletionCountdownDialog(QDialog):
         }
 
 
+class ProxyCredentialDialog(QDialog):
+    def __init__(self, owner: "MainWindow") -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.proxy_url = str(owner.config.get("proxyUrl") or "")
+        self.setWindowTitle("프록시 인증 관리")
+        self.resize(640, 360)
+        layout = QVBoxLayout(self)
+        warning = QLabel(
+            "프록시 사용자명과 비밀번호는 설정 파일에 저장하지 않고 Windows 자격 증명 저장소에만 보관합니다. 상태 읽기·저장·삭제마다 다시 확인합니다."
+        )
+        warning.setWordWrap(True)
+        layout.addWidget(warning)
+        form = QFormLayout()
+        proxy_label = QLabel(self.proxy_url or "설정된 프록시 없음")
+        proxy_label.setWordWrap(True)
+        form.addRow("현재 프록시", proxy_label)
+        capability = credential_store_status()
+        backend_text = (
+            f"사용 가능 · {capability['backend']}"
+            if capability["available"]
+            else "사용 불가 · requirements-security.txt 설치 필요"
+        )
+        backend_label = QLabel(backend_text)
+        backend_label.setWordWrap(True)
+        form.addRow("OS 보안 저장소", backend_label)
+        self.username_edit = QLineEdit()
+        self.username_edit.setPlaceholderText("프록시 사용자명")
+        form.addRow("사용자명", self.username_edit)
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit.setPlaceholderText("저장 후 화면과 로그에 표시하지 않음")
+        form.addRow("비밀번호", self.password_edit)
+        self.summary_label = QLabel("인증 상태를 아직 읽지 않았습니다.")
+        self.summary_label.setWordWrap(True)
+        form.addRow("현재 상태", self.summary_label)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        status_button = QPushButton("상태 읽기")
+        status_button.setToolTip("CLI: proxy-auth status --yes")
+        status_button.clicked.connect(self._read_status)
+        save_button = QPushButton("안전하게 저장...")
+        save_button.setToolTip(
+            "CLI: proxy-auth set --username USER --password-stdin --yes"
+        )
+        save_button.clicked.connect(self._save)
+        clear_button = QPushButton("저장 정보 삭제...")
+        clear_button.setToolTip("CLI: proxy-auth clear --yes")
+        clear_button.clicked.connect(self._clear)
+        for button in (status_button, save_button, clear_button):
+            button.setEnabled(bool(capability["available"]))
+            actions.addWidget(button)
+        save_button.setEnabled(bool(capability["available"] and self.proxy_url))
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        note = QLabel(
+            "인증 정보는 저장 당시 프록시 주소와 정확히 일치할 때만 다운로드 자식 프로세스에 전달됩니다. 명령행 인자에는 포함하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+    def _confirm(self, title: str, message: str) -> bool:
+        return QMessageBox.question(self, title, message) == QMessageBox.StandardButton.Yes
+
+    def _read_status(self) -> None:
+        if not self._confirm(
+            "프록시 인증 상태 읽기",
+            "Windows 자격 증명 저장소에서 프록시 인증 메타데이터를 읽을까요? 비밀번호는 표시하지 않습니다.",
+        ):
+            return
+        try:
+            status = proxy_credential_status(self.proxy_url)
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "프록시 인증 상태를 읽을 수 없음", str(error))
+            return
+        self.username_edit.setText(str(status.get("username") or ""))
+        self.password_edit.clear()
+        if not status["stored"]:
+            summary = "저장된 프록시 인증 정보가 없습니다."
+        elif status["matchesConfiguredProxy"]:
+            summary = f"현재 프록시에 연결됨 · 사용자명 {status['username']} · 비밀번호 숨김"
+        else:
+            summary = "다른 프록시 주소에 묶인 인증 정보가 저장되어 있어 현재 다운로드에는 사용하지 않습니다."
+        self.summary_label.setText(summary)
+
+    def _save(self) -> None:
+        if not self._confirm(
+            "프록시 인증 저장",
+            "입력한 사용자명과 비밀번호를 Windows 자격 증명 저장소에 저장할까요?",
+        ):
+            return
+        try:
+            result = store_proxy_credentials(
+                self.proxy_url,
+                self.username_edit.text(),
+                self.password_edit.text(),
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "프록시 인증을 저장할 수 없음", str(error))
+            return
+        self.password_edit.clear()
+        self.summary_label.setText(
+            f"현재 프록시에 안전하게 저장됨 · 사용자명 {result['username']} · 비밀번호 숨김"
+        )
+
+    def _clear(self) -> None:
+        if not self._confirm(
+            "프록시 인증 삭제",
+            "Windows 자격 증명 저장소의 프록시 인증 정보를 삭제할까요? 되돌릴 수 없습니다.",
+        ):
+            return
+        try:
+            result = clear_proxy_credentials()
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "프록시 인증을 삭제할 수 없음", str(error))
+            return
+        self.username_edit.clear()
+        self.password_edit.clear()
+        self.summary_label.setText(
+            "저장된 인증 정보를 삭제했습니다."
+            if result["cleared"]
+            else "저장된 인증 정보가 없습니다."
+        )
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "proxyConfigured": bool(self.proxy_url),
+            "statusRead": "아직" not in self.summary_label.text(),
+            "passwordExposed": False,
+        }
+
+
 class CookieManagerDialog(QDialog):
     def __init__(self, owner: "MainWindow") -> None:
         super().__init__(owner)
@@ -2021,6 +2169,11 @@ class SettingsDialog(QDialog):
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setPlaceholderText("사용 안 함 · 예: http://127.0.0.1:8080")
         network_form.addRow("프록시", self.proxy_edit)
+        proxy_auth_button = QPushButton("프록시 인증 관리...")
+        proxy_auth_button.setToolTip("CLI: proxy-auth manage --show-gui")
+        proxy_auth_button.clicked.connect(owner.show_proxy_credential_manager)
+        proxy_auth_button.setEnabled(bool(credential_store_status()["available"]))
+        network_form.addRow("선택적 인증", proxy_auth_button)
         self.speed_limit_spin = QSpinBox()
         self.speed_limit_spin.setRange(0, 1_048_576)
         self.speed_limit_spin.setSpecialValueText("무제한")
@@ -2785,6 +2938,7 @@ class MainWindow(QMainWindow):
             ImageConversionProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
+        self.active_proxy_credential_dialog: ProxyCredentialDialog | None = None
         self.active_cookie_manager_dialog: CookieManagerDialog | None = None
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
         self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
@@ -4215,6 +4369,16 @@ class MainWindow(QMainWindow):
                 network_config=getattr(self, "config", {}),
             )
         )
+        environment_overrides = downloader_environment_overrides(
+            getattr(self, "config", {})
+        )
+        if isinstance(process, HiddenProcess):
+            process.setEnvironmentOverrides(environment_overrides)
+        elif environment_overrides:
+            environment = QProcessEnvironment.systemEnvironment()
+            for key, value in environment_overrides.items():
+                environment.insert(key, value)
+            process.setProcessEnvironment(environment)
         process.readyReadStandardOutput.connect(
             lambda job_id=context.job.job_id: self._read_stdout(job_id)
         )
@@ -4776,6 +4940,26 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        return True
+
+    def show_proxy_credential_manager(self) -> bool:
+        if self.active_proxy_credential_dialog:
+            self.active_proxy_credential_dialog.close()
+        dialog = ProxyCredentialDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(
+            lambda _object=None: setattr(self, "active_proxy_credential_dialog", None)
+        )
+        self.active_proxy_credential_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_proxy_credential_manager(self) -> bool:
+        if not self.active_proxy_credential_dialog:
+            return False
+        self.active_proxy_credential_dialog.close()
         return True
 
     def close_cookie_manager(self) -> bool:
@@ -6596,6 +6780,11 @@ class MainWindow(QMainWindow):
         elif self.active_performance_dialog and self.active_performance_dialog.isVisible():
             screenshot = self.active_performance_dialog.grab()
         elif (
+            self.active_proxy_credential_dialog
+            and self.active_proxy_credential_dialog.isVisible()
+        ):
+            screenshot = self.active_proxy_credential_dialog.grab()
+        elif (
             self.active_cookie_manager_dialog
             and self.active_cookie_manager_dialog.isVisible()
         ):
@@ -7291,6 +7480,16 @@ class MainWindow(QMainWindow):
                 if self.active_cookie_manager_dialog
                 else {"open": False, "provider": "", "statusRead": False}
             ),
+            "proxyCredentialManager": (
+                self.active_proxy_credential_dialog.state_snapshot()
+                if self.active_proxy_credential_dialog
+                else {
+                    "open": False,
+                    "proxyConfigured": False,
+                    "statusRead": False,
+                    "passwordExposed": False,
+                }
+            ),
             "jobsSnapshotDialogOpen": bool(
                 self.active_jobs_snapshot_dialog
                 and self.active_jobs_snapshot_dialog.isVisible()
@@ -7599,6 +7798,10 @@ class MainWindow(QMainWindow):
             }
         if action == "close_cookie_manager":
             return {"closed": self.close_cookie_manager()}
+        if action == "show_proxy_credential_manager":
+            return {"shown": self.show_proxy_credential_manager()}
+        if action == "close_proxy_credential_manager":
+            return {"closed": self.close_proxy_credential_manager()}
         if action == "preview_completion_action":
             return self.preview_completion_action(
                 str(request.get("completionAction") or "exit"),

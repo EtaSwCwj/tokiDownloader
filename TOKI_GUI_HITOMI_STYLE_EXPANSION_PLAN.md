@@ -341,7 +341,7 @@ GUI를 동일하게 검증한다. 시스템 종료 미리보기는 `executed: fa
 - [ ] 선택형 내장 브라우저
 - [x] 쿠키 보기·가져오기·내보내기·초기화
 - [x] 전역 작품 동시 수와 작업별 이미지 연결 수
-- [ ] HTTP/SOCKS 프록시와 선택적 인증
+- [x] HTTP/SOCKS 프록시와 선택적 인증
 - [x] 전역 다운로드 속도 제한
 - [ ] 공인 IP 확인
 - [x] 공급자별 백오프, 속도 제한과 차단 감지
@@ -376,6 +376,19 @@ URL은 평문 저장 방지를 위해 거부하므로 `HTTP/SOCKS 프록시와 �
 `cookies manage --show-gui`로 값 조회 전 상태를 `logs/cookie-manager-vault-gui.png`에
 캡처했으며 실제 사용자 쿠키는 읽거나 쓰거나 삭제하지 않았다. Python 164건과 Node
 13건을 통과했다.
+
+2026-08-07 프록시 선택적 인증 구현: 프록시 주소는 기존처럼 인증 정보 없는 URL만
+`config.json`에 저장하고 사용자명·비밀번호는 해당 정규화 주소와 함께 Windows 자격 증명
+저장소의 `tokiDownloader` 서비스에만 보관한다. `proxy-auth capabilities|status|set|clear|manage`
+CLI와 네트워크 설정의 인증 관리 창을 연결했으며 읽기·쓰기·삭제는 `--yes` 또는 GUI 재확인을
+요구한다. 비밀번호는 표준 입력 또는 마스킹 입력으로만 받고 CLI 인자·설정·DB·로그·상태
+JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프록시와 정확히 일치할 때만 자식
+프로세스 환경으로 전달하며 이미지 요청은 `proxy-agent`, 브라우저는 Chrome 인증 이벤트 중
+출처가 `Proxy`인 도전에만 응답해 사이트 자체 인증에는 프록시 비밀번호를 보내지 않는다.
+외부망 없이 임시 로컬 HTTP Basic 및 SOCKS5 사용자명·비밀번호 서버를 실제 통과하는 테스트를
+완료했다. `logs/proxy-auth-vault-gui.png`는 값과 상태를 읽기 전 화면으로 자체 캡처했고
+`passwordExposed: false`를 확인했으며 실제 Windows 저장소에는 테스트 자격증명을 쓰거나
+삭제하지 않았다. 검증 후 프록시 없음으로 복원했고 Python 167건과 Node 16건을 통과했다.
 
 공인 IP 확인은 `public-ip plan`과 주입 응답 단위 테스트, GUI 확인 절차까지 구현했다. 실제
 `api.ipify.org` 요청은 외부 API 승인 전에는 실행하지 않으므로 해당 체크박스는 보류한다.

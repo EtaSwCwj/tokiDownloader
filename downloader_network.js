@@ -26,6 +26,39 @@ function normalizeProxyUrl(value) {
     return parsed.toString().replace(/\/$/, '');
 }
 
+function proxyCredentialsFromEnvironment(environment = process.env) {
+    const username = String(environment.TOKI_PROXY_USERNAME ?? '').trim();
+    const password = String(environment.TOKI_PROXY_PASSWORD ?? '');
+    if (!username && !password)
+        return { username: '', password: '', configured: false };
+    if (!username || !password)
+        throw new Error('프록시 사용자명과 비밀번호 환경값이 모두 필요합니다.');
+    if (username.length > 512 || password.length > 4096 || /[\x00-\x1f]/.test(username))
+        throw new Error('프록시 인증 정보가 안전 한도를 벗어났습니다.');
+    return { username, password, configured: true };
+}
+
+function authenticatedProxyUrl(proxyUrl, credentials) {
+    const normalized = normalizeProxyUrl(proxyUrl);
+    if (!normalized || !credentials?.configured)
+        return normalized;
+    const parsed = new URL(normalized);
+    parsed.username = String(credentials.username);
+    parsed.password = String(credentials.password);
+    return parsed.toString().replace(/\/$/, '');
+}
+
+function proxyAuthenticationResponse(challenge, credentials, attempted = false) {
+    const proxyChallenge = String(challenge?.source ?? '').toLowerCase() === 'proxy';
+    if (!proxyChallenge || !credentials?.configured || attempted)
+        return { response: 'CancelAuth' };
+    return {
+        response: 'ProvideCredentials',
+        username: String(credentials.username),
+        password: String(credentials.password),
+    };
+}
+
 function normalizeSpeedLimitKib(value) {
     const limit = Number(value ?? 0);
     if (!Number.isInteger(limit) || (limit !== 0 && (limit < 32 || limit > 1048576)))
@@ -90,6 +123,9 @@ export {
     SUPPORTED_PROXY_PROTOCOLS,
     bandwidthDelayMs,
     normalizeProxyUrl,
+    authenticatedProxyUrl,
+    proxyAuthenticationResponse,
+    proxyCredentialsFromEnvironment,
     normalizeRequestDelayMs,
     normalizeSpeedLimitKib,
 };

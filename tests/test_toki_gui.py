@@ -379,6 +379,25 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(closed, {"closed": True})
         self.assertEqual(calls, [("show", "manatoki"), ("close",)])
 
+    def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:
+        calls = []
+        harness = type("ProxyCredentialIpcHarness", (), {})()
+        harness.show_proxy_credential_manager = (
+            lambda: calls.append(("show",)) or True
+        )
+        harness.close_proxy_credential_manager = (
+            lambda: calls.append(("close",)) or True
+        )
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_proxy_credential_manager"}
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_proxy_credential_manager"}
+        )
+        self.assertEqual(shown, {"shown": True})
+        self.assertEqual(closed, {"closed": True})
+        self.assertEqual(calls, [("show",), ("close",)])
+
     def test_settings_import_ipc_applies_executed_values_to_live_gui(self) -> None:
         applied = []
         harness = type("SettingsImportHarness", (), {})()

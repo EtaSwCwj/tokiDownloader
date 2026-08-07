@@ -145,7 +145,7 @@ def _check_node_tests() -> dict[str, Any]:
     )
     if completed.returncode:
         raise RuntimeError(output or f"종료 코드 {completed.returncode}")
-    return {"detail": "다운로더 JavaScript 테스트 13건 통과", "tests": 13}
+    return {"detail": "다운로더 JavaScript 테스트 16건 통과", "tests": 16}
 
 
 def _check_unit_tests() -> dict[str, Any]:

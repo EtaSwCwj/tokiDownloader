@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import subprocess
@@ -29,6 +30,7 @@ from toki_core import (
     assign_job_to_collection,
     build_job_list_view_state,
     build_downloader_args,
+    clear_proxy_credentials,
     browser_launch_policy,
     clear_log_file,
     cleanup_thumbnail_cache,
@@ -52,6 +54,7 @@ from toki_core import (
     dependency_diagnostics,
     database_schema_status,
     downloader_event_update_policy,
+    downloader_environment_overrides,
     error_category_label,
     export_diagnostics,
     export_app_settings,
@@ -86,6 +89,7 @@ from toki_core import (
     public_ip_check_plan,
     lookup_public_ip,
     provider_cookie_status,
+    proxy_credential_status,
     plan_image_conversion,
     update_job_markers,
     open_in_explorer,
@@ -102,6 +106,7 @@ from toki_core import (
     save_config,
     save_jobs,
     settings_snapshot,
+    store_proxy_credentials,
     should_auto_retry,
     update_app_settings,
     update_job_note,
@@ -269,13 +274,20 @@ def run_direct_download(args: argparse.Namespace) -> int:
             network_config=config,
         ),
     ]
+    runtime_environment = dict(os.environ)
+    runtime_environment.update(downloader_environment_overrides(config))
     for attempt in range(1, job.retry_limit + 2):
         job.attempt_count = attempt
         append_log(
             f"직접 CLI 실행 {attempt}/{job.retry_limit + 1}: {command}",
             job_id="direct",
         )
-        completed = subprocess.run(command, cwd=str(ROOT_DIR), check=False)
+        completed = subprocess.run(
+            command,
+            cwd=str(ROOT_DIR),
+            check=False,
+            env=runtime_environment,
+        )
         append_log(
             f"직접 CLI 종료 코드: {completed.returncode}", job_id="direct"
         )
@@ -985,6 +997,47 @@ def build_parser() -> argparse.ArgumentParser:
     network_set.add_argument("--request-delay-ms", type=int)
     network_set.add_argument("--backoff", type=int)
     network_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    proxy_auth = subparsers.add_parser(
+        "proxy-auth", help="OS 보안 저장소의 프록시 인증 관리"
+    )
+    proxy_auth_commands = proxy_auth.add_subparsers(
+        dest="proxy_auth_command", required=True
+    )
+    proxy_auth_capabilities = proxy_auth_commands.add_parser(
+        "capabilities", help="보안 저장소 상태"
+    )
+    proxy_auth_capabilities.add_argument("--json", action="store_true", help="JSON으로 출력")
+    proxy_auth_status = proxy_auth_commands.add_parser(
+        "status", help="저장된 프록시 인증 메타데이터"
+    )
+    proxy_auth_status.add_argument("--proxy", help="일치 여부를 확인할 프록시 URL")
+    proxy_auth_status.add_argument("--yes", action="store_true", help="보안 저장소 읽기 확인")
+    proxy_auth_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    proxy_auth_set = proxy_auth_commands.add_parser(
+        "set", help="프록시 인증을 OS 보안 저장소에 저장"
+    )
+    proxy_auth_set.add_argument("--proxy", help="인증을 묶을 프록시 URL; 생략 시 현재 설정")
+    proxy_auth_set.add_argument("--username", required=True)
+    proxy_auth_set.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="대화형 입력 대신 표준 입력 첫 줄에서 비밀번호 읽기",
+    )
+    proxy_auth_set.add_argument("--yes", action="store_true", help="민감 정보 저장 확인")
+    proxy_auth_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    proxy_auth_clear = proxy_auth_commands.add_parser(
+        "clear", help="저장된 프록시 인증 삭제"
+    )
+    proxy_auth_clear.add_argument("--yes", action="store_true", help="삭제 확인")
+    proxy_auth_clear.add_argument("--json", action="store_true", help="JSON으로 출력")
+    proxy_auth_manage = proxy_auth_commands.add_parser(
+        "manage", help="GUI 프록시 인증 창 제어"
+    )
+    proxy_auth_manage_window = proxy_auth_manage.add_mutually_exclusive_group(required=True)
+    proxy_auth_manage_window.add_argument("--show-gui", action="store_true")
+    proxy_auth_manage_window.add_argument("--close", action="store_true")
+    proxy_auth_manage.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     public_ip = subparsers.add_parser("public-ip", help="외부 서비스로 공인 IP 확인")
     public_ip_commands = public_ip.add_subparsers(dest="public_ip_command", required=True)
@@ -2629,6 +2682,46 @@ def run_cli(args: argparse.Namespace) -> int:
                     f"{provider}: 간격 {policy['requestDelayMs']}ms · "
                     f"백오프 {policy['backoffSeconds']}초"
                 )
+        return 0
+    if command == "proxy-auth":
+        subcommand = args.proxy_auth_command
+        if subcommand == "manage":
+            ensure_gui_running()
+            result = control_request(
+                {"action": "close_proxy_credential_manager"}
+                if args.close
+                else {"action": "show_proxy_credential_manager"}
+            )
+        elif subcommand == "capabilities":
+            result = credential_store_status()
+        else:
+            if not args.yes:
+                raise ControlError(
+                    "프록시 인증은 민감 정보입니다. OS 보안 저장소 읽기·쓰기·삭제를 실행하려면 --yes가 필요합니다."
+                )
+            current_proxy = str(settings_snapshot().get("proxyUrl") or "")
+            if subcommand == "status":
+                result = proxy_credential_status(args.proxy or current_proxy)
+            elif subcommand == "set":
+                proxy_url = str(args.proxy or current_proxy)
+                if not proxy_url:
+                    raise ControlError("프록시 주소를 먼저 설정하거나 --proxy를 지정해주세요.")
+                password = (
+                    sys.stdin.readline().rstrip("\r\n")
+                    if args.password_stdin
+                    else getpass.getpass("프록시 비밀번호: ")
+                )
+                result = store_proxy_credentials(
+                    proxy_url,
+                    args.username,
+                    password,
+                )
+            else:
+                result = clear_proxy_credentials()
+        if args.json:
+            print_json(result)
+        else:
+            print_json(result)
         return 0
     if command == "public-ip":
         if args.public_ip_command == "plan":

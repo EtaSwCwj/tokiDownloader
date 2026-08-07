@@ -14,9 +14,12 @@ import {
 import {
     GlobalBandwidthLimiter,
     RequestPacer,
+    authenticatedProxyUrl,
     normalizeProxyUrl,
     normalizeRequestDelayMs,
     normalizeSpeedLimitKib,
+    proxyAuthenticationResponse,
+    proxyCredentialsFromEnvironment,
 } from './downloader_network.js';
 
 let info = {
@@ -38,6 +41,8 @@ let info = {
     imageConcurrency: 5,
     scanMode: '',
     proxyUrl: '',
+    proxyCredentials: { username: '', password: '', configured: false },
+    authenticatedProxyUrl: '',
     speedLimitKib: 0,
     requestDelayMs: 0,
     providerBackoffSeconds: 2,
@@ -222,9 +227,41 @@ function analyseArguments() {
 function configureNetworkRuntime() {
     bandwidthLimiter = new GlobalBandwidthLimiter(info.speedLimitKib);
     requestPacer = new RequestPacer(info.requestDelayMs);
+    info.proxyCredentials = proxyCredentialsFromEnvironment();
+    info.authenticatedProxyUrl = authenticatedProxyUrl(
+        info.proxyUrl,
+        info.proxyCredentials,
+    );
     outboundProxyAgent = info.proxyUrl
-        ? new ProxyAgent({ getProxyForUrl: () => info.proxyUrl })
+        ? new ProxyAgent({ getProxyForUrl: () => info.authenticatedProxyUrl })
         : null;
+}
+async function installProxyAuthentication(page) {
+    if (!info.proxyCredentials.configured)
+        return null;
+    const client = typeof page.createCDPSession === 'function'
+        ? await page.createCDPSession()
+        : await page.target().createCDPSession();
+    const attemptedRequests = new Set();
+    client.on('Fetch.requestPaused', event => {
+        client.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+    });
+    client.on('Fetch.authRequired', event => {
+        const attempted = attemptedRequests.has(event.requestId);
+        if (String(event.authChallenge?.source ?? '').toLowerCase() === 'proxy')
+            attemptedRequests.add(event.requestId);
+        const authChallengeResponse = proxyAuthenticationResponse(
+            event.authChallenge,
+            info.proxyCredentials,
+            attempted,
+        );
+        client.send('Fetch.continueWithAuth', {
+            requestId: event.requestId,
+            authChallengeResponse,
+        }).catch(() => {});
+    });
+    await client.send('Fetch.enable', { handleAuthRequests: true });
+    return client;
 }
 function buildContentFolderName(metadata) {
     return renderFolderTemplate(info.folderTemplate, metadata);
@@ -399,6 +436,7 @@ async function main() {
         disableXvfb: false, //화면을 볼것인지
     })
     try {
+        await installProxyAuthentication(page);
         // await page.goto('https://booktoki350.com/');
         await requestPacer.wait();
         await Promise.all([page.waitForNavigation(), page.goto(info.url)]);

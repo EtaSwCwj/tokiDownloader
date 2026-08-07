@@ -208,6 +208,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd browser-mode set headless --json
 .\toki-cli.cmd network-policy status --url "https://newtoki1.org/manhwa/34360" --json
 .\toki-cli.cmd network-policy set --speed-limit-kib 2048 --provider manatoki --request-delay-ms 250 --backoff 4 --json
+.\toki-cli.cmd proxy-auth capabilities --json
+.\toki-cli.cmd proxy-auth status --yes --json
+"비밀번호" | .\toki-cli.cmd proxy-auth set --username "proxy-user" --password-stdin --yes --json
+.\toki-cli.cmd proxy-auth clear --yes --json
+.\toki-cli.cmd proxy-auth manage --show-gui --json
 .\toki-cli.cmd public-ip plan --json
 .\toki-cli.cmd public-ip check --yes --json
 .\toki-cli.cmd cookies capabilities --json
@@ -301,8 +306,13 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 마나토끼·뉴토끼·북토끼별 최소 요청 간격·지수 백오프를 관리합니다. 속도 0은 무제한이고
 그 외에는 32~1048576 KiB/s입니다. 대역폭 제한기는 동시 이미지 스레드 전체가 하나의
 스케줄을 공유하므로 연결 수만큼 제한이 배로 늘지 않습니다. 프록시는 브라우저 탐색과 별도
-이미지 요청에 함께 적용됩니다. 사용자명·비밀번호가 든 URL은 평문 저장을 막기 위해 현재
-거부하며, 인증 프록시는 OS 보안 저장소 기능이 추가된 뒤 활성화합니다.
+이미지 요청에 함께 적용됩니다. 사용자명·비밀번호가 든 URL은 평문 저장을 막기 위해
+거부합니다. 선택적 인증은 `proxy-auth`로 관리하며 사용자명·비밀번호를 현재 프록시 주소에
+묶어 Windows 자격 증명 저장소에만 보관합니다. 저장 정보는 주소가 정확히 일치할 때만
+다운로드 자식 프로세스 환경으로 전달되고 명령행 인자·설정 파일·로그·상태 JSON에는
+비밀번호를 넣지 않습니다. 브라우저도 인증 출처가 프록시인 요청에만 응답하며 사이트 자체의
+HTTP 인증 요청에는 프록시 자격증명을 보내지 않습니다. 상태 읽기·저장·삭제에는 `--yes` 또는 GUI 재확인이 필요합니다.
+자동화에서는 비밀번호가 프로세스 인자에 노출되지 않도록 `--password-stdin`을 사용합니다.
 
 공급자 쿠키 관리는 선택 설치한 `keyring`을 통해 Windows 자격 증명 저장소를 사용합니다.
 JSON 배열과 Netscape 쿠키 파일을 최대 5 MiB·10,000개 한도로 검사하며

@@ -16,6 +16,41 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_proxy_auth_cli_guards_secrets_and_supports_noninteractive_stdin(self) -> None:
+        status = build_parser().parse_args(["proxy-auth", "status", "--json"])
+        with self.assertRaisesRegex(toki_app.ControlError, "--yes"):
+            run_cli(status)
+
+        save = build_parser().parse_args(
+            [
+                "proxy-auth", "set", "--proxy", "http://127.0.0.1:8080",
+                "--username", "proxy-user", "--password-stdin", "--yes", "--json",
+            ]
+        )
+        with (
+            patch("sys.stdin", StringIO("secret-password\n")),
+            patch(
+                "toki_app.store_proxy_credentials",
+                return_value={"stored": True, "valuesExposed": False},
+            ) as store,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(save), 0)
+        store.assert_called_once_with(
+            "http://127.0.0.1:8080", "proxy-user", "secret-password"
+        )
+
+        manage = build_parser().parse_args(
+            ["proxy-auth", "manage", "--show-gui", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(manage), 0)
+        request.assert_called_once_with({"action": "show_proxy_credential_manager"})
+
     def test_cookie_cli_plans_without_store_and_guards_sensitive_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "cookies.json"
