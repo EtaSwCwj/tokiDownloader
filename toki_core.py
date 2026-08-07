@@ -2440,6 +2440,94 @@ def work_collection_for_job(
     return {"groupId": str(row[0]), "name": str(row[1])} if row else None
 
 
+def find_duplicate_works(*, database_path: Path | None = None) -> dict[str, Any]:
+    """Find suspicious duplicate work records without changing records or folders."""
+    jobs: list[DownloadJob] = []
+    offset = 0
+    while True:
+        page = load_jobs_page(
+            limit=1000, offset=offset, sort="updated", database_path=database_path
+        )
+        jobs.extend(page)
+        if len(page) < 1000:
+            break
+        offset += len(page)
+
+    title_groups: dict[tuple[str, str], list[DownloadJob]] = {}
+    path_groups: dict[str, list[DownloadJob]] = {}
+    ignored_titles = {"", "메타데이터 확인 중".casefold()}
+    for job in jobs:
+        title = " ".join(str(job.title or "").split()).casefold()
+        author = " ".join(str(job.author or "").split()).casefold()
+        if title not in ignored_titles:
+            title_groups.setdefault((title, author), []).append(job)
+        if job.output_path:
+            normalized_path = os.path.normcase(
+                str(Path(job.output_path).expanduser().resolve())
+            ).casefold()
+            path_groups.setdefault(normalized_path, []).append(job)
+
+    groups: list[dict[str, Any]] = []
+    for (title, author), members in title_groups.items():
+        distinct_keys = {member.work_key for member in members}
+        if len(distinct_keys) < 2:
+            continue
+        groups.append(
+            {
+                "reason": "same_title_author",
+                "key": f"{author}|{title}",
+                "count": len(members),
+                "jobs": [
+                    {
+                        "jobId": job.job_id,
+                        "workKey": job.work_key,
+                        "title": job.title,
+                        "author": job.author,
+                        "url": job.url,
+                        "outputPath": job.output_path,
+                    }
+                    for job in members
+                ],
+            }
+        )
+    for path, members in path_groups.items():
+        distinct_keys = {member.work_key for member in members}
+        if len(distinct_keys) < 2:
+            continue
+        groups.append(
+            {
+                "reason": "same_output_path",
+                "key": path,
+                "count": len(members),
+                "jobs": [
+                    {
+                        "jobId": job.job_id,
+                        "workKey": job.work_key,
+                        "title": job.title,
+                        "author": job.author,
+                        "url": job.url,
+                        "outputPath": job.output_path,
+                    }
+                    for job in members
+                ],
+            }
+        )
+    groups.sort(key=lambda item: (str(item["reason"]), str(item["key"])))
+    duplicate_job_ids = {
+        str(job["jobId"]) for group in groups for job in group["jobs"]
+    }
+    return {
+        "ok": True,
+        "scannedWorks": len(jobs),
+        "duplicateGroupCount": len(groups),
+        "duplicateWorkCount": len(duplicate_job_ids),
+        "groups": groups,
+        "readOnly": True,
+        "metadataChanged": False,
+        "downloadFilesChanged": False,
+    }
+
+
 ARCHIVE_IMAGE_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 )

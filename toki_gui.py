@@ -115,6 +115,7 @@ from toki_core import (
     error_category_label,
     export_diagnostics,
     export_jobs_snapshot,
+    find_duplicate_works,
     find_node,
     hydrate_job_metadata,
     import_app_settings,
@@ -1486,6 +1487,54 @@ class ArchiveInspectionDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class DuplicateWorksDialog(QDialog):
+    def __init__(self, result: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("중복 의심 작품 검사")
+        self.resize(720, 520)
+        layout = QVBoxLayout(self)
+        heading = QLabel("중복 의심 작품")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        summary = QLabel(
+            f"검사 {result.get('scannedWorks', 0)}개 · 중복 그룹 "
+            f"{result.get('duplicateGroupCount', 0)}개 · 관련 작품 "
+            f"{result.get('duplicateWorkCount', 0)}개"
+        )
+        layout.addWidget(summary)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        reason_labels = {
+            "same_title_author": "제목과 작가가 같음",
+            "same_output_path": "저장 폴더 경로가 같음",
+        }
+        lines: list[str] = []
+        for index, group in enumerate(result.get("groups") or [], 1):
+            lines.append(
+                f"[{index}] {reason_labels.get(str(group.get('reason')), group.get('reason'))}"
+            )
+            for job in group.get("jobs") or []:
+                lines.append(
+                    f"  {job.get('jobId')} · {job.get('title')} · {job.get('author') or '-'}"
+                )
+                lines.append(f"    {job.get('workKey')} · {job.get('outputPath') or '-'}")
+            lines.append("")
+        if not lines:
+            lines.append("중복으로 의심되는 작품 기록이 없습니다.")
+        details.setPlainText("\n".join(lines))
+        layout.addWidget(details, 1)
+        note = QLabel(
+            "읽기 전용 진단입니다. 작품 기록, 메타데이터와 다운로드 파일을 변경하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
@@ -2075,6 +2124,7 @@ class MainWindow(QMainWindow):
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
         self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
         self.active_archive_inspection_dialog: ArchiveInspectionDialog | None = None
+        self.active_duplicate_works_dialog: DuplicateWorksDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -2188,6 +2238,8 @@ class MainWindow(QMainWindow):
         self.group_manager_action.triggered.connect(self.show_group_manager)
         self.archive_inspection_action = QAction("로컬 압축 작품 검사...", self)
         self.archive_inspection_action.triggered.connect(self.choose_archive_inspection)
+        self.duplicate_works_action = QAction("중복 의심 작품 검사...", self)
+        self.duplicate_works_action.triggered.connect(self.show_duplicate_works)
 
         self.open_folder_action = QAction("저장 폴더 열기", self)
         self.open_folder_action.setShortcuts(
@@ -2323,6 +2375,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.details_action)
         tools_menu.addAction(self.refresh_list_action)
         tools_menu.addAction(self.archive_inspection_action)
+        tools_menu.addAction(self.duplicate_works_action)
         tools_menu.addAction(self.thumbnail_cache_action)
         tools_menu.addAction(self.cleanup_records_action)
         tools_menu.addAction(self.run_retention_action)
@@ -4119,6 +4172,35 @@ class MainWindow(QMainWindow):
         self.active_archive_inspection_dialog.close()
         return True
 
+    def show_duplicate_works(self) -> bool:
+        result = find_duplicate_works()
+        if self.active_duplicate_works_dialog:
+            self.active_duplicate_works_dialog.close()
+        dialog = DuplicateWorksDialog(result, self)
+        self.active_duplicate_works_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_duplicate_works_dialog", None)
+                if self.active_duplicate_works_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log(
+            f"중복 의심 작품 검사: 그룹 {result['duplicateGroupCount']}개, "
+            f"관련 작품 {result['duplicateWorkCount']}개"
+        )
+        return True
+
+    def close_duplicate_works(self) -> bool:
+        if not self.active_duplicate_works_dialog:
+            return False
+        self.active_duplicate_works_dialog.close()
+        return True
+
     def close_settings_dialog(self) -> bool:
         if not self.active_settings_dialog:
             return False
@@ -5363,6 +5445,11 @@ class MainWindow(QMainWindow):
         ):
             screenshot = self.active_archive_inspection_dialog.grab()
         elif (
+            self.active_duplicate_works_dialog
+            and self.active_duplicate_works_dialog.isVisible()
+        ):
+            screenshot = self.active_duplicate_works_dialog.grab()
+        elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
         ):
@@ -5792,6 +5879,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
             "toki-cli.cmd group list|create|rename|assign|unassign|manage [options]\n"
             "toki-cli.cmd local inspect [--path ARCHIVE --json|--show-gui|--close]\n"
+            "toki-cli.cmd duplicates works [--json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
@@ -6010,6 +6098,10 @@ class MainWindow(QMainWindow):
             "archiveInspectionOpen": bool(
                 self.active_archive_inspection_dialog
                 and self.active_archive_inspection_dialog.isVisible()
+            ),
+            "duplicateWorksOpen": bool(
+                self.active_duplicate_works_dialog
+                and self.active_duplicate_works_dialog.isVisible()
             ),
             "window": {
                 **self.window_snapshot(),
@@ -6278,6 +6370,10 @@ class MainWindow(QMainWindow):
             }
         if action == "close_archive_inspection":
             return {"closed": self.close_archive_inspection()}
+        if action == "show_duplicate_works":
+            return {"shown": self.show_duplicate_works()}
+        if action == "close_duplicate_works":
+            return {"closed": self.close_duplicate_works()}
         if action == "tray":
             return self.handle_tray_command(
                 str(request.get("command") or "status"),

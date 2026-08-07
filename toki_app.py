@@ -49,6 +49,7 @@ from toki_core import (
     export_diagnostics,
     export_app_settings,
     export_jobs_snapshot,
+    find_duplicate_works,
     load_config,
     import_app_settings,
     import_jobs_snapshot,
@@ -468,6 +469,15 @@ def build_parser() -> argparse.ArgumentParser:
     local_inspect_window.add_argument("--show-gui", action="store_true", help="GUI 검사 결과 표시")
     local_inspect_window.add_argument("--close", action="store_true", help="GUI 검사 결과 닫기")
     local_inspect.add_argument("--json", action="store_true", help="JSON으로 출력")
+    duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
+    duplicates_commands = duplicates_parser.add_subparsers(
+        dest="duplicates_command", required=True
+    )
+    duplicate_works = duplicates_commands.add_parser("works", help="중복 의심 작품 검사")
+    duplicate_works_window = duplicate_works.add_mutually_exclusive_group()
+    duplicate_works_window.add_argument("--show-gui", action="store_true", help="GUI 결과 표시")
+    duplicate_works_window.add_argument("--close", action="store_true", help="GUI 결과 닫기")
+    duplicate_works.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -1231,6 +1241,26 @@ def run_cli(args: argparse.Namespace) -> int:
             print(
                 f"{result['format']} | 파일 {result['fileCount']} | "
                 f"이미지 {result['imageCount']} | 의심 경로 {result['suspiciousPathCount']}"
+            )
+        return 0 if result.get("ok") else 2
+    if command == "duplicates":
+        if args.close:
+            ensure_gui_running()
+            result = control_request({"action": "close_duplicate_works"})
+            print_json(result)
+            return 0
+        if args.show_gui:
+            ensure_gui_running()
+            result = control_request({"action": "show_duplicate_works"})
+            print_json(result)
+            return 0
+        result = find_duplicate_works()
+        if args.json:
+            print_json(result)
+        else:
+            print(
+                f"검사 {result['scannedWorks']} · 중복 그룹 {result['duplicateGroupCount']} · "
+                f"관련 작품 {result['duplicateWorkCount']}"
             )
         return 0 if result.get("ok") else 2
     if command == "shortcuts":

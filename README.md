@@ -100,6 +100,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd local inspect --path "D:\Manga\work.cbz" --json
 .\toki-cli.cmd local inspect --path "D:\Manga\work.cbz" --show-gui
 .\toki-cli.cmd local inspect --close
+.\toki-cli.cmd duplicates works --json
+.\toki-cli.cmd duplicates works --show-gui
+.\toki-cli.cmd duplicates works --close
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
@@ -328,6 +331,11 @@ GUI 실행 중 CLI로 설정을 바꾸거나 가져오면 현재 창에도 즉�
 작업 ID, 작품 키, 원본 URL, 별도 작품 정리 그룹 이름을 함께 찾습니다. 결과는 기존 SQLite
 페이지 로딩과 GUI 메모리 상한을 그대로 사용하며, 10,000개 합성 기록에서도 한 페이지 검색
 응답이 성능 기준 안에 들어오는지 자동 검증합니다.
+
+`duplicates works`는 작품 키 유일성 검사에 더해 제목+작가가 같은 서로 다른 작품 키와
+동일 저장 경로를 공유하는 기록을 찾습니다. 결과는 진단만 제공하며 자동 병합·기록 삭제·
+폴더 변경을 하지 않습니다. `도구 → 중복 의심 작품 검사...`, `--show-gui`, `--close`가
+같은 읽기 전용 서비스를 사용합니다.
 
 디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
 높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density

@@ -107,6 +107,23 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_duplicate_works_ipc_can_show_and_close_report(self) -> None:
+        calls = []
+        harness = type("DuplicateWorksHarness", (), {})()
+        harness.show_duplicate_works = lambda: calls.append(("show",)) or True
+        harness.close_duplicate_works = lambda: calls.append(("close",)) or True
+
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_duplicate_works"}
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_duplicate_works"}
+        )
+
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(calls, [("show",), ("close",)])
+
     def test_archive_inspection_ipc_can_show_and_close_result_window(self) -> None:
         calls = []
         harness = type("ArchiveInspectionHarness", (), {})()

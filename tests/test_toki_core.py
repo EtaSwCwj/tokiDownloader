@@ -34,6 +34,7 @@ from toki_core import (
     downloader_event_update_policy,
     export_diagnostics,
     export_jobs_snapshot,
+    find_duplicate_works,
     hydrate_job_metadata,
     import_jobs_snapshot,
     inspect_local_archive,
@@ -749,6 +750,49 @@ class CoreContractTests(unittest.TestCase):
 
 
 class JobRepositoryTests(unittest.TestCase):
+    def test_duplicate_work_scan_reports_title_author_and_path_without_changes(self) -> None:
+        shared_path = str(Path(self.temp_dir.name) / "shared")
+        jobs = [
+            DownloadJob(
+                job_id="duplicate-a",
+                url="https://newtoki1.org/manhwa/8801",
+                output_dir=self.temp_dir.name,
+                output_path=shared_path,
+                title="같은 작품",
+                author="같은 작가",
+            ),
+            DownloadJob(
+                job_id="duplicate-b",
+                url="https://newtoki1.org/manhwa/8802",
+                output_dir=self.temp_dir.name,
+                output_path=shared_path,
+                title="같은 작품",
+                author="같은 작가",
+            ),
+            DownloadJob(
+                job_id="unique",
+                url="https://newtoki1.org/manhwa/8803",
+                output_dir=self.temp_dir.name,
+                title="다른 작품",
+                author="다른 작가",
+            ),
+        ]
+        save_jobs(jobs)
+
+        report = find_duplicate_works()
+
+        self.assertEqual(report["scannedWorks"], 3)
+        self.assertEqual(report["duplicateGroupCount"], 2)
+        self.assertEqual(report["duplicateWorkCount"], 2)
+        self.assertEqual(
+            {group["reason"] for group in report["groups"]},
+            {"same_title_author", "same_output_path"},
+        )
+        self.assertTrue(report["readOnly"])
+        self.assertFalse(report["metadataChanged"])
+        self.assertFalse(report["downloadFilesChanged"])
+        self.assertEqual(count_jobs(), 3)
+
     def test_integrated_search_scans_ten_thousand_records_with_bounded_page(self) -> None:
         jobs = [
             DownloadJob(

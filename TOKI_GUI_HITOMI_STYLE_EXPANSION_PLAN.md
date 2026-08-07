@@ -232,6 +232,11 @@ Python 133건과 Node 7건을 통과했으며 `doctor --json`에서 py7zr·rarfi
 Python 134건과 Node 7건을 통과했고 실제 DB는 `jobs.db.pre-v4.bak` 보존 후 v4로
 마이그레이션했다.
 
+중복 검사 1차로 작품 키 강제 유일성 외에 제목+작가와 저장 경로 충돌을 진단하는
+`duplicates works` 및 GUI 결과창을 추가했다. 실제 2작품은 중복 의심 0건이었고
+`logs/duplicate-works-gui.png`로 빈 결과 상태를 확인했다. 자동 병합·삭제는 하지 않는다.
+Python 137건과 Node 7건을 통과했다.
+
 ### 단계 C. 보기·빠른 실행·트레이
 
 - [ ] 목록/아이콘 보기와 가상화 유지
