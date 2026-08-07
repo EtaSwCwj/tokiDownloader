@@ -203,6 +203,23 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_public_ip_button_requires_yes_before_starting_service(self) -> None:
+        harness = type("PublicIpHarness", (), {})()
+        starts = []
+        harness.start_public_ip_check = lambda: starts.append(True)
+        with patch(
+            "toki_gui.QMessageBox.question",
+            return_value=toki_gui.QMessageBox.StandardButton.No,
+        ):
+            self.assertFalse(MainWindow.confirm_public_ip_check(harness))
+        self.assertEqual(starts, [])
+        with patch(
+            "toki_gui.QMessageBox.question",
+            return_value=toki_gui.QMessageBox.StandardButton.Yes,
+        ):
+            self.assertTrue(MainWindow.confirm_public_ip_check(harness))
+        self.assertEqual(starts, [True])
+
     def test_local_api_runtime_is_loopback_temporary_and_ipc_controlled(self) -> None:
         harness = type("LocalApiHarness", (), {})()
         harness.config = {"localApiEnabled": True, "localApiPort": 9123}

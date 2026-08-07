@@ -1348,7 +1348,7 @@ class CliParserTests(unittest.TestCase):
             redirect_stdout(StringIO()),
         ):
             self.assertEqual(run_cli(confirmed), 0)
-        lookup.assert_called_once_with()
+        lookup.assert_called_once_with(confirmed=True)
 
     def test_network_policy_cli_merges_provider_values_and_updates_gui(self) -> None:
         policies = {

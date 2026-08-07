@@ -859,16 +859,23 @@ def network_policy_snapshot(
 
 
 def public_ip_check_plan(endpoint: str = PUBLIC_IP_ENDPOINT) -> dict[str, Any]:
-    parsed = urlsplit(str(endpoint or ""))
+    normalized_endpoint = str(endpoint or "").strip()
+    parsed = urlsplit(normalized_endpoint)
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValueError("공인 IP 확인 주소는 HTTPS여야 합니다.")
     return {
+        "ok": True,
+        "operation": "public_ip_check",
         "requiresNetwork": True,
         "requiresConfirmation": True,
-        "endpoint": endpoint,
+        "endpoint": normalized_endpoint,
+        "method": "GET",
         "sendsCookies": False,
         "sendsDownloadedFiles": False,
         "timeoutSeconds": 10,
+        "maxResponseBytes": 4096,
+        "networkRequested": False,
+        "executed": False,
     }
 
 
@@ -876,25 +883,37 @@ def lookup_public_ip(
     *,
     endpoint: str = PUBLIC_IP_ENDPOINT,
     fetcher: Callable[[str, int], bytes] | None = None,
+    confirmed: bool = False,
 ) -> dict[str, Any]:
     plan = public_ip_check_plan(endpoint)
-    if fetcher is None:
+    default_fetcher = fetcher is None
+    if default_fetcher and not confirmed:
+        raise ValueError("공인 IP 외부 요청에는 명시적 확인이 필요합니다.")
+    if default_fetcher:
         def fetcher(url: str, timeout: int) -> bytes:
             request = Request(url, headers={"User-Agent": f"tokiDownloader/{APP_VERSION}"})
             with urlopen(request, timeout=timeout) as response:
-                return response.read(4096)
-    payload = fetcher(endpoint, int(plan["timeoutSeconds"]))
+                return response.read(int(plan["maxResponseBytes"]) + 1)
+    payload = fetcher(str(plan["endpoint"]), int(plan["timeoutSeconds"]))
+    payload_bytes = bytes(payload)
+    if len(payload_bytes) > int(plan["maxResponseBytes"]):
+        raise ValueError("공인 IP 확인 응답이 허용 크기를 초과했습니다.")
     try:
-        decoded = json.loads(bytes(payload).decode("utf-8"))
+        decoded = json.loads(payload_bytes.decode("utf-8"))
         address = str(decoded.get("ip") or "").strip()
         parsed_address = ipaddress.ip_address(address)
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError("공인 IP 확인 응답 형식이 잘못되었습니다.") from error
     return {
+        **plan,
         "ok": True,
         "ip": str(parsed_address),
         "version": parsed_address.version,
-        "endpoint": endpoint,
+        "responseBytes": len(payload_bytes),
+        "confirmationSatisfied": bool(confirmed or not default_fetcher),
+        "injectedFetcher": not default_fetcher,
+        "networkRequested": default_fetcher,
+        "executed": True,
         "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 

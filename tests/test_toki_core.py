@@ -606,6 +606,11 @@ class CoreContractTests(unittest.TestCase):
         self.assertTrue(plan["requiresNetwork"])
         self.assertTrue(plan["requiresConfirmation"])
         self.assertFalse(plan["sendsCookies"])
+        self.assertFalse(plan["networkRequested"])
+        self.assertFalse(plan["executed"])
+        self.assertEqual(plan["maxResponseBytes"], 4096)
+        with self.assertRaisesRegex(ValueError, "명시적 확인"):
+            lookup_public_ip()
         calls = []
         result = lookup_public_ip(
             fetcher=lambda endpoint, timeout: (
@@ -614,9 +619,18 @@ class CoreContractTests(unittest.TestCase):
         )
         self.assertEqual(result["ip"], "203.0.113.7")
         self.assertEqual(result["version"], 4)
+        self.assertTrue(result["executed"])
+        self.assertFalse(result["networkRequested"])
+        self.assertTrue(result["injectedFetcher"])
         self.assertEqual(len(calls), 1)
+        ipv6 = lookup_public_ip(
+            fetcher=lambda _endpoint, _timeout: b'{"ip":"2001:db8::7"}'
+        )
+        self.assertEqual(ipv6["version"], 6)
         with self.assertRaises(ValueError):
             lookup_public_ip(fetcher=lambda _endpoint, _timeout: b'{"ip":"invalid"}')
+        with self.assertRaisesRegex(ValueError, "허용 크기"):
+            lookup_public_ip(fetcher=lambda _endpoint, _timeout: b"x" * 4097)
 
     def test_network_policy_validates_proxy_speed_and_provider_pacing(self) -> None:
         config = default_config()

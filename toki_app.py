@@ -4660,7 +4660,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 raise ControlError(
                     "공인 IP 확인은 외부 서비스에 요청합니다. 실행하려면 --yes가 필요합니다."
                 )
-            result = lookup_public_ip()
+            result = lookup_public_ip(confirmed=True)
         if args.json:
             print_json(result)
         else:

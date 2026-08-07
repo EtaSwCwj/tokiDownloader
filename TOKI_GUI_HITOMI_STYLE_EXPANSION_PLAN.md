@@ -343,7 +343,7 @@ GUI를 동일하게 검증한다. 시스템 종료 미리보기는 `executed: fa
 - [x] 전역 작품 동시 수와 작업별 이미지 연결 수
 - [x] HTTP/SOCKS 프록시와 선택적 인증
 - [x] 전역 다운로드 속도 제한
-- [ ] 공인 IP 확인
+- [x] 공인 IP 확인
 - [x] 공급자별 백오프, 속도 제한과 차단 감지
 
 쿠키는 OS 자격 증명 저장소로 보호하고 내보낼 때 경고와 명시적 경로를 요구한다. 기본
@@ -403,8 +403,16 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 `passwordExposed: false`를 확인했으며 실제 Windows 저장소에는 테스트 자격증명을 쓰거나
 삭제하지 않았다. 검증 후 프록시 없음으로 복원했고 Python 167건과 Node 16건을 통과했다.
 
-공인 IP 확인은 `public-ip plan`과 주입 응답 단위 테스트, GUI 확인 절차까지 구현했다. 실제
-`api.ipify.org` 요청은 외부 API 승인 전에는 실행하지 않으므로 해당 체크박스는 보류한다.
+2026-08-07 공인 IP 확인 완료: `public-ip plan`은 api.ipify.org HTTPS GET 주소, 10초 제한,
+4 KiB 응답 상한, 쿠키·다운로드 파일 미전송과 미실행 상태를 네트워크 없이 반환한다. 실제
+조회 서비스도 기본 fetcher를 쓸 때 `confirmed=True`를 직접 요구해 CLI·GUI 호출부를 우회한
+외부 요청을 막으며, CLI `check`는 `--yes`, GUI 버튼은 확인 대화상자를 거쳐 백그라운드 I/O
+스레드에서만 실행한다. IPv4·IPv6, 잘못된 JSON/IP, 상한 초과를 주입 응답으로 검증했고 GUI
+확인에서 아니오/예 분기와 서비스 시작 여부도 테스트했다. `public-ip plan --json`의
+`networkRequested: false`, `executed: false`와 확인 없는 `check` 거부를 실제 CLI로 확인했다.
+설정 화면은 `logs/public-ip-confirmation-settings.png`에 보존했으며 api.ipify.org를 포함한
+실제 외부 요청은 실행하지 않았다. Python 258건, Node 16건, 자체 점검 6/6과 필수 환경
+5/5를 통과했다.
 
 ### 단계 F. 고급 동작과 파일 후처리
 

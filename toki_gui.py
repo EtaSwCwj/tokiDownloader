@@ -9067,7 +9067,7 @@ class MainWindow(QMainWindow):
     def start_public_ip_check(self) -> None:
         if self.public_ip_task is not None:
             raise ValueError("공인 IP 확인이 이미 진행 중입니다.")
-        task = ServiceTask("public-ip", lookup_public_ip)
+        task = ServiceTask("public-ip", lambda: lookup_public_ip(confirmed=True))
         self.public_ip_task = task
         task.signals.finished.connect(self._public_ip_check_finished)
         self.io_thread_pool.start(task)

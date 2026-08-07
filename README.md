@@ -431,7 +431,9 @@ JSON 배열과 Netscape 쿠키 파일을 최대 5 MiB·10,000개 한도로 검�
 
 `public-ip plan`은 외부 요청 주소와 전송 범위만 보여주며 네트워크를 사용하지 않습니다.
 실제 `public-ip check`는 `api.ipify.org`에 쿠키·다운로드 파일 없이 HTTPS 요청을 보내므로
-명시적인 `--yes` 또는 GUI 확인이 필요합니다.
+명시적인 `--yes` 또는 GUI 확인이 필요합니다. 서비스 계층도 확인 상태를 다시 검사하고,
+응답은 10초·4 KiB로 제한한 뒤 JSON의 IPv4 또는 IPv6 한 개만 허용합니다. 설정 화면은
+`logs\public-ip-confirmation-settings.png`에서 확인할 수 있습니다.
 
 일반 설정의 작품 폴더명은 기본적으로 `[작가][그룹] 제목` 규칙을 사용합니다.
 `{author}`, `{group}`, `{title}`, `{site}`, `{id}`를 조합할 수 있고 `{title}`은 필수입니다.
