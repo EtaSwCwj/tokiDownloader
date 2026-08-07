@@ -102,6 +102,7 @@ except ImportError as error:
 from hitomi_provider import (
     HITOMI_SERVER_CATALOG,
     HitomiReferenceError,
+    evaluate_hitomi_metadata_outcome,
     fetch_hitomi_metadata,
     hitomi_excluded_tag_policy_snapshot,
     hitomi_filename_policy_snapshot,
@@ -2585,12 +2586,29 @@ class HitomiMetadataDialog(QDialog):
     def _set_result(self, result: dict[str, Any]) -> dict[str, Any]:
         self.last_result = dict(result)
         if not result.get("ok"):
+            metadata_policy = result.get("metadataPolicy") or {}
+            decision_labels = {
+                "continue_without_metadata": "메타데이터 없이 계속",
+                "stop": "작업 중단",
+                "skip": "조회 생략",
+            }
             lines = [
                 "처리 실패",
                 "",
                 f"오류 코드: {result.get('errorCode', 'hitomi.unknown')}",
                 f"원인: {result.get('error', '')}",
             ]
+            if metadata_policy:
+                lines.extend(
+                    [
+                        f"현재 모드: {metadata_policy.get('mode', '')}",
+                        "정책 결정: "
+                        + decision_labels.get(
+                            str(metadata_policy.get("decision") or ""),
+                            str(metadata_policy.get("decision") or "-"),
+                        ),
+                    ]
+                )
         elif result.get("request") is not None or result.get("reason") == "disabled":
             request = result.get("request") or {}
             body = request.get("body")
@@ -2678,6 +2696,11 @@ class HitomiMetadataDialog(QDialog):
                 error.to_dict()
                 if isinstance(error, HitomiReferenceError)
                 else {"ok": False, "errorCode": "hitomi.fixture_error", "error": str(error)}
+            )
+            result["metadataPolicy"] = evaluate_hitomi_metadata_outcome(
+                config=self.owner.config,
+                outcome="failure",
+                error_code=str(result.get("errorCode") or "hitomi.fixture_error"),
             )
         return self._set_result(result)
 
@@ -2820,12 +2843,23 @@ class HitomiMetadataDialog(QDialog):
                 str(plan["provider"]),
                 str(request.get("url") or ""),
             )
-        return fetch_hitomi_metadata(
-            reference,
-            provider_hint=provider,
-            config=config,
-            **fetch_options,
-        )
+        try:
+            return fetch_hitomi_metadata(
+                reference,
+                provider_hint=provider,
+                config=config,
+                confirmed=True,
+                **fetch_options,
+            )
+        except HitomiReferenceError as error:
+            return {
+                **error.to_dict(),
+                "metadataPolicy": evaluate_hitomi_metadata_outcome(
+                    config=config,
+                    outcome="failure",
+                    error_code=error.code,
+                ),
+            }
 
     def _fetch_finished(self, _task_id: str, result: object, error: str) -> None:
         self.fetch_task = None
@@ -2835,11 +2869,19 @@ class HitomiMetadataDialog(QDialog):
                 "ok": False,
                 "errorCode": "hitomi.metadata_network",
                 "error": error,
+                "metadataPolicy": evaluate_hitomi_metadata_outcome(
+                    config=self.owner.config,
+                    outcome="failure",
+                    error_code="hitomi.metadata_network",
+                ),
             }
             self.owner.log("Hitomi 메타데이터 요청 실패", "ERROR")
         else:
             payload = result if isinstance(result, dict) else {}
-            self.owner.log("Hitomi 메타데이터 요청 완료")
+            if payload.get("ok"):
+                self.owner.log("Hitomi 메타데이터 요청 완료")
+            else:
+                self.owner.log("Hitomi 메타데이터 요청 실패", "ERROR")
         self._set_result(payload)
 
     def state_snapshot(self) -> dict[str, Any]:

@@ -758,6 +758,49 @@ def hitomi_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dic
     }
 
 
+def evaluate_hitomi_metadata_outcome(
+    *,
+    config: dict[str, Any] | None = None,
+    outcome: str = "pending",
+    error_code: str = "",
+) -> dict[str, Any]:
+    """Resolve the configured metadata mode into an explicit workflow decision."""
+    policy = hitomi_metadata_policy_snapshot(config)
+    normalized_outcome = str(outcome or "pending").strip().lower()
+    if normalized_outcome not in {"pending", "success", "failure"}:
+        raise ValueError("메타데이터 결과는 pending, success 또는 failure여야 합니다.")
+
+    if not policy["enabled"]:
+        decision = "skip"
+        should_continue: bool | None = True
+        metadata_available = False
+    elif normalized_outcome == "success":
+        decision = "use_metadata"
+        should_continue = True
+        metadata_available = True
+    elif normalized_outcome == "failure":
+        decision = (
+            "stop"
+            if policy["failurePolicy"] == "stop"
+            else "continue_without_metadata"
+        )
+        should_continue = decision != "stop"
+        metadata_available = False
+    else:
+        decision = "fetch_metadata"
+        should_continue = None
+        metadata_available = False
+
+    return {
+        **policy,
+        "outcome": normalized_outcome,
+        "decision": decision,
+        "shouldContinue": should_continue,
+        "metadataAvailable": metadata_available,
+        "errorCode": str(error_code or "") if normalized_outcome == "failure" else "",
+    }
+
+
 def _extract_exhentai_gallery_token(reference: str) -> str:
     raw = str(reference or "").strip()
     if "://" not in raw:
@@ -1126,6 +1169,7 @@ def fetch_hitomi_metadata(
     opener: Any = None,
     timeout: int = 30,
     cookie_header: str = "",
+    confirmed: bool = False,
 ) -> dict[str, Any]:
     plan = hitomi_metadata_request_plan(
         reference,
@@ -1136,6 +1180,11 @@ def fetch_hitomi_metadata(
         raise HitomiReferenceError(
             "hitomi.metadata_disabled",
             "Hitomi 메타데이터 요청이 설정에서 꺼져 있습니다.",
+        )
+    if not confirmed:
+        raise HitomiReferenceError(
+            "hitomi.external_confirmation_required",
+            "실제 공급자 메타데이터 요청에는 사용자 확인이 필요합니다.",
         )
     request_plan = plan["request"]
     headers = {
@@ -1185,12 +1234,20 @@ def fetch_hitomi_metadata(
             "hitomi.metadata_too_large",
             "갤러리 메타데이터 응답이 8 MiB 상한을 넘었습니다.",
         )
-    return parse_hitomi_metadata_payload(
+    parsed = parse_hitomi_metadata_payload(
         reference,
         payload,
         provider_hint=provider_hint,
         network_requested=True,
     )
+    return {
+        **parsed,
+        "externalRequestConfirmed": True,
+        "metadataPolicy": evaluate_hitomi_metadata_outcome(
+            config=config,
+            outcome="success",
+        ),
+    }
 
 
 def normalize_hitomi_server_mode(value: str | None) -> str:

@@ -525,13 +525,17 @@ E-Hentai로 복원했다. `logs/hitomi-server-settings.png`를 확인했고 Pyth
 2026-08-07 Hitomi 메타데이터 전용 흐름: 설정 스키마 v17에 자동·필수·사용 안 함 정책을
 추가하고 Hitomi `galleryinfo`의 JSON 부분과 E-Hentai 공식 `gdata` JSON을 공통 메타데이터로
 정규화한다. 파서는 JS를 실행하지 않고 응답·픽스처를 8 MiB로 제한하며 ExHentai 토큰은
-마스킹 계획과 요청 메모리 밖으로 내보내지 않는다. `hitomi metadata status|set|plan|parse|
-fetch|show|close`, GUI 설정·대화상자·IPC·상태를 연결했고 실제 조회는 CLI `--yes` 또는 GUI
+마스킹 계획과 요청 메모리 밖으로 내보내지 않는다. `hitomi metadata status|set|decide|plan|
+parse|fetch|show|close`, GUI 설정·대화상자·IPC·상태를 연결했고 실제 조회는 CLI `--yes` 또는 GUI
 재확인과 제한형 I/O 풀을 사용한다. 공급자 고정 픽스처, 주입 전송, 한글·공백 경로와
 프로그램 자체 캡처를 외부 요청 없이 검증했다. 실제 사이트 요청은 사용자 승인 뒤 별도
 통합 검증할 예정이다. 화면은 `logs/hitomi-metadata-plan.png`,
-`logs/hitomi-metadata-fixture.png`, `logs/hitomi-metadata-settings.png`에 보존했고 Python
-215건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
+`logs/hitomi-metadata-fixture.png`, `logs/hitomi-metadata-settings.png`,
+`logs/hitomi-metadata-mode-final.png`, `logs/hitomi-metadata-required-failure.png`에 보존했다.
+추가 감사에서 공용 서비스 직접 호출도 사용자 확인 없이는 외부 요청을 거부하도록 강화하고,
+자동 실패는 메타데이터 없이 계속·필수 실패는 중단·사용 안 함은 생략하는 결정을 공용 서비스와
+CLI·GUI에 연결했다. 10,000개 파일 메타데이터와 8 MiB 초과 거부를 회귀 검증했고 Python
+261건, Node 16건, GUI 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 2026-08-07 Hitomi 이미지 파일명 정책: 설정 스키마 v18에 `original`, `number`,
 `number_original`을 추가하고 서비스가 공통 메타데이터에서 Windows 안전 이름을 계산하도록

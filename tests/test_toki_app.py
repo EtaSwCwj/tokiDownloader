@@ -344,6 +344,30 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(status_args), 0)
         self.assertTrue(json.loads(stdout.getvalue())["enabled"])
 
+        decide_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "metadata",
+                "decide",
+                "--outcome",
+                "failure",
+                "--error-code",
+                "hitomi.metadata_network",
+                "--json",
+            ]
+        )
+        required = {**default_config(), "hitomiMetadataMode": "required"}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=required),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(decide_args), 0)
+        decision = json.loads(stdout.getvalue())
+        self.assertEqual(decision["decision"], "stop")
+        self.assertFalse(decision["shouldContinue"])
+        self.assertFalse(decision["networkRequested"])
+
         set_args = build_parser().parse_args(
             ["hitomi", "metadata", "set", "--mode", "required", "--json"]
         )
@@ -453,6 +477,7 @@ class CliParserTests(unittest.TestCase):
             provider_hint="auto",
             config=default_config(),
             timeout=12,
+            confirmed=True,
         )
 
         cookie_fetch_args = build_parser().parse_args(
@@ -484,6 +509,7 @@ class CliParserTests(unittest.TestCase):
             provider_hint="auto",
             config=default_config(),
             timeout=30,
+            confirmed=True,
             cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
         )
         self.assertNotIn("ipb_pass_hash", output.getvalue())

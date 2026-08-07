@@ -590,13 +590,17 @@ status|set|plan`, GUI 공급자 설정의 방식·서버·드래그 우선순위
 필수(실패 시 중단), 사용 안 함 정책을 추가했다. Hitomi `galleryinfo`는 JavaScript를 실행하지
 않고 8 MiB 이하 JSON 객체만 추출하며, E-Hentai 공식 `gdata` JSON과 함께 공통 제목·일본어
 제목·작가·그룹·태그·페이지·썸네일 구조로 정규화한다. 고정 공급자 픽스처 두 개와 한글·공백
-경로, ID 불일치, 토큰 비노출을 검증했다. `hitomi metadata status|set|plan|parse|fetch|show|
-close`, GUI 공급자 설정과 메타데이터 대화상자가 같은 서비스에 연결되며 실제 `fetch`는
+경로, ID 불일치, 토큰 비노출을 검증했다. `hitomi metadata status|set|decide|plan|parse|fetch|
+show|close`, GUI 공급자 설정과 메타데이터 대화상자가 같은 서비스에 연결되며 실제 `fetch`는
 CLI `--yes` 또는 GUI 목적지 재확인을 요구하고 제한형 I/O 풀에서 실행된다. 외부 요청 없는
 계획·픽스처·설정 화면은 `logs/hitomi-metadata-plan.png`, `logs/hitomi-metadata-fixture.png`,
 `logs/hitomi-metadata-settings.png`에 보존했다. 실제 공급자 API 호출은 사용자 승인 전이라
-아직 실행하지 않았으므로 이 체크 항목은 라이브 검증 뒤 완료 처리한다. Python 215건,
-Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
+아직 실행하지 않았으므로 이 체크 항목은 라이브 검증 뒤 완료 처리한다. 추가 감사에서 공용
+서비스 직접 호출에도 확인 경계를 적용하고, 자동 실패는 계속·필수 실패는 중단·사용 안 함은
+생략하는 후속 결정을 서비스·CLI·GUI에 연결했다. 10,000개 파일 응답과 8 MiB 초과 거부를
+회귀 검증하고 `logs/hitomi-metadata-mode-final.png`,
+`logs/hitomi-metadata-required-failure.png`에서 성공·필수 실패 표시와 텍스트 대비를 확인했다.
+Python 261건, Node 16건, GUI 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 2026-08-07 이미지 파일명 정책 구현: 설정 스키마 v18에 원본, 최소 4자리 숫자, 숫자+원본
 세 방식을 추가하고 기본값을 `0001_원본.jpg`로 정했다. 공용 서비스는 Hitomi 공통

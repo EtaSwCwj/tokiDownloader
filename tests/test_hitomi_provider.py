@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 from hitomi_provider import (
+    HITOMI_METADATA_MAX_BYTES,
     HitomiReferenceError,
+    evaluate_hitomi_metadata_outcome,
     evaluate_hitomi_excluded_tags,
     fetch_hitomi_metadata,
     hitomi_provider_capabilities,
@@ -251,6 +253,7 @@ class HitomiReferenceTests(unittest.TestCase):
             opener=opener,
             timeout=9,
             cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
+            confirmed=True,
         )
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["body"]["gidlist"], [[987654, "abcdef1234"]])
@@ -261,6 +264,68 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertTrue(result["networkRequested"])
         self.assertNotIn("abcdef1234", repr(result))
         self.assertNotIn("ipb_pass_hash", repr(result))
+        self.assertTrue(result["externalRequestConfirmed"])
+        self.assertEqual(result["metadataPolicy"]["decision"], "use_metadata")
+
+    def test_metadata_mode_resolves_outcomes_and_requires_confirmation(self) -> None:
+        auto_failure = evaluate_hitomi_metadata_outcome(
+            config={**default_config(), "hitomiMetadataMode": "auto"},
+            outcome="failure",
+            error_code="hitomi.metadata_network",
+        )
+        self.assertEqual(auto_failure["decision"], "continue_without_metadata")
+        self.assertTrue(auto_failure["shouldContinue"])
+        required_failure = evaluate_hitomi_metadata_outcome(
+            config={**default_config(), "hitomiMetadataMode": "required"},
+            outcome="failure",
+        )
+        self.assertEqual(required_failure["decision"], "stop")
+        self.assertFalse(required_failure["shouldContinue"])
+        disabled = evaluate_hitomi_metadata_outcome(
+            config={**default_config(), "hitomiMetadataMode": "disabled"},
+            outcome="success",
+        )
+        self.assertEqual(disabled["decision"], "skip")
+        self.assertFalse(disabled["metadataAvailable"])
+        with self.assertRaises(HitomiReferenceError) as caught:
+            fetch_hitomi_metadata("42", opener=lambda *_args, **_kwargs: None)
+        self.assertEqual(
+            caught.exception.code, "hitomi.external_confirmation_required"
+        )
+
+    def test_metadata_response_cap_and_large_gallery_remain_bounded(self) -> None:
+        class OversizedResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, limit):
+                self.assert_limit = limit
+                return b"x" * (HITOMI_METADATA_MAX_BYTES + 1)
+
+        with self.assertRaises(HitomiReferenceError) as caught:
+            fetch_hitomi_metadata(
+                "42",
+                opener=lambda *_args, **_kwargs: OversizedResponse(),
+                confirmed=True,
+            )
+        self.assertEqual(caught.exception.code, "hitomi.metadata_too_large")
+
+        files = [
+            {"name": f"{index:05d}.jpg", "hash": f"{index:x}"}
+            for index in range(10_000)
+        ]
+        payload = "var galleryinfo = " + json.dumps(
+            {"id": "42", "title": "large gallery", "files": files},
+            separators=(",", ":"),
+        ) + ";"
+        self.assertLess(len(payload.encode("utf-8")), HITOMI_METADATA_MAX_BYTES)
+        result = parse_hitomi_metadata_payload("42", payload)
+        self.assertEqual(result["pageCount"], 10_000)
+        self.assertEqual(len(result["files"]), 10_000)
+        self.assertEqual(result["files"][-1]["index"], 10_000)
 
     def test_filename_modes_are_windows_safe_deterministic_and_bounded(self) -> None:
         metadata = load_hitomi_metadata_fixture(

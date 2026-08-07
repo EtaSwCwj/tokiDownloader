@@ -136,6 +136,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi server plan --input "https://exhentai.org/g/987654/abcdef1234/" --json
 .\toki-cli.cmd hitomi metadata status --json
 .\toki-cli.cmd hitomi metadata set --mode auto --json
+.\toki-cli.cmd hitomi metadata decide --outcome failure --error-code hitomi.metadata_network --json
 .\toki-cli.cmd hitomi metadata plan --input "https://hitomi.la/manga/sample-1234567.html" --json
 .\toki-cli.cmd hitomi metadata parse --input "https://hitomi.la/manga/sample-1234567.html" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
 .\toki-cli.cmd hitomi metadata show --input "https://hitomi.la/manga/sample-1234567.html" --json
@@ -788,7 +789,10 @@ ExHentai 서버를 고르는 것처럼 호환되지 않는 조합은 `hitomi.ser
 
 설정 스키마 v17은 갤러리 정보 방식을 `auto`, `required`, `disabled`로 저장합니다. 자동은
 메타데이터 실패 시 이후 다운로드를 계속할 정책이고, 필수는 중단, 사용 안 함은 요청 계획도
-만들지 않습니다. Hitomi는 `galleryinfo` JS에서 JSON 객체만 추출하고 코드를 실행하지 않으며,
+만들지 않습니다. `hitomi metadata decide`는 성공·실패 뒤 `use_metadata`,
+`continue_without_metadata`, `stop`, `skip` 중 실제 후속 결정을 외부 접속 없이 계산하며 GUI도
+실패 결과에 현재 모드와 같은 결정을 표시합니다. Hitomi는 `galleryinfo` JS에서 JSON 객체만
+추출하고 코드를 실행하지 않으며,
 ExHentai/E-Hentai는 [공식 gdata API 형식](https://ehwiki.org/wiki/API)의 JSON을 공통 제목,
 일본어 제목, 작가·그룹·태그, 페이지 수, 썸네일 정보로 정규화합니다. 응답과 픽스처는 8 MiB로
 제한합니다.
@@ -801,11 +805,14 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 체크한 뒤 목적지와 쿠키 읽기를 다시 확인합니다. ExHentai 관련 쿠키는 E-Hentai/ExHentai
 도메인만 보관하며 요청 호스트·경로·Secure·만료 조건에 맞는 값만 해당 요청의 `Cookie`
 헤더에 주입합니다. 쿠키 값은 결과 JSON·상태·설정·로그에 남기지 않고 접근 제한 우회는
-지원하지 않습니다. GUI 조회는 제한형 I/O 풀에서 동작합니다. ExHentai
+지원하지 않습니다. GUI 조회는 제한형 I/O 풀에서 동작합니다. 공용 서비스 함수도 확인값을
+받지 않으면 `hitomi.external_confirmation_required`로 거부하므로 CLI·GUI 바깥의 직접 호출로
+이 경계를 우회할 수 없습니다. ExHentai
 갤러리 토큰은 POST 요청 메모리에만 존재하고 계획·결과·설정·로그에는 원문을 남기지
 않습니다. 로컬 검증 화면은 `logs\hitomi-metadata-plan.png`,
-`logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`에 있습니다. 실제 공급자
-요청 검증은 사용자 승인 전에는 실행하지 않습니다.
+`logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`,
+`logs\hitomi-metadata-mode-final.png`, `logs\hitomi-metadata-required-failure.png`에 있습니다.
+실제 공급자 요청 검증은 사용자 승인 전에는 실행하지 않습니다.
 
 설정 스키마 v18은 Hitomi 이미지 파일명을 `original`, `number`, `number_original` 중 하나로
 저장하며 기본값은 식별성과 자연 정렬을 함께 보존하는 `0001_원본.jpg` 방식입니다. 공용

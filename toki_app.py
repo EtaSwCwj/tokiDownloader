@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import QApplication
 
 from hitomi_provider import (
     HitomiReferenceError,
+    evaluate_hitomi_metadata_outcome,
     fetch_hitomi_metadata,
     evaluate_hitomi_excluded_tags,
     hitomi_excluded_tag_policy_snapshot,
@@ -968,6 +969,18 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="확인 후 OS 보안 저장소의 해당 공급자 쿠키 사용",
             )
+    hitomi_metadata_decide = hitomi_metadata_commands.add_parser(
+        "decide", help="외부 요청 없이 모드별 성공·실패 후속 동작 계산"
+    )
+    hitomi_metadata_decide.add_argument(
+        "--outcome", choices=("pending", "success", "failure"), required=True
+    )
+    hitomi_metadata_decide.add_argument(
+        "--error-code", default="", help="실패 결과에 함께 기록할 안정 오류 코드"
+    )
+    hitomi_metadata_decide.add_argument(
+        "--json", action="store_true", help="JSON으로 출력"
+    )
     hitomi_metadata_close = hitomi_metadata_commands.add_parser(
         "close", help="열린 메타데이터 대화상자 닫기"
     )
@@ -2749,6 +2762,12 @@ def run_cli(args: argparse.Namespace) -> int:
                         else update_app_settings(updates)
                     )
                     result = {"saved": True, **hitomi_metadata_policy_snapshot(saved)}
+                elif subcommand == "decide":
+                    result = evaluate_hitomi_metadata_outcome(
+                        config=current,
+                        outcome=args.outcome,
+                        error_code=args.error_code,
+                    )
                 else:
                     try:
                         if subcommand == "plan":
@@ -2787,10 +2806,17 @@ def run_cli(args: argparse.Namespace) -> int:
                                 provider_hint=args.provider,
                                 config=current,
                                 timeout=args.timeout,
+                                confirmed=True,
                                 **fetch_options,
                             )
                     except HitomiReferenceError as error:
                         result = error.to_dict()
+                        if subcommand == "fetch":
+                            result["metadataPolicy"] = evaluate_hitomi_metadata_outcome(
+                                config=current,
+                                outcome="failure",
+                                error_code=error.code,
+                            )
         elif args.hitomi_command == "filenames":
             current = (
                 control_request({"action": "settings"})

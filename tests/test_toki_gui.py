@@ -981,7 +981,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         header.assert_not_called()
         fetch.assert_called_once_with(
-            reference, provider_hint="auto", config=config
+            reference, provider_hint="auto", config=config, confirmed=True
         )
 
         with (
@@ -1005,8 +1005,48 @@ class WorkSchedulerTests(unittest.TestCase):
             reference,
             provider_hint="auto",
             config=config,
+            confirmed=True,
             cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
         )
+
+        required = {**config, "hitomiMetadataMode": "required"}
+        with patch(
+            "toki_gui.fetch_hitomi_metadata",
+            side_effect=toki_gui.HitomiReferenceError(
+                "hitomi.metadata_network", "연결 실패"
+            ),
+        ):
+            result = HitomiMetadataDialog._fetch_metadata_service(
+                reference, "auto", required, False
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["errorCode"], "hitomi.metadata_network")
+        self.assertEqual(result["metadataPolicy"]["decision"], "stop")
+        self.assertFalse(result["metadataPolicy"]["shouldContinue"])
+
+    def test_hitomi_metadata_failure_text_exposes_mode_decision(self) -> None:
+        class TextStub:
+            value = ""
+
+            def setPlainText(self, value: str) -> None:
+                self.value = value
+
+        harness = type("MetadataResultHarness", (), {})()
+        harness.last_result = {}
+        harness.result_text = TextStub()
+        result = {
+            "ok": False,
+            "errorCode": "hitomi.metadata_network",
+            "error": "연결 실패",
+            "metadataPolicy": {
+                "mode": "required",
+                "decision": "stop",
+                "shouldContinue": False,
+            },
+        }
+        HitomiMetadataDialog._set_result(harness, result)
+        self.assertIn("현재 모드: required", harness.result_text.value)
+        self.assertIn("정책 결정: 작업 중단", harness.result_text.value)
 
     def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:
         calls = []
