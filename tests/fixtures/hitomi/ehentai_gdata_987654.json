@@ -1,0 +1,18 @@
+{
+  "gmetadata": [
+    {
+      "gid": 987654,
+      "token": "abcdef1234",
+      "title": "English Title",
+      "title_jpn": "日本語題名",
+      "category": "Manga",
+      "thumb": "https://ehgt.org/thumb.jpg",
+      "uploader": "tester",
+      "posted": "1700000000",
+      "filecount": "24",
+      "filesize": 123456,
+      "rating": "4.50",
+      "tags": ["artist:sample", "language:korean"]
+    }
+  ]
+}

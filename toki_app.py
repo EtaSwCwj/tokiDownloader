@@ -23,9 +23,13 @@ from PyQt6.QtWidgets import QApplication
 
 from hitomi_provider import (
     HitomiReferenceError,
+    fetch_hitomi_metadata,
+    hitomi_metadata_policy_snapshot,
+    hitomi_metadata_request_plan,
     hitomi_provider_capabilities,
     hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
+    load_hitomi_metadata_fixture,
     plan_hitomi_server,
 )
 from toki_core import (
@@ -863,6 +867,48 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
     )
     hitomi_server_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_metadata = hitomi_commands.add_parser(
+        "metadata", help="갤러리 메타데이터 전용 계획·픽스처·요청"
+    )
+    hitomi_metadata_commands = hitomi_metadata.add_subparsers(
+        dest="hitomi_metadata_command", required=True
+    )
+    hitomi_metadata_status = hitomi_metadata_commands.add_parser(
+        "status", help="메타데이터 모드와 안전 상한 조회"
+    )
+    hitomi_metadata_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_metadata_set = hitomi_metadata_commands.add_parser(
+        "set", help="자동·필수·사용 안 함 방식 저장"
+    )
+    hitomi_metadata_set.add_argument(
+        "--mode", choices=("auto", "required", "disabled"), required=True
+    )
+    hitomi_metadata_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name, help_text in (
+        ("plan", "외부 요청 없이 엔드포인트와 마스킹 본문 계산"),
+        ("parse", "로컬 픽스처를 공통 메타데이터로 변환"),
+        ("fetch", "명시적 확인 뒤 실제 공급자 메타데이터 요청"),
+        ("show", "GUI 메타데이터 대화상자 열기"),
+    ):
+        metadata_command = hitomi_metadata_commands.add_parser(name, help=help_text)
+        metadata_command.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+        metadata_command.add_argument(
+            "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+        )
+        metadata_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+        if name in {"parse", "show"}:
+            metadata_command.add_argument(
+                "--fixture",
+                required=name == "parse",
+                help="로컬 JS/JSON 픽스처 경로",
+            )
+        if name == "fetch":
+            metadata_command.add_argument("--yes", action="store_true", help="외부 요청 확인")
+            metadata_command.add_argument("--timeout", type=int, default=30, help="요청 제한 초")
+    hitomi_metadata_close = hitomi_metadata_commands.add_parser(
+        "close", help="열린 메타데이터 대화상자 닫기"
+    )
+    hitomi_metadata_close.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2300,6 +2346,66 @@ def run_cli(args: argparse.Namespace) -> int:
                     else update_app_settings(updates)
                 )
                 result = {"saved": True, **hitomi_server_policy_snapshot(saved)}
+        elif args.hitomi_command == "metadata":
+            subcommand = args.hitomi_metadata_command
+            if subcommand == "close":
+                ensure_gui_running()
+                result = control_request({"action": "close_hitomi_metadata"})
+            elif subcommand == "show":
+                ensure_gui_running()
+                result = control_request(
+                    {
+                        "action": "show_hitomi_metadata",
+                        "reference": args.input,
+                        "provider": args.provider,
+                        "fixture": str(args.fixture or ""),
+                    }
+                )
+            else:
+                current = (
+                    control_request({"action": "settings"})
+                    if gui_is_running()
+                    else settings_snapshot()
+                )
+                if subcommand == "status":
+                    result = hitomi_metadata_policy_snapshot(current)
+                elif subcommand == "set":
+                    updates = {"hitomiMetadataMode": args.mode}
+                    saved = (
+                        control_request(
+                            {"action": "set_settings", "updates": updates, "reset": False}
+                        )
+                        if gui_is_running()
+                        else update_app_settings(updates)
+                    )
+                    result = {"saved": True, **hitomi_metadata_policy_snapshot(saved)}
+                else:
+                    try:
+                        if subcommand == "plan":
+                            result = hitomi_metadata_request_plan(
+                                args.input,
+                                provider_hint=args.provider,
+                                config=current,
+                            )
+                        elif subcommand == "parse":
+                            result = load_hitomi_metadata_fixture(
+                                args.input,
+                                Path(args.fixture),
+                                provider_hint=args.provider,
+                            )
+                        else:
+                            if not args.yes:
+                                raise ControlError(
+                                    "실제 공급자 메타데이터 요청에는 --yes가 필요합니다."
+                                )
+                            result = fetch_hitomi_metadata(
+                                args.input,
+                                provider_hint=args.provider,
+                                config=current,
+                                timeout=args.timeout,
+                            )
+                    except HitomiReferenceError as error:
+                        result = error.to_dict()
         elif args.show_gui:
             ensure_gui_running()
             result = control_request(

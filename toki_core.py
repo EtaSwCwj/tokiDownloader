@@ -30,6 +30,7 @@ import psutil
 from hitomi_provider import (
     HITOMI_SERVER_IDS,
     normalize_hitomi_manual_server,
+    normalize_hitomi_metadata_mode,
     normalize_hitomi_server_mode,
     normalize_hitomi_server_priority,
 )
@@ -51,7 +52,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 16
+CONFIG_SCHEMA_VERSION = 17
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -141,6 +142,7 @@ SETTING_KEYS = frozenset(
         "hitomiServerMode",
         "hitomiManualServer",
         "hitomiServerPriority",
+        "hitomiMetadataMode",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -441,6 +443,7 @@ def default_config() -> dict[str, Any]:
         "hitomiServerMode": "auto",
         "hitomiManualServer": "hitomi",
         "hitomiServerPriority": list(HITOMI_SERVER_IDS),
+        "hitomiMetadataMode": "auto",
     }
 
 
@@ -1565,6 +1568,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("hitomiServerPriority", defaults["hitomiServerPriority"]),
         defaults["hitomiServerPriority"],
     )
+    normalized["hitomiMetadataMode"] = _safe_normalize(
+        normalize_hitomi_metadata_mode,
+        source.get("hitomiMetadataMode"),
+        defaults["hitomiMetadataMode"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -1767,6 +1775,7 @@ def validate_app_setting_updates(
         "hitomiServerMode": normalize_hitomi_server_mode,
         "hitomiManualServer": normalize_hitomi_manual_server,
         "hitomiServerPriority": normalize_hitomi_server_priority,
+        "hitomiMetadataMode": normalize_hitomi_metadata_mode,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

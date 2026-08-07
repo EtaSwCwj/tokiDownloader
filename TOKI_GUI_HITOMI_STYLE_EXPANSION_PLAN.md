@@ -578,6 +578,18 @@ status|set|plan`, GUI 공급자 설정의 방식·서버·드래그 우선순위
 대비와 비활성 상태를 확인했으며 Python 209건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를
 통과했다.
 
+2026-08-07 갤러리 메타데이터 모드 로컬 구현: 설정 스키마 v17에 자동(실패 시 계속),
+필수(실패 시 중단), 사용 안 함 정책을 추가했다. Hitomi `galleryinfo`는 JavaScript를 실행하지
+않고 8 MiB 이하 JSON 객체만 추출하며, E-Hentai 공식 `gdata` JSON과 함께 공통 제목·일본어
+제목·작가·그룹·태그·페이지·썸네일 구조로 정규화한다. 고정 공급자 픽스처 두 개와 한글·공백
+경로, ID 불일치, 토큰 비노출을 검증했다. `hitomi metadata status|set|plan|parse|fetch|show|
+close`, GUI 공급자 설정과 메타데이터 대화상자가 같은 서비스에 연결되며 실제 `fetch`는
+CLI `--yes` 또는 GUI 목적지 재확인을 요구하고 제한형 I/O 풀에서 실행된다. 외부 요청 없는
+계획·픽스처·설정 화면은 `logs/hitomi-metadata-plan.png`, `logs/hitomi-metadata-fixture.png`,
+`logs/hitomi-metadata-settings.png`에 보존했다. 실제 공급자 API 호출은 사용자 승인 전이라
+아직 실행하지 않았으므로 이 체크 항목은 라이브 검증 뒤 완료 처리한다. Python 215건,
+Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
+
 ### 단계 H. YouTube 선택형 공급자
 
 - [x] `yt-dlp`와 FFmpeg 설치 검사

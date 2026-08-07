@@ -751,6 +751,10 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(
             SettingsDialog.matching_tab_indexes("서버 자동 수동 우선순위"), [4]
         )
+        self.assertEqual(
+            SettingsDialog.matching_tab_indexes("갤러리 메타데이터"), [4]
+        )
+        self.assertEqual(SettingsDialog.matching_tab_indexes("갤러리 정보"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
         self.assertEqual(
@@ -845,6 +849,48 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [("show", "1234567", "hitomi"), ("close",)],
+        )
+
+    def test_hitomi_metadata_ipc_plans_offline_and_controls_dialog(self) -> None:
+        calls = []
+        harness = type("HitomiMetadataIpcHarness", (), {})()
+        harness.config = default_config()
+        harness.show_hitomi_metadata = (
+            lambda reference, provider, fixture: calls.append(
+                ("show", reference, provider, fixture)
+            )
+            or {"shown": True, "fetchRunning": False}
+        )
+        harness.close_hitomi_metadata = (
+            lambda: calls.append(("close",)) or True
+        )
+        planned = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "hitomi_metadata_plan",
+                "reference": "https://exhentai.org/g/987654/abcdef1234/",
+                "provider": "auto",
+            },
+        )
+        shown = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "show_hitomi_metadata",
+                "reference": "42",
+                "provider": "hitomi",
+                "fixture": "fixture.js",
+            },
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_hitomi_metadata"}
+        )
+        self.assertEqual(planned["request"]["method"], "POST")
+        self.assertNotIn("abcdef1234", repr(planned))
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(
+            calls,
+            [("show", "42", "hitomi", "fixture.js"), ("close",)],
         )
 
     def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:

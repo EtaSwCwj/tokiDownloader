@@ -102,9 +102,13 @@ except ImportError as error:
 from hitomi_provider import (
     HITOMI_SERVER_CATALOG,
     HitomiReferenceError,
+    fetch_hitomi_metadata,
+    hitomi_metadata_policy_snapshot,
+    hitomi_metadata_request_plan,
     hitomi_provider_capabilities,
     hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
+    load_hitomi_metadata_fixture,
 )
 
 
@@ -2444,6 +2448,249 @@ class HitomiReferenceDialog(QDialog):
         }
 
 
+class HitomiMetadataDialog(QDialog):
+    def __init__(
+        self,
+        owner: "MainWindow",
+        reference: str = "",
+        provider_hint: str = "auto",
+        fixture_path: str = "",
+    ) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.last_result: dict[str, Any] = {}
+        self.fixture_path = str(fixture_path or "")
+        self.fetch_task: ServiceTask | None = None
+        self.setWindowTitle("Hitomi / ExHentai 갤러리 메타데이터")
+        self.resize(780, 610)
+        layout = QVBoxLayout(self)
+
+        heading = QLabel("갤러리 메타데이터 전용 모드")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        policy = hitomi_metadata_policy_snapshot(owner.config)
+        note = QLabel(
+            f"현재 방식: {policy['mode']} · 응답 상한 8 MiB. 요청 계획과 로컬 픽스처는 "
+            "오프라인이며 실제 조회는 매번 외부 연결 확인을 받습니다. 쿠키는 사용하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        form = QFormLayout()
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItem("자동 판정", "auto")
+        self.provider_combo.addItem("Hitomi", "hitomi")
+        self.provider_combo.addItem("ExHentai", "exhentai")
+        provider_index = self.provider_combo.findData(str(provider_hint or "auto"))
+        self.provider_combo.setCurrentIndex(max(0, provider_index))
+        form.addRow("공급자", self.provider_combo)
+        self.reference_edit = QLineEdit(str(reference or ""))
+        self.reference_edit.setPlaceholderText("Hitomi/ExHentai URL 또는 갤러리 ID")
+        form.addRow("URL / 갤러리 ID", self.reference_edit)
+        self.fixture_label = QLabel(self.fixture_path or "선택하지 않음")
+        self.fixture_label.setWordWrap(True)
+        form.addRow("로컬 픽스처", self.fixture_label)
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        plan_button = QPushButton("요청 계획")
+        plan_button.setToolTip(
+            "CLI: hitomi metadata plan --input URL_OR_ID --json"
+        )
+        plan_button.clicked.connect(self.show_request_plan)
+        fixture_button = QPushButton("픽스처 열기...")
+        fixture_button.setToolTip(
+            "CLI: hitomi metadata parse --input URL_OR_ID --fixture PATH --json"
+        )
+        fixture_button.clicked.connect(self.load_fixture)
+        self.fetch_button = QPushButton("실제 메타데이터 조회...")
+        self.fetch_button.setToolTip(
+            "CLI: hitomi metadata fetch --input URL --yes --json"
+        )
+        self.fetch_button.clicked.connect(self.confirm_fetch)
+        actions.addWidget(plan_button)
+        actions.addWidget(fixture_button)
+        actions.addWidget(self.fetch_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        self.result_text = QPlainTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setPlaceholderText("요청 계획 또는 메타데이터 결과가 표시됩니다.")
+        layout.addWidget(self.result_text, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.button(QDialogButtonBox.StandardButton.Close).setToolTip(
+            "CLI: hitomi metadata close"
+        )
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+        if self.fixture_path and reference:
+            self.load_fixture(self.fixture_path)
+        elif reference:
+            self.show_request_plan()
+
+    def _provider(self) -> str:
+        return str(self.provider_combo.currentData() or "auto")
+
+    def _set_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        self.last_result = dict(result)
+        if not result.get("ok"):
+            lines = [
+                "처리 실패",
+                "",
+                f"오류 코드: {result.get('errorCode', 'hitomi.unknown')}",
+                f"원인: {result.get('error', '')}",
+            ]
+        elif result.get("request") is not None or result.get("reason") == "disabled":
+            request = result.get("request") or {}
+            body = request.get("body")
+            lines = [
+                "요청 계획 · 아직 외부 요청 없음",
+                "",
+                f"공급자: {result.get('provider', '')}",
+                f"갤러리 ID: {result.get('galleryId', '')}",
+                f"메타데이터 방식: {result.get('mode', '')}",
+                f"HTTP: {request.get('method', '사용 안 함')}",
+                f"주소: {request.get('url', '-')}",
+                f"요청 본문: {json.dumps(body, ensure_ascii=False) if body else '-'}",
+                f"비밀값 포함: {'예 · 토큰 원문은 마스킹됨' if request.get('containsSecret') else '아니요'}",
+            ]
+        else:
+            tags = list(result.get("tags") or [])
+            lines = [
+                "메타데이터 분석 완료",
+                "",
+                f"공급자: {result.get('provider', '')}",
+                f"갤러리 ID: {result.get('galleryId', '')}",
+                f"제목: {result.get('title', '')}",
+                f"일본어 제목: {result.get('japaneseTitle') or '-'}",
+                f"작가: {', '.join(result.get('artists') or []) or '-'}",
+                f"그룹: {', '.join(result.get('groups') or []) or '-'}",
+                f"분류 / 언어: {result.get('category') or '-'} / {result.get('language') or '-'}",
+                f"페이지: {int(result.get('pageCount') or 0):,}",
+                f"태그: {', '.join(tags[:20]) or '-'}",
+                f"외부 요청: {'실행함' if result.get('networkRequested') else '없음'}",
+            ]
+            if len(tags) > 20:
+                lines.append(f"태그 나머지: {len(tags) - 20:,}개")
+        self.result_text.setPlainText("\n".join(lines))
+        return dict(result)
+
+    def show_request_plan(self) -> dict[str, Any]:
+        try:
+            result = hitomi_metadata_request_plan(
+                self.reference_edit.text(),
+                provider_hint=self._provider(),
+                config=self.owner.config,
+            )
+        except HitomiReferenceError as error:
+            result = error.to_dict()
+        return self._set_result(result)
+
+    def load_fixture(self, selected_path: str | bool = "") -> dict[str, Any]:
+        path = selected_path if isinstance(selected_path, str) else ""
+        if not path:
+            path, _filter = QFileDialog.getOpenFileName(
+                self,
+                "갤러리 메타데이터 픽스처 열기",
+                self.fixture_path or str(ROOT_DIR),
+                "메타데이터 (*.js *.json);;모든 파일 (*)",
+            )
+        if not path:
+            return {}
+        self.fixture_path = str(Path(path).expanduser().resolve())
+        self.fixture_label.setText(self.fixture_path)
+        try:
+            result = load_hitomi_metadata_fixture(
+                self.reference_edit.text(),
+                Path(self.fixture_path),
+                provider_hint=self._provider(),
+            )
+        except (HitomiReferenceError, OSError, ValueError) as error:
+            result = (
+                error.to_dict()
+                if isinstance(error, HitomiReferenceError)
+                else {"ok": False, "errorCode": "hitomi.fixture_error", "error": str(error)}
+            )
+        return self._set_result(result)
+
+    def confirm_fetch(self) -> bool:
+        try:
+            plan = hitomi_metadata_request_plan(
+                self.reference_edit.text(),
+                provider_hint=self._provider(),
+                config=self.owner.config,
+            )
+        except HitomiReferenceError as error:
+            self._set_result(error.to_dict())
+            return False
+        if not plan.get("request"):
+            self._set_result(plan)
+            return False
+        answer = QMessageBox.question(
+            self,
+            "외부 메타데이터 요청",
+            f"다음 공급자 주소로 메타데이터만 요청할까요?\n\n"
+            f"{plan['request']['url']}\n\n"
+            "이미지 다운로드와 쿠키 사용은 하지 않습니다. ExHentai URL의 갤러리 토큰은 "
+            "요청 메모리에서만 사용하고 결과·로그에 남기지 않습니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self.start_fetch()
+        return True
+
+    def start_fetch(self) -> None:
+        if self.fetch_task is not None:
+            return
+        reference = self.reference_edit.text()
+        provider = self._provider()
+        config = dict(self.owner.config)
+        task = ServiceTask(
+            "hitomi-metadata",
+            lambda: fetch_hitomi_metadata(
+                reference,
+                provider_hint=provider,
+                config=config,
+            ),
+        )
+        self.fetch_task = task
+        self.fetch_button.setEnabled(False)
+        self.result_text.setPlainText("메타데이터 요청 중...")
+        task.signals.finished.connect(self._fetch_finished)
+        self.owner.io_thread_pool.start(task)
+        self.owner.log("사용자 확인 후 Hitomi 메타데이터 요청 시작")
+
+    def _fetch_finished(self, _task_id: str, result: object, error: str) -> None:
+        self.fetch_task = None
+        self.fetch_button.setEnabled(True)
+        if error:
+            payload = {
+                "ok": False,
+                "errorCode": "hitomi.metadata_network",
+                "error": error,
+            }
+            self.owner.log("Hitomi 메타데이터 요청 실패", "ERROR")
+        else:
+            payload = result if isinstance(result, dict) else {}
+            self.owner.log("Hitomi 메타데이터 요청 완료")
+        self._set_result(payload)
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "providerHint": self._provider(),
+            "referenceLength": len(self.reference_edit.text()),
+            "fixtureSelected": bool(self.fixture_path),
+            "fetchRunning": self.fetch_task is not None,
+            "result": dict(self.last_result),
+        }
+
+
 class EmbeddedBrowserDialog(QDialog):
     OFFLINE_HTML = """
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -2936,7 +3183,7 @@ class SettingsDialog(QDialog):
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
-        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 id youtube yt-dlp ffmpeg 의존성 플러그인",
+        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
     def __init__(self, owner: "MainWindow") -> None:
@@ -3370,7 +3617,7 @@ class SettingsDialog(QDialog):
         provider_form.addRow(self.strings["provider.toki"], toki_status)
         hitomi_capability = hitomi_provider_capabilities()
         hitomi_status = QLabel(
-            "URL·갤러리 ID 분석 사용 가능 · 외부 요청 없음 · 다운로드 엔진 준비 중"
+            "URL·ID 및 갤러리 메타데이터 사용 가능 · 이미지 다운로드 엔진 준비 중"
             if hitomi_capability["referenceInspection"]
             else "선택 기능 · 분석기 사용 불가"
         )
@@ -3415,12 +3662,26 @@ class SettingsDialog(QDialog):
         priority_buttons.addWidget(priority_down)
         priority_buttons.addStretch(1)
         provider_form.addRow("", priority_buttons)
+        self.hitomi_metadata_mode_combo = QComboBox()
+        self.hitomi_metadata_mode_combo.addItem("자동 · 실패 시 계속", "auto")
+        self.hitomi_metadata_mode_combo.addItem("필수 · 실패 시 중단", "required")
+        self.hitomi_metadata_mode_combo.addItem("사용 안 함", "disabled")
+        self.hitomi_metadata_mode_combo.setToolTip(
+            "CLI: hitomi metadata set --mode auto|required|disabled --json"
+        )
+        provider_form.addRow("갤러리 정보", self.hitomi_metadata_mode_combo)
         hitomi_inspector_button = QPushButton("Hitomi URL / ID 분석...")
         hitomi_inspector_button.setToolTip(
             "CLI: hitomi inspect --input URL_OR_ID --show-gui --json"
         )
         hitomi_inspector_button.clicked.connect(owner.show_hitomi_inspector)
         provider_form.addRow("작품 식별자", hitomi_inspector_button)
+        hitomi_metadata_button = QPushButton("갤러리 메타데이터...")
+        hitomi_metadata_button.setToolTip(
+            "CLI: hitomi metadata show --input URL_OR_ID --json"
+        )
+        hitomi_metadata_button.clicked.connect(owner.show_hitomi_metadata)
+        provider_form.addRow("메타데이터", hitomi_metadata_button)
         youtube_status = QLabel("선택 기능 · yt-dlp와 FFmpeg 상태는 진단에서 확인")
         youtube_status.setWordWrap(True)
         provider_form.addRow(self.strings["provider.youtube"], youtube_status)
@@ -3588,6 +3849,9 @@ class SettingsDialog(QDialog):
                 ),
                 "priority": self._hitomi_server_priority(),
             },
+            "hitomiMetadataMode": str(
+                self.hitomi_metadata_mode_combo.currentData() or "auto"
+            ),
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -3672,6 +3936,10 @@ class SettingsDialog(QDialog):
         self.hitomi_manual_server_combo.setCurrentIndex(max(0, manual_index))
         self._load_hitomi_server_priority(values["hitomiServerPriority"])
         self._update_hitomi_server_controls()
+        metadata_index = self.hitomi_metadata_mode_combo.findData(
+            str(values["hitomiMetadataMode"])
+        )
+        self.hitomi_metadata_mode_combo.setCurrentIndex(max(0, metadata_index))
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3905,6 +4173,9 @@ class SettingsDialog(QDialog):
                 self.hitomi_manual_server_combo.currentData()
             ),
             "hitomiServerPriority": self._hitomi_server_priority(),
+            "hitomiMetadataMode": str(
+                self.hitomi_metadata_mode_combo.currentData()
+            ),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -4533,6 +4804,7 @@ class MainWindow(QMainWindow):
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
         self.active_hitomi_inspector_dialog: HitomiReferenceDialog | None = None
+        self.active_hitomi_metadata_dialog: HitomiMetadataDialog | None = None
         self.active_embedded_browser_dialog: EmbeddedBrowserDialog | None = None
         self.active_proxy_credential_dialog: ProxyCredentialDialog | None = None
         self.active_cookie_manager_dialog: CookieManagerDialog | None = None
@@ -6805,6 +7077,40 @@ class MainWindow(QMainWindow):
         if not self.active_hitomi_inspector_dialog:
             return False
         self.active_hitomi_inspector_dialog.close()
+        return True
+
+    def show_hitomi_metadata(
+        self,
+        reference: str | bool = "",
+        provider: str = "auto",
+        fixture: str = "",
+    ) -> dict[str, Any]:
+        safe_reference = reference if isinstance(reference, str) else ""
+        if self.active_hitomi_metadata_dialog:
+            self.active_hitomi_metadata_dialog.close()
+        dialog = HitomiMetadataDialog(
+            self,
+            safe_reference,
+            str(provider or "auto"),
+            str(fixture or ""),
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(
+            lambda _object=None: setattr(
+                self, "active_hitomi_metadata_dialog", None
+            )
+        )
+        self.active_hitomi_metadata_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log("Hitomi 메타데이터 창 표시")
+        return {"shown": True, **dialog.state_snapshot()}
+
+    def close_hitomi_metadata(self) -> bool:
+        if not self.active_hitomi_metadata_dialog:
+            return False
+        self.active_hitomi_metadata_dialog.close()
         return True
 
     def show_embedded_browser(
@@ -9482,6 +9788,11 @@ class MainWindow(QMainWindow):
         ):
             screenshot = self.active_hitomi_inspector_dialog.grab()
         elif (
+            self.active_hitomi_metadata_dialog
+            and self.active_hitomi_metadata_dialog.isVisible()
+        ):
+            screenshot = self.active_hitomi_metadata_dialog.grab()
+        elif (
             self.active_embedded_browser_dialog
             and self.active_embedded_browser_dialog.isVisible()
         ):
@@ -9955,7 +10266,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
             "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd image-processing status|set [options]\n"
-            "toki-cli.cmd hitomi status|inspect|close|server status|set|plan [options]\n"
+            "toki-cli.cmd hitomi status|inspect|close|server status|set|plan|metadata status|set|plan|parse|fetch|show|close [options]\n"
             "toki-cli.cmd pdf status|set|plan|generate|cancel|close [options]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
@@ -10164,6 +10475,7 @@ class MainWindow(QMainWindow):
             "memoryUsage": self.memory_status_snapshot(),
             "localApi": self.local_api_status_snapshot(),
             "hitomiServer": hitomi_server_policy_snapshot(self.config),
+            "hitomiMetadataPolicy": hitomi_metadata_policy_snapshot(self.config),
             "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),
@@ -10253,6 +10565,18 @@ class MainWindow(QMainWindow):
                     "referenceLength": 0,
                     "result": {},
                     "networkRequested": False,
+                }
+            ),
+            "hitomiMetadata": (
+                self.active_hitomi_metadata_dialog.state_snapshot()
+                if self.active_hitomi_metadata_dialog
+                else {
+                    "open": False,
+                    "providerHint": "auto",
+                    "referenceLength": 0,
+                    "fixtureSelected": False,
+                    "fetchRunning": False,
+                    "result": {},
                 }
             ),
             "cookieManager": (
@@ -10939,6 +11263,23 @@ class MainWindow(QMainWindow):
             )
         if action == "close_hitomi_inspector":
             return {"closed": self.close_hitomi_inspector()}
+        if action == "hitomi_metadata_plan":
+            try:
+                return hitomi_metadata_request_plan(
+                    str(request.get("reference") or ""),
+                    provider_hint=str(request.get("provider") or "auto"),
+                    config=self.config,
+                )
+            except HitomiReferenceError as error:
+                return error.to_dict()
+        if action == "show_hitomi_metadata":
+            return self.show_hitomi_metadata(
+                str(request.get("reference") or ""),
+                str(request.get("provider") or "auto"),
+                str(request.get("fixture") or ""),
+            )
+        if action == "close_hitomi_metadata":
+            return {"closed": self.close_hitomi_metadata()}
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()

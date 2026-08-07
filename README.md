@@ -132,6 +132,13 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi server set --mode auto --priority hitomi,exhentai,ehentai --json
 .\toki-cli.cmd hitomi server set --mode manual --manual-server ehentai --json
 .\toki-cli.cmd hitomi server plan --input "https://exhentai.org/g/987654/abcdef1234/" --json
+.\toki-cli.cmd hitomi metadata status --json
+.\toki-cli.cmd hitomi metadata set --mode auto --json
+.\toki-cli.cmd hitomi metadata plan --input "https://hitomi.la/manga/sample-1234567.html" --json
+.\toki-cli.cmd hitomi metadata parse --input "https://hitomi.la/manga/sample-1234567.html" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
+.\toki-cli.cmd hitomi metadata show --input "https://hitomi.la/manga/sample-1234567.html" --json
+.\toki-cli.cmd hitomi metadata fetch --input "https://hitomi.la/manga/sample-1234567.html" --yes --json
+.\toki-cli.cmd hitomi metadata close --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -726,6 +733,22 @@ ExHentai 서버를 고르는 것처럼 호환되지 않는 조합은 `hitomi.ser
 같은 정책을 사용하고, `plan`은 실제 접속 없이 선택 서버와 대체 후보를 계산합니다. 설정
 마이그레이션 후 기본값은 자동, 수동 후보 Hitomi.la, 순서 Hitomi.la → ExHentai → E-Hentai로
 복원됩니다. 화면은 `logs\hitomi-server-settings.png`에 저장됩니다.
+
+설정 스키마 v17은 갤러리 정보 방식을 `auto`, `required`, `disabled`로 저장합니다. 자동은
+메타데이터 실패 시 이후 다운로드를 계속할 정책이고, 필수는 중단, 사용 안 함은 요청 계획도
+만들지 않습니다. Hitomi는 `galleryinfo` JS에서 JSON 객체만 추출하고 코드를 실행하지 않으며,
+ExHentai/E-Hentai는 [공식 gdata API 형식](https://ehwiki.org/wiki/API)의 JSON을 공통 제목,
+일본어 제목, 작가·그룹·태그, 페이지 수, 썸네일 정보로 정규화합니다. 응답과 픽스처는 8 MiB로
+제한합니다.
+
+`hitomi metadata plan`은 메서드·엔드포인트와 마스킹한 본문만 계산하고 외부 접속을 하지
+않습니다. `parse --fixture PATH`는 사이트 변경 회귀 검사용 로컬 JS/JSON을 읽으며 한글·공백
+Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실행하고, GUI의 실제 조회
+버튼도 매번 목적지와 쿠키 미사용을 확인한 뒤 제한형 I/O 풀에서 동작합니다. ExHentai
+갤러리 토큰은 POST 요청 메모리에만 존재하고 계획·결과·설정·로그에는 원문을 남기지
+않습니다. 로컬 검증 화면은 `logs\hitomi-metadata-plan.png`,
+`logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`에 있습니다. 실제 공급자
+요청 검증은 사용자 승인 전에는 실행하지 않습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

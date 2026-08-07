@@ -16,6 +16,165 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_metadata_cli_keeps_external_fetch_explicit(self) -> None:
+        status_args = build_parser().parse_args(
+            ["hitomi", "metadata", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertTrue(json.loads(stdout.getvalue())["enabled"])
+
+        set_args = build_parser().parse_args(
+            ["hitomi", "metadata", "set", "--mode", "required", "--json"]
+        )
+        saved = {**default_config(), "hitomiMetadataMode": "required"}
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"hitomiMetadataMode": "required"},
+                "reset": False,
+            },
+        )
+
+        plan_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "metadata",
+                "plan",
+                "--input",
+                "https://exhentai.org/g/987654/abcdef1234/",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(plan_args), 0)
+        plan = json.loads(stdout.getvalue())
+        self.assertEqual(plan["request"]["body"]["gidlist"][0][1], "<gallery-token>")
+        self.assertNotIn("abcdef1234", repr(plan))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "metadata fixture.js"
+            fixture.write_text(
+                'var galleryinfo = {"id":"42","title":"fixture title","files":[]};',
+                encoding="utf-8",
+            )
+            parse_args = build_parser().parse_args(
+                [
+                    "hitomi",
+                    "metadata",
+                    "parse",
+                    "--input",
+                    "42",
+                    "--fixture",
+                    str(fixture),
+                    "--json",
+                ]
+            )
+            with (
+                patch("toki_app.gui_is_running", return_value=False),
+                patch("toki_app.settings_snapshot", return_value=default_config()),
+                redirect_stdout(StringIO()) as stdout,
+            ):
+                self.assertEqual(run_cli(parse_args), 0)
+            self.assertEqual(json.loads(stdout.getvalue())["title"], "fixture title")
+
+        fetch_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "metadata",
+                "fetch",
+                "--input",
+                "https://hitomi.la/manga/sample-42.html",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+        ):
+            with self.assertRaises(ControlError):
+                run_cli(fetch_args)
+        confirmed_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "metadata",
+                "fetch",
+                "--input",
+                "https://hitomi.la/manga/sample-42.html",
+                "--yes",
+                "--timeout",
+                "12",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            patch(
+                "toki_app.fetch_hitomi_metadata",
+                return_value={"ok": True, "title": "fetched", "networkRequested": True},
+            ) as fetch,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(confirmed_args), 0)
+        fetch.assert_called_once_with(
+            "https://hitomi.la/manga/sample-42.html",
+            provider_hint="auto",
+            config=default_config(),
+            timeout=12,
+        )
+
+        show_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "metadata",
+                "show",
+                "--input",
+                "42",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "show_hitomi_metadata",
+                "reference": "42",
+                "provider": "auto",
+                "fixture": "",
+            }
+        )
+
+        close_args = build_parser().parse_args(
+            ["hitomi", "metadata", "close", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_args), 0)
+        request.assert_called_once_with({"action": "close_hitomi_metadata"})
+
     def test_hitomi_cli_inspects_offline_and_controls_gui_dialog(self) -> None:
         inspect_args = build_parser().parse_args(
             [

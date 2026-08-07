@@ -521,6 +521,17 @@ CLI로 실행 중 GUI의 수동 E-Hentai 정책과 순서를 검증한 뒤 기�
 E-Hentai로 복원했다. `logs/hitomi-server-settings.png`를 확인했고 Python 209건, Node 16건,
 자체 점검 5/5와 필수 환경 5/5를 통과했다.
 
+2026-08-07 Hitomi 메타데이터 전용 흐름: 설정 스키마 v17에 자동·필수·사용 안 함 정책을
+추가하고 Hitomi `galleryinfo`의 JSON 부분과 E-Hentai 공식 `gdata` JSON을 공통 메타데이터로
+정규화한다. 파서는 JS를 실행하지 않고 응답·픽스처를 8 MiB로 제한하며 ExHentai 토큰은
+마스킹 계획과 요청 메모리 밖으로 내보내지 않는다. `hitomi metadata status|set|plan|parse|
+fetch|show|close`, GUI 설정·대화상자·IPC·상태를 연결했고 실제 조회는 CLI `--yes` 또는 GUI
+재확인과 제한형 I/O 풀을 사용한다. 공급자 고정 픽스처, 주입 전송, 한글·공백 경로와
+프로그램 자체 캡처를 외부 요청 없이 검증했다. 실제 사이트 요청은 사용자 승인 뒤 별도
+통합 검증할 예정이다. 화면은 `logs/hitomi-metadata-plan.png`,
+`logs/hitomi-metadata-fixture.png`, `logs/hitomi-metadata-settings.png`에 보존했고 Python
+215건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와
