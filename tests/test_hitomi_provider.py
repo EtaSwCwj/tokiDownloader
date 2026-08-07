@@ -14,6 +14,7 @@ from hitomi_provider import (
     hitomi_excluded_tag_policy_snapshot,
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_file_policy_snapshot,
+    hitomi_original_image_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_server_policy_snapshot,
     hitomi_title_policy_snapshot,
@@ -23,6 +24,7 @@ from hitomi_provider import (
     normalize_hitomi_excluded_tags,
     plan_hitomi_image_filenames,
     plan_hitomi_metadata_files,
+    plan_hitomi_image_sources,
     parse_hitomi_metadata_payload,
     plan_hitomi_server,
     select_hitomi_display_title,
@@ -95,6 +97,7 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertFalse(result["networkRequest"])
         self.assertFalse(result["download"])
         self.assertTrue(result["metadataFileGeneration"])
+        self.assertTrue(result["originalImagePolicy"])
         self.assertFalse(result["authenticationBypass"])
         self.assertIn("exhentai.org", result["supportedHosts"])
 
@@ -473,6 +476,54 @@ class HitomiReferenceTests(unittest.TestCase):
             validate_app_setting_updates({"hitomiMetadataFileMode": "xml"})
         migrated = normalize_config({"configVersion": 20})
         self.assertEqual(migrated["hitomiMetadataFileMode"], "metadata_json")
+
+    def test_original_image_policy_uses_known_optimized_variants_and_fallback(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "1234567", FIXTURE_DIR / "galleryinfo_1234567.js"
+        )
+        self.assertTrue(default_config()["hitomiUseOriginalImages"])
+        policy = hitomi_original_image_policy_snapshot(default_config())
+        self.assertEqual(policy["preferredVariant"], "original")
+        original = plan_hitomi_image_sources(metadata)
+        self.assertEqual(
+            [item["selectedVariant"] for item in original["sample"]],
+            ["original", "original"],
+        )
+        optimized = plan_hitomi_image_sources(metadata, use_original=False)
+        self.assertEqual(
+            [item["selectedVariant"] for item in optimized["sample"]],
+            ["webp", "avif"],
+        )
+        self.assertEqual(optimized["optimizedCount"], 2)
+        self.assertEqual(optimized["fallbackCount"], 0)
+        self.assertFalse(optimized["networkRequested"])
+
+        fallback = plan_hitomi_image_sources(
+            {
+                **metadata,
+                "pageCount": 2,
+                "files": [{"index": 1, "name": "only-original.jpg"}],
+            },
+            use_original=False,
+        )
+        self.assertEqual(fallback["sample"][0]["selectedVariant"], "original")
+        self.assertTrue(fallback["sample"][0]["usedFallback"])
+        self.assertEqual(fallback["fallbackCount"], 1)
+        self.assertEqual(fallback["unresolvedFileCount"], 1)
+
+    def test_original_image_policy_validates_boolean_and_migration(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_app_setting_updates({"hitomiUseOriginalImages": "yes"})
+        migrated = normalize_config({"configVersion": 21})
+        self.assertTrue(migrated["hitomiUseOriginalImages"])
+        exhentai = load_hitomi_metadata_fixture(
+            "https://exhentai.org/g/987654/abcdef1234/",
+            FIXTURE_DIR / "ehentai_gdata_987654.json",
+        )
+        unresolved = plan_hitomi_image_sources(exhentai, use_original=False)
+        self.assertEqual(unresolved["knownFileCount"], 0)
+        self.assertEqual(unresolved["unresolvedFileCount"], 24)
+        self.assertEqual(unresolved["sample"], [])
 
 
 if __name__ == "__main__":

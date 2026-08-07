@@ -16,6 +16,56 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_original_image_cli_uses_shared_offline_plan(self) -> None:
+        status_args = build_parser().parse_args(
+            ["hitomi", "images", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertTrue(json.loads(stdout.getvalue())["useOriginal"])
+
+        set_args = build_parser().parse_args(
+            ["hitomi", "images", "set", "--original", "off", "--json"]
+        )
+        saved = {**default_config(), "hitomiUseOriginalImages": False}
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"hitomiUseOriginalImages": False},
+                "reset": False,
+            },
+        )
+
+        fixture = Path(__file__).parent / "fixtures" / "hitomi" / "galleryinfo_1234567.js"
+        plan_args = build_parser().parse_args(
+            [
+                "hitomi", "images", "plan", "--input", "1234567",
+                "--fixture", str(fixture), "--original", "off",
+                "--sample-limit", "1", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(plan_args), 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["sample"][0]["selectedVariant"], "webp")
+        self.assertTrue(result["sampleTruncated"])
+        self.assertFalse(result["networkRequested"])
+
     def test_hitomi_metadata_file_cli_plans_and_writes_only_with_confirmation(self) -> None:
         fixture = Path(__file__).parent / "fixtures" / "hitomi" / "galleryinfo_1234567.js"
         status_args = build_parser().parse_args(

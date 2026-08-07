@@ -11,7 +11,7 @@ var galleryinfo = {
   "characters": [{"character": "character a"}],
   "tags": [{"tag": "full color", "female": "1"}, {"tag": "uncensored"}],
   "files": [
-    {"name": "001.jpg", "hash": "aa", "width": 1200, "height": 1800},
-    {"name": "원본 02.png", "hash": "bb", "width": "900", "height": "1400"}
+    {"name": "001.jpg", "hash": "aa", "width": 1200, "height": 1800, "haswebp": 1},
+    {"name": "원본 02.png", "hash": "bb", "width": "900", "height": "1400", "hasavif": true}
   ]
 };

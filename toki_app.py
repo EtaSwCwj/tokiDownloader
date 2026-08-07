@@ -30,12 +30,14 @@ from hitomi_provider import (
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_file_policy_snapshot,
     hitomi_metadata_request_plan,
+    hitomi_original_image_policy_snapshot,
     hitomi_provider_capabilities,
     hitomi_server_policy_snapshot,
     hitomi_title_policy_snapshot,
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
     plan_hitomi_image_filenames,
+    plan_hitomi_image_sources,
     plan_hitomi_metadata_files,
     plan_hitomi_server,
     select_hitomi_display_title,
@@ -1046,6 +1048,34 @@ def build_parser() -> argparse.ArgumentParser:
             metadata_file_command.add_argument(
                 "--overwrite", action="store_true", help="기존 파일 교체 확인"
             )
+    hitomi_images = hitomi_commands.add_parser(
+        "images", help="Hitomi 원본 또는 최적화 이미지 선택 정책"
+    )
+    hitomi_image_commands = hitomi_images.add_subparsers(
+        dest="hitomi_image_command", required=True
+    )
+    hitomi_image_status = hitomi_image_commands.add_parser(
+        "status", help="현재 원본 이미지 사용 정책 조회"
+    )
+    hitomi_image_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_image_set = hitomi_image_commands.add_parser(
+        "set", help="원본 이미지 사용 설정"
+    )
+    hitomi_image_set.add_argument("--original", choices=("on", "off"), required=True)
+    hitomi_image_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_image_plan = hitomi_image_commands.add_parser(
+        "plan", help="로컬 메타데이터 픽스처에서 이미지 변형 선택"
+    )
+    hitomi_image_plan.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+    hitomi_image_plan.add_argument(
+        "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+    )
+    hitomi_image_plan.add_argument("--fixture", required=True, help="로컬 JS/JSON 픽스처 경로")
+    hitomi_image_plan.add_argument(
+        "--original", choices=("on", "off"), help="저장 설정 대신 이 계획에만 적용"
+    )
+    hitomi_image_plan.add_argument("--sample-limit", type=int, default=100)
+    hitomi_image_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2694,6 +2724,42 @@ def run_cli(args: argparse.Namespace) -> int:
                             mode=args.mode,
                             overwrite=args.overwrite,
                         )
+                except HitomiReferenceError as error:
+                    result = error.to_dict()
+        elif args.hitomi_command == "images":
+            current = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            subcommand = args.hitomi_image_command
+            if subcommand == "status":
+                result = hitomi_original_image_policy_snapshot(current)
+            elif subcommand == "set":
+                updates = {"hitomiUseOriginalImages": args.original == "on"}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **hitomi_original_image_policy_snapshot(saved)}
+            else:
+                try:
+                    metadata = load_hitomi_metadata_fixture(
+                        args.input,
+                        Path(args.fixture),
+                        provider_hint=args.provider,
+                    )
+                    result = plan_hitomi_image_sources(
+                        metadata,
+                        config=current,
+                        use_original=(
+                            None if args.original is None else args.original == "on"
+                        ),
+                        sample_limit=args.sample_limit,
+                    )
                 except HitomiReferenceError as error:
                     result = error.to_dict()
         elif args.show_gui:

@@ -567,6 +567,14 @@ Python 225건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 `logs/hitomi-metadata-file-settings.png`, `logs/hitomi-metadata-file-dialog.png`에 보존했다.
 Python 228건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
+2026-08-07 Hitomi 원본 이미지 선택: 설정 스키마 v22에 기본 켜짐 정책을 추가하고 공용
+서비스가 Hitomi 파일별 AVIF·WebP 변형 플래그를 읽어 원본 또는 최적화 변형과 폴백 근거를
+계산하도록 했다. `hitomi images status|set|plan`, GUI 공급자 체크박스·메타데이터 요약·
+`status --json`을 연결하고 CLI로 최적화 정책을 적용해 로컬 두 파일의 WebP·AVIF 선택을
+검증한 뒤 기본 원본 사용으로 복원했다. 실제 이미지 요청은 없었고 화면은
+`logs/hitomi-original-image-settings.png`, `logs/hitomi-optimized-image-plan.png`에 보존했다.
+Python 231건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

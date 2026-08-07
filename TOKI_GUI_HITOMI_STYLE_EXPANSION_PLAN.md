@@ -550,7 +550,7 @@ memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부
 - [x] 제외 태그 관리
 - [x] 일본어 제목 우선
 - [x] info.txt 또는 공통 metadata.json 생성
-- [ ] 원본 이미지 선택
+- [x] 원본 이미지 선택
 - [ ] 인증이 필요한 사이트의 사용자 소유 쿠키 처리
 
 접근 제한 우회는 구현 범위에 포함하지 않는다. 사이트 변경에 견딜 수 있도록 공급자
@@ -634,6 +634,17 @@ Python 225건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 `logs/hitomi-metadata-file-dialog.png`에서 생성 방식과 모든 버튼의 CLI 대응을 확인한 뒤 기본
 `metadata_json`으로 복원했다. 외부 요청과 사용자 작품 파일 변경은 없었다.
 Python 228건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 원본 이미지 선택 구현: 설정 스키마 v22에 기본 켜짐 원본 사용을 추가하고,
+Hitomi `galleryinfo` 파일의 AVIF·WebP 변형 플래그를 공통 메타데이터에 보존한다. 원본을 끄면
+AVIF → WebP 순으로 선택하고 변형이 없는 파일만 원본으로 폴백하며, 파일 목록이 없는
+E-Hentai 요약은 페이지 수만 미확정으로 보고한다. `hitomi images status|set|plan`, GUI 공급자
+체크박스, 메타데이터 결과 요약과 `status --json`이 같은 서비스를 사용한다. 실행 중 GUI에
+CLI로 최적화 정책을 적용해 픽스처 두 장이 WebP·AVIF로 선택되는지 상태·화면에서 확인한 뒤
+기본 원본 사용으로 복원했다. `logs/hitomi-original-image-settings.png`,
+`logs/hitomi-optimized-image-plan.png`에서 체크 상태와 선택 요약을 검토했으며 실제 이미지
+요청·다운로드는 없었다.
+Python 231건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ### 단계 H. YouTube 선택형 공급자
 

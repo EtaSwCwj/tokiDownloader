@@ -760,6 +760,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("제외 태그 규칙"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("일본어 제목 우선"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("metadata.json info.txt 파일 저장"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("이미지 품질 최적화"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
         self.assertEqual(
@@ -928,6 +929,8 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(snapshot["titleSelection"]["selectedTitle"], "日本語タイトル")
         self.assertEqual(snapshot["titleSelection"]["selectedField"], "japaneseTitle")
         self.assertFalse(snapshot["titleSelection"]["usedFallback"])
+        self.assertTrue(snapshot["imageSourcePlan"]["useOriginal"])
+        self.assertFalse(snapshot["imageSourcePlan"]["networkRequested"])
 
     def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:
         calls = []

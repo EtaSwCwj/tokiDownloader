@@ -153,6 +153,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi metadata-files set --mode metadata_json --json
 .\toki-cli.cmd hitomi metadata-files plan --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --output "C:\작품 폴더" --mode both --json
 .\toki-cli.cmd hitomi metadata-files write --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --output "C:\작품 폴더" --mode both --yes --json
+.\toki-cli.cmd hitomi images status --json
+.\toki-cli.cmd hitomi images set --original on --json
+.\toki-cli.cmd hitomi images plan --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --original off --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -736,8 +739,8 @@ ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에
 힌트만 표시합니다. `--show-gui`로 같은 분석기를 GUI 대화상자에서 열고 `hitomi close`로
 닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
 false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`,
-`excludedTagPolicy: true`, `japaneseTitlePolicy: true`, `metadataFileGeneration: true`로 구현
-범위를 명확히 표시합니다.
+`excludedTagPolicy: true`, `japaneseTitlePolicy: true`, `metadataFileGeneration: true`,
+`originalImagePolicy: true`로 구현 범위를 명확히 표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
@@ -806,6 +809,15 @@ GUI 설정을 켜 로컬 픽스처의 `日本語タイトル` 선택을 확인�
 `폴더에 정보 저장...` 버튼도 대상 파일과 교체 개수를 다시 확인합니다. 임시 한글 폴더에서
 두 파일의 실제 생성·UTF-8·공통 필드·재실행 거부와 정리를 확인했고, 화면은
 `logs\hitomi-metadata-file-settings.png`, `logs\hitomi-metadata-file-dialog.png`에 있습니다.
+
+설정 스키마 v22는 `hitomiUseOriginalImages`를 기본 켜짐으로 저장합니다. 켜면 모든 알려진
+파일에서 공급자 원본을 선택하고, 끄면 메타데이터의 변형 플래그에 따라 AVIF → WebP 순으로
+최적화본을 고른 뒤 해당 변형이 없는 파일만 원본으로 폴백합니다. 파일 목록이 없는 E-Hentai
+요약은 임의로 결정하지 않고 미확정 개수로 남깁니다. `hitomi images status|set|plan`, 공급자
+설정 체크박스, 메타데이터 대화상자의 이미지 선택 요약과 `status --json`이 같은 서비스를
+사용합니다. 로컬 픽스처에서 WebP·AVIF 두 장 선택을 확인하고 기본 원본 사용으로 복원했으며,
+실제 이미지 URL 요청이나 다운로드는 수행하지 않았습니다. 화면은
+`logs\hitomi-original-image-settings.png`, `logs\hitomi-optimized-image-plan.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

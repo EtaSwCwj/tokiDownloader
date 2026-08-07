@@ -91,6 +91,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "excludedTagPolicy": True,
         "japaneseTitlePolicy": True,
         "metadataFileGeneration": True,
+        "originalImagePolicy": True,
         "metadataExternalRequestRequiresConfirmation": True,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
@@ -104,6 +105,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
             "제외 태그 판정은 정규화한 로컬 메타데이터에만 적용합니다.",
             "표시 제목은 일본어 우선 여부와 명시적 폴백 근거를 함께 반환합니다.",
             "metadata.json과 info.txt 저장은 기존 파일 교체 전 별도 확인을 요구합니다.",
+            "원본/최적화 이미지 선택 계획은 파일 변형 플래그만 읽고 네트워크를 사용하지 않습니다.",
         ],
     }
 
@@ -657,6 +659,89 @@ def write_hitomi_metadata_files(
     }
 
 
+def hitomi_original_image_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    value = source.get("hitomiUseOriginalImages", True)
+    use_original = value if isinstance(value, bool) else True
+    return {
+        "ok": True,
+        "useOriginal": use_original,
+        "preferredVariant": "original" if use_original else "optimized",
+        "optimizedOrder": ["avif", "webp"],
+        "fallbackVariant": "original",
+        "networkRequested": False,
+    }
+
+
+def plan_hitomi_image_sources(
+    metadata: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    use_original: bool | None = None,
+    sample_limit: int = 100,
+) -> dict[str, Any]:
+    if not isinstance(metadata, dict) or not metadata.get("ok"):
+        raise HitomiReferenceError(
+            "hitomi.image_source_metadata_invalid",
+            "이미지 선택 계획에는 정상적으로 정규화된 갤러리 메타데이터가 필요합니다.",
+        )
+    if use_original is not None and not isinstance(use_original, bool):
+        raise ValueError("원본 이미지 사용 설정은 true 또는 false여야 합니다.")
+    policy = hitomi_original_image_policy_snapshot(
+        {"hitomiUseOriginalImages": use_original}
+        if use_original is not None
+        else config
+    )
+    files = [item for item in metadata.get("files") or [] if isinstance(item, dict)]
+    limit = max(0, min(HITOMI_FILENAME_SAMPLE_LIMIT, int(sample_limit)))
+    sample: list[dict[str, Any]] = []
+    optimized_count = 0
+    fallback_count = 0
+    for offset, item in enumerate(files, start=1):
+        if policy["useOriginal"]:
+            selected = "original"
+            fallback = False
+        elif _metadata_flag(item.get("hasAvif")):
+            selected = "avif"
+            fallback = False
+            optimized_count += 1
+        elif _metadata_flag(item.get("hasWebp")):
+            selected = "webp"
+            fallback = False
+            optimized_count += 1
+        else:
+            selected = "original"
+            fallback = True
+            fallback_count += 1
+        if len(sample) < limit:
+            sample.append(
+                {
+                    "index": int(item.get("index") or offset),
+                    "name": str(item.get("name") or ""),
+                    "selectedVariant": selected,
+                    "usedFallback": fallback,
+                    "hasAvif": _metadata_flag(item.get("hasAvif")),
+                    "hasWebp": _metadata_flag(item.get("hasWebp")),
+                }
+            )
+    page_count = max(_positive_int(metadata.get("pageCount")), len(files))
+    return {
+        **policy,
+        "galleryId": str(metadata.get("galleryId") or ""),
+        "workKey": str(metadata.get("workKey") or ""),
+        "pageCount": page_count,
+        "knownFileCount": len(files),
+        "unresolvedFileCount": max(0, page_count - len(files)),
+        "optimizedCount": optimized_count,
+        "fallbackCount": fallback_count,
+        "sampleLimit": limit,
+        "sampleTruncated": len(files) > len(sample),
+        "sample": sample,
+    }
+
+
 def hitomi_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
     mode = normalize_hitomi_metadata_mode(source.get("hitomiMetadataMode"))
@@ -787,6 +872,14 @@ def _positive_int(value: Any, *, default: int = 0) -> int:
     except (TypeError, ValueError):
         return default
     return normalized if normalized >= 0 else default
+
+
+def _metadata_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _posted_iso(value: Any) -> str:
@@ -927,6 +1020,8 @@ def parse_hitomi_metadata_payload(
                     "hash": str(item.get("hash") or "").strip(),
                     "width": _positive_int(item.get("width")),
                     "height": _positive_int(item.get("height")),
+                    "hasWebp": _metadata_flag(item.get("haswebp")),
+                    "hasAvif": _metadata_flag(item.get("hasavif")),
                 }
             )
         return _normalized_metadata(

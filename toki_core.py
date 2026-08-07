@@ -55,7 +55,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 21
+CONFIG_SCHEMA_VERSION = 22
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -150,6 +150,7 @@ SETTING_KEYS = frozenset(
         "hitomiExcludedTags",
         "hitomiPreferJapaneseTitle",
         "hitomiMetadataFileMode",
+        "hitomiUseOriginalImages",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -455,6 +456,7 @@ def default_config() -> dict[str, Any]:
         "hitomiExcludedTags": [],
         "hitomiPreferJapaneseTitle": False,
         "hitomiMetadataFileMode": "metadata_json",
+        "hitomiUseOriginalImages": True,
     }
 
 
@@ -1432,6 +1434,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "memoryDisplayEnabled",
         "localApiEnabled",
         "hitomiPreferJapaneseTitle",
+        "hitomiUseOriginalImages",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1760,6 +1763,7 @@ def validate_app_setting_updates(
         "memoryDisplayEnabled",
         "localApiEnabled",
         "hitomiPreferJapaneseTitle",
+        "hitomiUseOriginalImages",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
