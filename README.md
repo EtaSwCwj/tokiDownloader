@@ -164,6 +164,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd youtube filename status --json
 .\toki-cli.cmd youtube filename set --template "%(upload_date)s - %(title)s [%(id)s].%(ext)s" --json
 .\toki-cli.cmd youtube filename preview --json
+.\toki-cli.cmd youtube tracks status --json
+.\toki-cli.cmd youtube tracks set --languages ko,en,ja --subtitles manual_auto --subtitle-format srt --embed-subtitles on --audio-tracks all --json
+.\toki-cli.cmd youtube tracks plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -850,6 +853,16 @@ YouTube 파일명은 기본 `%(title)s [%(id)s].%(ext)s`이며 `title`, `id`, `u
 문자, 임의 yt-dlp 표현식은 저장 전에 거부하고 `youtube filename preview`와 GUI가 같은 한글
 예시 파일명을 오프라인으로 보여줍니다. `%(ext)s`와 제목 또는 ID가 반드시 포함되어야 하므로
 확장자와 작품 식별자를 잃지 않습니다. 화면은 `logs\youtube-filename-template.png`에 있습니다.
+
+YouTube 언어·자막·오디오 정책의 기본값은 선호 언어 `ko,en,ja`, 자막 미저장, 제공되는
+선호 오디오 한 개입니다. 언어는 2~3자리 언어 코드와 선택적 지역 코드를 최대 20개까지
+허용하고 첫 번째 언어를 오디오 형식 정렬에 우선 적용합니다. 자막은 제작 자막 또는
+제작+자동 자막을 선택해 SRT/VTT/ASS/최적 형식으로 저장할 수 있으며, 지원 컨테이너에
+자막을 포함하는 경우 FFmpeg가 필요합니다. 모든 오디오 트랙은 yt-dlp의 `mergeall` 선택자와
+`--audio-multistreams`를 명시해 보존합니다. `youtube tracks status|set|plan`과 GUI가 같은
+정책을 사용하고 `plan`은 URL과 실행 예정 인자만 오프라인으로 계산합니다. 실제 네트워크
+요청과 YouTube 다운로드 실행은 아직 활성화하지 않았습니다. 화면은
+`logs\youtube-language-subtitle-audio.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

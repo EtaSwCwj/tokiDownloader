@@ -1164,6 +1164,27 @@ class CliParserTests(unittest.TestCase):
             json.loads(output.getvalue())["preview"],
             "20260807 - 영상 제목 [dQw4w9WgXcQ].mp4",
         )
+
+        tracks = build_parser().parse_args(
+            [
+                "youtube", "tracks", "plan", "--input",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "--languages", "ko,en,ja", "--subtitles", "manual_auto",
+                "--subtitle-format", "srt", "--embed-subtitles", "on",
+                "--audio-tracks", "all", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(tracks), 0)
+        payload = json.loads(output.getvalue())
+        self.assertIn("--audio-multistreams", payload["arguments"])
+        self.assertIn("--embed-subs", payload["arguments"])
+        self.assertFalse(payload["downloadExecuted"])
+
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (

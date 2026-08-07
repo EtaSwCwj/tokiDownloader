@@ -15,7 +15,7 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 24)
+        self.assertEqual(config["configVersion"], 25)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)
@@ -50,7 +50,7 @@ class YouTubeProviderTests(unittest.TestCase):
             plan["formatSelector"], "bv*[height<=?1080]+ba/b[height<=?1080]"
         )
         self.assertEqual(
-            plan["formatSort"], ["res:1080", "vcodec:h264", "acodec:aac"]
+            plan["formatSort"], ["lang:ko", "res:1080", "vcodec:h264", "acodec:aac"]
         )
         self.assertIn("--remux-video", plan["arguments"])
         self.assertTrue(plan["requiresFfmpeg"])
@@ -63,7 +63,7 @@ class YouTubeProviderTests(unittest.TestCase):
             {**default_config(), "youtubeFormatMode": "audio_only", "youtubeAudioCodec": "opus"},
         )
         self.assertEqual(audio["formatSelector"], "ba")
-        self.assertEqual(audio["formatSort"], ["acodec:opus"])
+        self.assertEqual(audio["formatSort"], ["lang:ko", "acodec:opus"])
         self.assertFalse(audio["requiresFfmpeg"])
         playlist = plan_youtube_format(
             "https://www.youtube.com/playlist?list=PL1234567890",
@@ -71,6 +71,26 @@ class YouTubeProviderTests(unittest.TestCase):
         )
         self.assertEqual(playlist["reference"]["referenceType"], "playlist")
         self.assertEqual(playlist["arguments"][0], "--yes-playlist")
+
+    def test_language_subtitle_and_multiaudio_plan_uses_official_bounded_options(self) -> None:
+        plan = plan_youtube_format(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            {
+                **default_config(),
+                "youtubePreferredLanguages": ["ko", "en", "ja"],
+                "youtubeSubtitleMode": "manual_auto",
+                "youtubeSubtitleFormat": "srt",
+                "youtubeEmbedSubtitles": True,
+                "youtubeAudioTrackMode": "all",
+            },
+        )
+        self.assertEqual(plan["formatSelector"], "bv*+mergeall[vcodec=none]")
+        self.assertIn("--audio-multistreams", plan["arguments"])
+        self.assertIn("--write-auto-subs", plan["arguments"])
+        self.assertIn("--embed-subs", plan["arguments"])
+        self.assertIn("ko,en,ja", plan["arguments"])
+        self.assertTrue(plan["requiresFfmpeg"])
+        self.assertFalse(plan["networkRequested"])
 
     def test_invalid_urls_and_config_values_are_rejected_or_migrated(self) -> None:
         with self.assertRaises(YouTubePolicyError) as caught:
@@ -93,5 +113,10 @@ class YouTubeProviderTests(unittest.TestCase):
             "youtubeVideoCodec",
             "youtubeAudioCodec",
             "youtubeFilenameTemplate",
+            "youtubePreferredLanguages",
+            "youtubeSubtitleMode",
+            "youtubeSubtitleFormat",
+            "youtubeEmbedSubtitles",
+            "youtubeAudioTrackMode",
         ):
             self.assertEqual(normalized[key], defaults[key])

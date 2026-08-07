@@ -667,7 +667,7 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 - [x] `yt-dlp`와 FFmpeg 설치 검사
 - [x] 형식, 해상도, 비디오·오디오 코덱
 - [x] 파일명 템플릿
-- [ ] 선호 언어, 자막, 오디오 트랙
+- [x] 선호 언어, 자막, 오디오 트랙
 - [ ] 썸네일과 메타데이터
 - [ ] 채널/재생목록 순서
 - [ ] 챕터 마커
@@ -695,6 +695,17 @@ playlist_index/ext만 허용했다. 경로 구분자·Windows 금지 문자·임
 형식 계획의 `--output`, GUI 편집기·즉시 한글 미리보기가 같은 서비스를 사용하며 외부 요청과
 파일 생성은 없다. 화면은 `logs/youtube-filename-template.png`에 보존했다.
 Python 239건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 YouTube 언어·자막·오디오 트랙 정책 구현: 설정 스키마 v25에 선호 언어 목록,
+자막 없음/제작/제작+자동, 최적/SRT/VTT/ASS 자막 형식, 자막 포함 여부와 선호 한 개/전체
+오디오 트랙을 추가했다. 언어 코드는 제한된 형식과 개수로 검증하고 첫 번째 값을 yt-dlp
+형식 정렬의 언어 선호에 사용한다. 전체 오디오는 공식 `mergeall` 선택자와
+`--audio-multistreams`, 자막은 `--write-subs`, `--write-auto-subs`, `--sub-langs`,
+`--sub-format`, `--embed-subs` 조합으로 계획한다. `youtube tracks status|set|plan`과 GUI가
+같은 공용 서비스를 사용하며 계획은 URL과 인자만 반환하고 네트워크·다운로드를 실행하지
+않는다. 실행 중 GUI에 제작+자동 자막, SRT, 자막 포함, 전체 오디오를 CLI로 적용해 화면을
+검증한 뒤 기본값으로 복원했다. `logs/youtube-language-subtitle-audio.png`에 화면을 보존했다.
+Python 240건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ## 6. 기능별 안전 경계
 

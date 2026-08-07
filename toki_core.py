@@ -42,7 +42,11 @@ from youtube_provider import (
     normalize_youtube_container,
     normalize_youtube_format_mode,
     normalize_youtube_filename_template,
+    normalize_youtube_languages,
     normalize_youtube_max_height,
+    normalize_youtube_subtitle_mode,
+    normalize_youtube_subtitle_format,
+    normalize_youtube_audio_track_mode,
     normalize_youtube_video_codec,
 )
 
@@ -63,7 +67,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 24
+CONFIG_SCHEMA_VERSION = 25
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -211,6 +215,11 @@ SETTING_KEYS = frozenset(
         "youtubeVideoCodec",
         "youtubeAudioCodec",
         "youtubeFilenameTemplate",
+        "youtubePreferredLanguages",
+        "youtubeSubtitleMode",
+        "youtubeSubtitleFormat",
+        "youtubeEmbedSubtitles",
+        "youtubeAudioTrackMode",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -523,6 +532,11 @@ def default_config() -> dict[str, Any]:
         "youtubeVideoCodec": "auto",
         "youtubeAudioCodec": "auto",
         "youtubeFilenameTemplate": "%(title)s [%(id)s].%(ext)s",
+        "youtubePreferredLanguages": ["ko", "en", "ja"],
+        "youtubeSubtitleMode": "none",
+        "youtubeSubtitleFormat": "best",
+        "youtubeEmbedSubtitles": False,
+        "youtubeAudioTrackMode": "preferred_single",
     }
 
 
@@ -1654,6 +1668,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "localApiEnabled",
         "hitomiPreferJapaneseTitle",
         "hitomiUseOriginalImages",
+        "youtubeEmbedSubtitles",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1852,6 +1867,18 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("youtubeFilenameTemplate"),
         defaults["youtubeFilenameTemplate"],
     )
+    normalized["youtubePreferredLanguages"] = _safe_normalize(
+        normalize_youtube_languages, source.get("youtubePreferredLanguages"), defaults["youtubePreferredLanguages"]
+    )
+    normalized["youtubeSubtitleMode"] = _safe_normalize(
+        normalize_youtube_subtitle_mode, source.get("youtubeSubtitleMode"), defaults["youtubeSubtitleMode"]
+    )
+    normalized["youtubeSubtitleFormat"] = _safe_normalize(
+        normalize_youtube_subtitle_format, source.get("youtubeSubtitleFormat"), defaults["youtubeSubtitleFormat"]
+    )
+    normalized["youtubeAudioTrackMode"] = _safe_normalize(
+        normalize_youtube_audio_track_mode, source.get("youtubeAudioTrackMode"), defaults["youtubeAudioTrackMode"]
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -2013,6 +2040,7 @@ def validate_app_setting_updates(
         "localApiEnabled",
         "hitomiPreferJapaneseTitle",
         "hitomiUseOriginalImages",
+        "youtubeEmbedSubtitles",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -2066,6 +2094,10 @@ def validate_app_setting_updates(
         "youtubeVideoCodec": normalize_youtube_video_codec,
         "youtubeAudioCodec": normalize_youtube_audio_codec,
         "youtubeFilenameTemplate": normalize_youtube_filename_template,
+        "youtubePreferredLanguages": normalize_youtube_languages,
+        "youtubeSubtitleMode": normalize_youtube_subtitle_mode,
+        "youtubeSubtitleFormat": normalize_youtube_subtitle_format,
+        "youtubeAudioTrackMode": normalize_youtube_audio_track_mode,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

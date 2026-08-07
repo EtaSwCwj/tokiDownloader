@@ -49,6 +49,9 @@ from youtube_provider import (
     YOUTUBE_FORMAT_MODES,
     YOUTUBE_MAX_HEIGHTS,
     YOUTUBE_VIDEO_CODECS,
+    YOUTUBE_SUBTITLE_MODES,
+    YOUTUBE_SUBTITLE_FORMATS,
+    YOUTUBE_AUDIO_TRACK_MODES,
     YouTubePolicyError,
     plan_youtube_format,
     preview_youtube_filename,
@@ -972,6 +975,20 @@ def build_parser() -> argparse.ArgumentParser:
     youtube_filename_preview = youtube_filename_commands.add_parser("preview", help="오프라인 예시 파일명")
     youtube_filename_preview.add_argument("--template")
     youtube_filename_preview.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_tracks = youtube_commands.add_parser("tracks", help="선호 언어·자막·오디오 트랙")
+    youtube_track_commands = youtube_tracks.add_subparsers(dest="youtube_track_command", required=True)
+    youtube_track_status = youtube_track_commands.add_parser("status", help="현재 트랙 정책")
+    youtube_track_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name in ("set", "plan"):
+        track_command = youtube_track_commands.add_parser(name, help="트랙 정책 저장" if name == "set" else "오프라인 인자 계획")
+        if name == "plan":
+            track_command.add_argument("--input", required=True)
+        track_command.add_argument("--languages")
+        track_command.add_argument("--subtitles", choices=YOUTUBE_SUBTITLE_MODES)
+        track_command.add_argument("--subtitle-format", choices=YOUTUBE_SUBTITLE_FORMATS)
+        track_command.add_argument("--embed-subtitles", choices=("on", "off"))
+        track_command.add_argument("--audio-tracks", choices=YOUTUBE_AUDIO_TRACK_MODES)
+        track_command.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2858,6 +2875,35 @@ def run_cli(args: argparse.Namespace) -> int:
             if gui_is_running()
             else settings_snapshot()
         )
+        if args.youtube_command == "tracks":
+            track_updates = {
+                key: value
+                for key, value in {
+                    "youtubePreferredLanguages": args.languages,
+                    "youtubeSubtitleMode": args.subtitles,
+                    "youtubeSubtitleFormat": args.subtitle_format,
+                    "youtubeEmbedSubtitles": (
+                        None if args.embed_subtitles is None else args.embed_subtitles == "on"
+                    ),
+                    "youtubeAudioTrackMode": args.audio_tracks,
+                }.items()
+                if value is not None
+            } if args.youtube_track_command != "status" else {}
+            if args.youtube_track_command == "status":
+                result = youtube_format_policy_snapshot(current)
+            elif args.youtube_track_command == "set":
+                if not track_updates:
+                    raise ValueError("저장할 YouTube 트랙 설정을 하나 이상 지정하세요.")
+                saved = (
+                    control_request({"action": "set_settings", "updates": track_updates, "reset": False})
+                    if gui_is_running()
+                    else update_app_settings(track_updates)
+                )
+                result = {"saved": True, **youtube_format_policy_snapshot(saved)}
+            else:
+                result = plan_youtube_format(args.input, {**current, **track_updates})
+            print_json(result)
+            return 0
         if args.youtube_command == "filename":
             template = (
                 args.template

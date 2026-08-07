@@ -10,6 +10,9 @@ YOUTUBE_MAX_HEIGHTS = (0, 2160, 1440, 1080, 720, 480, 360, 240, 144)
 YOUTUBE_CONTAINERS = ("auto", "mp4", "mkv", "webm")
 YOUTUBE_VIDEO_CODECS = ("auto", "h264", "h265", "vp9", "av1")
 YOUTUBE_AUDIO_CODECS = ("auto", "aac", "opus")
+YOUTUBE_SUBTITLE_MODES = ("none", "manual", "manual_auto")
+YOUTUBE_SUBTITLE_FORMATS = ("best", "srt", "vtt", "ass")
+YOUTUBE_AUDIO_TRACK_MODES = ("preferred_single", "all")
 YOUTUBE_HOSTS = frozenset(
     {
         "youtube.com",
@@ -98,6 +101,36 @@ def normalize_youtube_filename_template(value: Any) -> str:
     return template
 
 
+def normalize_youtube_languages(value: Any) -> list[str]:
+    candidates = re.split(r"[,;\s]+", value) if isinstance(value, str) else list(value or [])
+    result: list[str] = []
+    for candidate in candidates:
+        language = str(candidate or "").strip().lower()
+        if not language:
+            continue
+        if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", language):
+            raise ValueError(f"잘못된 YouTube 언어 코드입니다: {language}")
+        if language not in result:
+            result.append(language)
+    if not result:
+        raise ValueError("YouTube 선호 언어를 하나 이상 입력해주세요.")
+    if len(result) > 20:
+        raise ValueError("YouTube 선호 언어는 최대 20개입니다.")
+    return result
+
+
+def normalize_youtube_subtitle_mode(value: Any) -> str:
+    return _normalize_choice(value, YOUTUBE_SUBTITLE_MODES, "YouTube 자막 방식")
+
+
+def normalize_youtube_subtitle_format(value: Any) -> str:
+    return _normalize_choice(value, YOUTUBE_SUBTITLE_FORMATS, "YouTube 자막 형식")
+
+
+def normalize_youtube_audio_track_mode(value: Any) -> str:
+    return _normalize_choice(value, YOUTUBE_AUDIO_TRACK_MODES, "YouTube 오디오 트랙 방식")
+
+
 def preview_youtube_filename(
     template: str,
     metadata: dict[str, Any] | None = None,
@@ -181,6 +214,19 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
         "filenameTemplate": normalize_youtube_filename_template(
             source.get("youtubeFilenameTemplate", DEFAULT_YOUTUBE_FILENAME_TEMPLATE)
         ),
+        "preferredLanguages": normalize_youtube_languages(
+            source.get("youtubePreferredLanguages", ["ko", "en", "ja"])
+        ),
+        "subtitleMode": normalize_youtube_subtitle_mode(
+            source.get("youtubeSubtitleMode", "none")
+        ),
+        "subtitleFormat": normalize_youtube_subtitle_format(
+            source.get("youtubeSubtitleFormat", "best")
+        ),
+        "embedSubtitles": bool(source.get("youtubeEmbedSubtitles", False)),
+        "audioTrackMode": normalize_youtube_audio_track_mode(
+            source.get("youtubeAudioTrackMode", "preferred_single")
+        ),
         "codecSelection": "preference_with_fallback",
         "networkRequested": False,
         "downloadExecuted": False,
@@ -194,11 +240,15 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         f"[height<=?{policy['maxHeight']}]" if policy["maxHeight"] else ""
     )
     if policy["mode"] == "video_audio":
-        selector = f"bv*{height_filter}+ba/b{height_filter}"
+        selector = (
+            f"bv*{height_filter}+mergeall[vcodec=none]"
+            if policy["audioTrackMode"] == "all"
+            else f"bv*{height_filter}+ba/b{height_filter}"
+        )
     elif policy["mode"] == "video_only":
         selector = f"bv{height_filter}"
     else:
-        selector = "ba"
+        selector = "mergeall[vcodec=none]" if policy["audioTrackMode"] == "all" else "ba"
     format_sort: list[str] = []
     if policy["maxHeight"] and policy["mode"] != "audio_only":
         format_sort.append(f"res:{policy['maxHeight']}")
@@ -206,6 +256,8 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         format_sort.append(_VIDEO_CODEC_SORT[policy["videoCodec"]])
     if policy["audioCodec"] != "auto" and policy["mode"] != "video_only":
         format_sort.append(_AUDIO_CODEC_SORT[policy["audioCodec"]])
+    if policy["preferredLanguages"] and policy["mode"] != "video_only":
+        format_sort.insert(0, f"lang:{policy['preferredLanguages'][0]}")
     playlist_switch = "--no-playlist" if reference["videoId"] else "--yes-playlist"
     arguments = [
         playlist_switch,
@@ -217,6 +269,17 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
     if format_sort:
         arguments.extend(("--format-sort", ",".join(format_sort)))
     requires_ffmpeg = policy["mode"] == "video_audio"
+    if policy["audioTrackMode"] == "all" and policy["mode"] != "video_only":
+        arguments.append("--audio-multistreams")
+        requires_ffmpeg = True
+    if policy["subtitleMode"] != "none":
+        arguments.extend(("--write-subs", "--sub-langs", ",".join(policy["preferredLanguages"])))
+        arguments.extend(("--sub-format", policy["subtitleFormat"]))
+        if policy["subtitleMode"] == "manual_auto":
+            arguments.append("--write-auto-subs")
+        if policy["embedSubtitles"]:
+            arguments.append("--embed-subs")
+            requires_ffmpeg = True
     if policy["container"] != "auto" and policy["mode"] != "audio_only":
         arguments.extend(("--merge-output-format", policy["container"]))
         arguments.extend(("--remux-video", policy["container"]))

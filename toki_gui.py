@@ -125,6 +125,9 @@ from youtube_provider import (
     YOUTUBE_FORMAT_MODES,
     YOUTUBE_MAX_HEIGHTS,
     YOUTUBE_VIDEO_CODECS,
+    YOUTUBE_SUBTITLE_MODES,
+    YOUTUBE_SUBTITLE_FORMATS,
+    YOUTUBE_AUDIO_TRACK_MODES,
     youtube_format_policy_snapshot,
     preview_youtube_filename,
 )
@@ -3405,7 +3408,7 @@ class SettingsDialog(QDialog):
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
-        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 형식 해상도 컨테이너 비디오 오디오 코덱 의존성 플러그인",
+        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 형식 해상도 컨테이너 비디오 오디오 코덱 선호 언어 자막 트랙 의존성 플러그인",
     )
 
     def __init__(self, owner: "MainWindow") -> None:
@@ -4006,6 +4009,33 @@ class SettingsDialog(QDialog):
         )
         provider_form.addRow("파일명 템플릿", self.youtube_filename_template_edit)
         provider_form.addRow("파일명 미리보기", self.youtube_filename_preview_label)
+        self.youtube_languages_edit = QLineEdit()
+        self.youtube_languages_edit.setPlaceholderText("ko, en, ja")
+        self.youtube_languages_edit.setToolTip("CLI: youtube tracks set --languages ko,en,ja --json")
+        provider_form.addRow("선호 언어", self.youtube_languages_edit)
+        self.youtube_subtitle_mode_combo = QComboBox()
+        subtitle_labels = {
+            "none": "자막 받지 않음",
+            "manual": "제작 자막",
+            "manual_auto": "제작 + 자동 자막",
+        }
+        for value in YOUTUBE_SUBTITLE_MODES:
+            self.youtube_subtitle_mode_combo.addItem(subtitle_labels[value], value)
+        provider_form.addRow("자막", self.youtube_subtitle_mode_combo)
+        self.youtube_subtitle_format_combo = QComboBox()
+        for value in YOUTUBE_SUBTITLE_FORMATS:
+            self.youtube_subtitle_format_combo.addItem(value.upper(), value)
+        provider_form.addRow("자막 형식", self.youtube_subtitle_format_combo)
+        self.youtube_embed_subtitles_check = QCheckBox("지원 컨테이너에 자막 포함")
+        provider_form.addRow("자막 포함", self.youtube_embed_subtitles_check)
+        self.youtube_audio_track_mode_combo = QComboBox()
+        audio_track_labels = {
+            "preferred_single": "선호 언어의 최상 트랙 하나",
+            "all": "제공되는 모든 오디오 트랙",
+        }
+        for value in YOUTUBE_AUDIO_TRACK_MODES:
+            self.youtube_audio_track_mode_combo.addItem(audio_track_labels[value], value)
+        provider_form.addRow("오디오 트랙", self.youtube_audio_track_mode_combo)
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
@@ -4103,6 +4133,10 @@ class SettingsDialog(QDialog):
         if "파일명" in lowered:
             self.provider_scroll.ensureWidgetVisible(
                 self.youtube_filename_template_edit, 20, 40
+            )
+        elif any(word in lowered for word in ("자막", "언어", "오디오 트랙")):
+            self.provider_scroll.ensureWidgetVisible(
+                self.youtube_audio_track_mode_combo, 20, 40
             )
         elif any(
             word in lowered
@@ -4229,6 +4263,14 @@ class SettingsDialog(QDialog):
                 "networkRequested": False,
             },
             "youtubeFilename": self._youtube_filename_preview_snapshot(),
+            "youtubeTracks": {
+                "languages": [part.strip() for part in self.youtube_languages_edit.text().split(",") if part.strip()],
+                "subtitleMode": str(self.youtube_subtitle_mode_combo.currentData() or "none"),
+                "subtitleFormat": str(self.youtube_subtitle_format_combo.currentData() or "best"),
+                "embedSubtitles": self.youtube_embed_subtitles_check.isChecked(),
+                "audioTrackMode": str(self.youtube_audio_track_mode_combo.currentData() or "preferred_single"),
+                "networkRequested": False,
+            },
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -4347,6 +4389,14 @@ class SettingsDialog(QDialog):
         self.youtube_filename_template_edit.setText(
             str(values["youtubeFilenameTemplate"])
         )
+        self.youtube_languages_edit.setText(", ".join(values["youtubePreferredLanguages"]))
+        for combo, value in (
+            (self.youtube_subtitle_mode_combo, values["youtubeSubtitleMode"]),
+            (self.youtube_subtitle_format_combo, values["youtubeSubtitleFormat"]),
+            (self.youtube_audio_track_mode_combo, values["youtubeAudioTrackMode"]),
+        ):
+            combo.setCurrentIndex(max(0, combo.findData(value)))
+        self.youtube_embed_subtitles_check.setChecked(bool(values["youtubeEmbedSubtitles"]))
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -4598,6 +4648,11 @@ class SettingsDialog(QDialog):
             "youtubeVideoCodec": str(self.youtube_video_codec_combo.currentData()),
             "youtubeAudioCodec": str(self.youtube_audio_codec_combo.currentData()),
             "youtubeFilenameTemplate": self.youtube_filename_template_edit.text(),
+            "youtubePreferredLanguages": self.youtube_languages_edit.text(),
+            "youtubeSubtitleMode": str(self.youtube_subtitle_mode_combo.currentData()),
+            "youtubeSubtitleFormat": str(self.youtube_subtitle_format_combo.currentData()),
+            "youtubeEmbedSubtitles": self.youtube_embed_subtitles_check.isChecked(),
+            "youtubeAudioTrackMode": str(self.youtube_audio_track_mode_combo.currentData()),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
