@@ -196,6 +196,13 @@ class HitomiReferenceTests(unittest.TestCase):
         )
         self.assertEqual(required["failurePolicy"], "stop")
 
+        hitomi_plan = hitomi_metadata_request_plan("1234567")
+        self.assertEqual(
+            hitomi_plan["request"]["url"],
+            "https://ltn.gold-usergeneratedcontent.net/galleries/1234567.js",
+        )
+        self.assertNotIn("ltn.hitomi.la", hitomi_plan["request"]["url"])
+
         ex_plan = hitomi_metadata_request_plan(
             "https://exhentai.org/g/987654/abcdef1234/"
         )
@@ -371,7 +378,7 @@ class HitomiReferenceTests(unittest.TestCase):
             (ConnectionRefusedError("refused"), "hitomi.metadata_connection_refused"),
             (
                 HTTPError(
-                    "https://ltn.hitomi.la/galleries/42.js",
+                    "https://ltn.gold-usergeneratedcontent.net/galleries/42.js",
                     404,
                     "Not Found",
                     {},
@@ -399,7 +406,7 @@ class HitomiReferenceTests(unittest.TestCase):
                         confirmed=True,
                     )
                 self.assertEqual(caught.exception.code, expected_code)
-                self.assertNotIn("ltn.hitomi.la", str(caught.exception))
+                self.assertNotIn("gold-usergeneratedcontent.net", str(caught.exception))
 
         class ForeignResponse:
             def __enter__(self):

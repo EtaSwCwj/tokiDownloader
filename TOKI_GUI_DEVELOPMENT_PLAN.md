@@ -537,8 +537,7 @@ E-Hentai로 복원했다. `logs/hitomi-server-settings.png`를 확인했고 Pyth
 마스킹 계획과 요청 메모리 밖으로 내보내지 않는다. `hitomi metadata status|set|decide|plan|
 parse|fetch|show|close`, GUI 설정·대화상자·IPC·상태를 연결했고 실제 조회는 CLI `--yes` 또는 GUI
 재확인과 제한형 I/O 풀을 사용한다. 공급자 고정 픽스처, 주입 전송, 한글·공백 경로와
-프로그램 자체 캡처를 외부 요청 없이 검증했다. 실제 사이트 요청은 사용자 승인 뒤 별도
-통합 검증할 예정이다. 화면은 `logs/hitomi-metadata-plan.png`,
+프로그램 자체 캡처를 외부 요청 없이 검증했다. 화면은 `logs/hitomi-metadata-plan.png`,
 `logs/hitomi-metadata-fixture.png`, `logs/hitomi-metadata-settings.png`,
 `logs/hitomi-metadata-mode-final.png`, `logs/hitomi-metadata-required-failure.png`에 보존했다.
 추가 감사에서 공용 서비스 직접 호출도 사용자 확인 없이는 외부 요청을 거부하도록 강화하고,
@@ -549,6 +548,13 @@ CLI·GUI에 연결했다. 10,000개 파일 메타데이터와 8 MiB 초과 거�
 응답 본문은 읽기 전에 `hitomi.metadata_redirect_blocked`로 거부하도록 강화했다. 승인된 실제
 Hitomi 요청에서 일반 `URLError`만 보여 진단성이 부족한 점을 확인한 뒤 DNS·TLS·시간 초과·
 연결 거부·HTTP 인증·404·429를 비밀값 없는 안정 오류 코드로 세분화했다.
+2026-08-07 승인된 라이브 재검증에서 기존 `ltn.hitomi.la`가 시스템·공개 DNS 모두 레코드가
+없는 폐기 호스트임을 확인했다. 공식 갤러리 페이지가 현재 사용하는
+`ltn.gold-usergeneratedcontent.net/galleries/ID.js`로 공용 엔드포인트를 교체했고, 공개 갤러리
+`1085987`에서 26개 파일과 제목·작가·그룹·태그를 정상 파싱해 `use_metadata` 결정을 확인했다.
+다른 작품 데이터를 반환한 예외 ID는 기존 ID 일치 검증이 안전하게 거부했다. 실행 중 GUI도
+현재 요청 주소를 표시하는지 `logs/hitomi-metadata-live-endpoint.png`에서 확인했다. Python
+266건, Node 16건, GUI 자체 점검 6/6과 필수 환경 진단 5/5를 통과했다.
 
 2026-08-07 Hitomi 이미지 파일명 정책: 설정 스키마 v18에 `original`, `number`,
 `number_original`을 추가하고 서비스가 공통 메타데이터에서 Windows 안전 이름을 계산하도록

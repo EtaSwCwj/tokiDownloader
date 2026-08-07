@@ -826,8 +826,13 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 갤러리 토큰이 다른 호스트로 전달되는 상황을 차단합니다. 로컬 검증 화면은
 `logs\hitomi-metadata-plan.png`,
 `logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`,
-`logs\hitomi-metadata-mode-final.png`, `logs\hitomi-metadata-required-failure.png`에 있습니다.
-실제 공급자 요청 검증은 사용자 승인 전에는 실행하지 않습니다.
+`logs\hitomi-metadata-mode-final.png`, `logs\hitomi-metadata-required-failure.png`,
+`logs\hitomi-metadata-live-endpoint.png`에 있습니다.
+실제 공급자 요청은 사용자 승인 전에는 실행하지 않습니다. 2026-08-07 승인 검증에서는 폐기된
+`ltn.hitomi.la` 대신 현재 공식 갤러리 페이지가 로드하는
+`ltn.gold-usergeneratedcontent.net/galleries/ID.js`를 사용하도록 교체했고, 공개 갤러리
+`1085987`의 26개 파일과 제목·작가·그룹·태그를 쿠키 없이 정상 파싱했습니다. 요청 ID와 응답
+ID가 다르면 계속 `hitomi.metadata_id_mismatch`로 거부합니다.
 
 연결 실패는 원문 예외를 그대로 노출하지 않고 DNS, TLS 인증서, 시간 초과, 연결 거부,
 HTTP 인증, 찾을 수 없음, 속도 제한으로 분류한 안정 오류 코드를 반환합니다. URL·쿠키·갤러리

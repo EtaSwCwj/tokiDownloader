@@ -54,7 +54,9 @@ HITOMI_FILENAME_SAMPLE_LIMIT = 1_000
 HITOMI_EXCLUDED_TAG_MAX_RULES = 500
 HITOMI_EXCLUDED_TAG_MAX_LENGTH = 100
 HITOMI_METADATA_FILE_MODES = ("metadata_json", "info_txt", "both", "disabled")
-HITOMI_METADATA_ENDPOINT = "https://ltn.hitomi.la/galleries/{gallery_id}.js"
+HITOMI_METADATA_ENDPOINT = (
+    "https://ltn.gold-usergeneratedcontent.net/galleries/{gallery_id}.js"
+)
 EHENTAI_METADATA_ENDPOINT = "https://api.e-hentai.org/api.php"
 _GALLERY_ID = re.compile(r"^[0-9]{1,18}$")
 _HITOMI_GALLERY_PATH = re.compile(r"^/galleries/([0-9]+)\.html/?$", re.IGNORECASE)
