@@ -52,6 +52,7 @@ from toki_core import (
     load_config,
     import_app_settings,
     import_jobs_snapshot,
+    inspect_local_archive,
     load_job_by_id,
     load_jobs_page,
     log_retention_status,
@@ -459,6 +460,14 @@ def build_parser() -> argparse.ArgumentParser:
     group_manage_window = group_manage.add_mutually_exclusive_group(required=True)
     group_manage_window.add_argument("--show-gui", action="store_true", help="관리 창 열기")
     group_manage_window.add_argument("--close", action="store_true", help="관리 창 닫기")
+    local_parser = subparsers.add_parser("local", help="로컬 폴더·압축 작품 도구")
+    local_commands = local_parser.add_subparsers(dest="local_command", required=True)
+    local_inspect = local_commands.add_parser("inspect", help="압축 파일을 풀지 않고 구조 검사")
+    local_inspect.add_argument("--path", help="검사할 ZIP/CBZ/7Z/CB7/RAR/CBR 경로")
+    local_inspect_window = local_inspect.add_mutually_exclusive_group()
+    local_inspect_window.add_argument("--show-gui", action="store_true", help="GUI 검사 결과 표시")
+    local_inspect_window.add_argument("--close", action="store_true", help="GUI 검사 결과 닫기")
+    local_inspect.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -1200,6 +1209,30 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             print(result["group"]["name"] if result.get("group") else "미분류")
         return 0 if result.get("ok", True) else 2
+    if command == "local":
+        if args.close:
+            ensure_gui_running()
+            result = control_request({"action": "close_archive_inspection"})
+            print_json(result)
+            return 0
+        if not args.path:
+            raise ValueError("검사할 압축 파일을 --path로 지정하세요.")
+        if args.show_gui:
+            ensure_gui_running()
+            result = control_request(
+                {"action": "show_archive_inspection", "path": args.path}
+            )
+            print_json(result)
+            return 0
+        result = inspect_local_archive(Path(args.path))
+        if args.json:
+            print_json(result)
+        else:
+            print(
+                f"{result['format']} | 파일 {result['fileCount']} | "
+                f"이미지 {result['imageCount']} | 의심 경로 {result['suspiciousPathCount']}"
+            )
+        return 0 if result.get("ok") else 2
     if command == "shortcuts":
         if args.show_gui or args.close:
             ensure_gui_running()

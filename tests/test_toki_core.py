@@ -36,6 +36,7 @@ from toki_core import (
     export_jobs_snapshot,
     hydrate_job_metadata,
     import_jobs_snapshot,
+    inspect_local_archive,
     list_work_collections,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
@@ -90,6 +91,28 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_local_zip_archive_inspection_is_read_only_and_flags_unsafe_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive_path = root / "work.cbz"
+            outside_path = root / "escape.jpg"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("001/001.jpg", b"image")
+                archive.writestr("001/empty.png", b"")
+                archive.writestr("../escape.jpg", b"unsafe")
+
+            result = inspect_local_archive(archive_path)
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["healthy"])
+            self.assertEqual(result["format"], "zip")
+            self.assertEqual(result["imageCount"], 3)
+            self.assertEqual(result["emptyFileCount"], 1)
+            self.assertEqual(result["suspiciousPathCount"], 1)
+            self.assertFalse(result["extracted"])
+            self.assertFalse(result["filesChanged"])
+            self.assertFalse(outside_path.exists())
+
     def test_settings_export_import_preview_apply_and_reset_are_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -190,6 +213,8 @@ class CoreContractTests(unittest.TestCase):
         script = (ROOT_DIR / "setup-gui.ps1").read_text(encoding="utf-8")
 
         self.assertIn("[switch]$CheckOnly", script)
+        self.assertIn("[switch]$WithArchiveTools", script)
+        self.assertIn("requirements-archive-tools.txt", script)
         self.assertIn("'ci', '--no-audit', '--no-fund'", script)
         self.assertIn("toki_app.py') doctor --json", script)
         self.assertNotIn(

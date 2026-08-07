@@ -66,6 +66,7 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 
 `-CheckOnly`는 다운로드나 재설치 없이 `.venv`, Puppeteer와 공용 `doctor` 결과만 검증합니다.
 이미지 변환용 Pillow까지 함께 설치하려면 `setup-gui.cmd -WithImageTools`를 사용합니다.
+7Z/RAR 작품 검사 모듈까지 설치하려면 `setup-gui.cmd -WithArchiveTools`를 사용합니다.
 
 ### GUI 제어 CLI
 
@@ -96,6 +97,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd group assign --job 작업ID --group 그룹ID --json
 .\toki-cli.cmd group unassign --job 작업ID --json
 .\toki-cli.cmd group manage --show-gui
+.\toki-cli.cmd local inspect --path "D:\Manga\work.cbz" --json
+.\toki-cli.cmd local inspect --path "D:\Manga\work.cbz" --show-gui
+.\toki-cli.cmd local inspect --close
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
@@ -265,7 +269,7 @@ GUI가 한 번에 보유하는 작품 카드는 최대 2,000개이고, 전체 �
 `장시간·강제 종료 복구 검증` 버튼과 같은 경로를 실행합니다.
 
 `doctor`는 Python 3.10+, PyQt6, psutil, Node.js와 `puppeteer-real-browser`를 필수 실행
-환경으로 검사합니다. npm은 설치 도구로, Pillow·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
+환경으로 검사합니다. npm은 설치 도구로, Pillow·py7zr·rarfile·FFmpeg·yt-dlp·PyInstaller는 선택 기능으로
 분리해 설치 여부·버전·실제 경로를 표시합니다. `--show-gui`와 도구 메뉴의
 `설치 및 선택 기능 진단...`은 같은 보고서를 표로 보여주며 `--close`로 닫을 수 있습니다.
 
@@ -313,6 +317,12 @@ GUI 실행 중 CLI로 설정을 바꾸거나 가져오면 현재 창에도 즉�
 이 그룹은 작품 폴더명의 `[작가][번역/출판 그룹]` 및 `metadata.json`의 `group`과 별개이며,
 배정·이름 변경으로 다운로드 파일이나 메타데이터가 바뀌지 않습니다. 그룹 관리창의 모든
 동작은 `group list/create/rename/assign/unassign/manage` CLI로 동일하게 실행할 수 있습니다.
+
+`local inspect --path ARCHIVE`는 ZIP/CBZ/7Z/CB7/RAR/CBR의 파일 목록과 이미지 수, 빈 파일,
+암호화 여부, `../` 같은 위험 경로를 검사합니다. ZIP/CBZ는 Python 기본 기능만 사용하며,
+7Z와 RAR 계열은 `-WithArchiveTools`로 설치하는 선택 모듈을 사용합니다. 검사는 압축을 풀지
+않고 원본이나 주변 파일을 변경하지 않습니다. `도구 → 로컬 압축 작품 검사...`와
+`--show-gui`, `--close`도 같은 읽기 전용 서비스를 사용합니다.
 
 디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
 높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density

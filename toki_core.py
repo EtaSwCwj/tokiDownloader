@@ -16,7 +16,7 @@ import zipfile
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -785,6 +785,8 @@ def dependency_diagnostics() -> dict[str, Any]:
         }
     )
     checks.append(package("Pillow", "Pillow", False))
+    checks.append(package("py7zr", "py7zr", False))
+    checks.append(package("rarfile", "rarfile", False))
     for name, executable, version_argument in (
         ("FFmpeg", "ffmpeg", "-version"),
         ("yt-dlp", "yt-dlp", "--version"),
@@ -2412,6 +2414,149 @@ def work_collection_for_job(
     finally:
         connection.close()
     return {"groupId": str(row[0]), "name": str(row[1])} if row else None
+
+
+ARCHIVE_IMAGE_EXTENSIONS = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+)
+SUPPORTED_ARCHIVE_EXTENSIONS = frozenset({".zip", ".cbz", ".7z", ".cb7", ".rar", ".cbr"})
+
+
+def _archive_path_is_suspicious(name: str) -> bool:
+    normalized = str(name or "").replace("\\", "/")
+    path = PurePosixPath(normalized)
+    return (
+        not normalized
+        or normalized.startswith("/")
+        or bool(re.match(r"^[A-Za-z]:/", normalized))
+        or ".." in path.parts
+    )
+
+
+def inspect_local_archive(archive_path: Path) -> dict[str, Any]:
+    """Read archive directory metadata only; never extracts or modifies contents."""
+    source = Path(archive_path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"압축 파일이 없습니다: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in SUPPORTED_ARCHIVE_EXTENSIONS:
+        raise ValueError(f"지원하지 않는 압축 형식입니다: {suffix or '(확장자 없음)'}")
+
+    entries: list[dict[str, Any]] = []
+    dependency = {"name": "stdlib", "available": True, "version": sys.version.split()[0]}
+    if suffix in {".zip", ".cbz"}:
+        try:
+            with zipfile.ZipFile(source) as archive:
+                for item in archive.infolist():
+                    entries.append(
+                        {
+                            "name": item.filename,
+                            "isDir": item.is_dir(),
+                            "size": int(item.file_size),
+                            "compressedSize": int(item.compress_size),
+                            "encrypted": bool(item.flag_bits & 0x1),
+                        }
+                    )
+        except zipfile.BadZipFile as error:
+            raise ValueError(f"손상되었거나 ZIP 형식이 아닌 파일입니다: {source.name}") from error
+        archive_format = "zip"
+    elif suffix in {".7z", ".cb7"}:
+        try:
+            import py7zr  # type: ignore[import-not-found]
+        except ImportError as error:
+            raise RuntimeError(
+                "7Z 검사는 py7zr가 필요합니다. setup-gui.cmd -WithArchiveTools를 실행하세요."
+            ) from error
+        dependency = {
+            "name": "py7zr",
+            "available": True,
+            "version": importlib.metadata.version("py7zr"),
+        }
+        with py7zr.SevenZipFile(source, mode="r") as archive:
+            for item in archive.list():
+                entries.append(
+                    {
+                        "name": str(item.filename),
+                        "isDir": bool(item.is_directory),
+                        "size": int(item.uncompressed or 0),
+                        "compressedSize": int(item.compressed or 0),
+                        "encrypted": False,
+                    }
+                )
+        archive_format = "7z"
+    else:
+        try:
+            import rarfile  # type: ignore[import-not-found]
+        except ImportError as error:
+            raise RuntimeError(
+                "RAR 검사는 rarfile과 호환 백엔드가 필요합니다. "
+                "setup-gui.cmd -WithArchiveTools를 실행하세요."
+            ) from error
+        dependency = {
+            "name": "rarfile",
+            "available": True,
+            "version": importlib.metadata.version("rarfile"),
+        }
+        try:
+            with rarfile.RarFile(source) as archive:
+                for item in archive.infolist():
+                    entries.append(
+                        {
+                            "name": str(item.filename),
+                            "isDir": bool(item.is_dir()),
+                            "size": int(item.file_size or 0),
+                            "compressedSize": int(item.compress_size or 0),
+                            "encrypted": bool(item.needs_password()),
+                        }
+                    )
+        except rarfile.Error as error:
+            raise ValueError(f"RAR 파일을 읽을 수 없습니다: {error}") from error
+        archive_format = "rar"
+
+    files = [entry for entry in entries if not entry["isDir"]]
+    suspicious = [entry["name"] for entry in files if _archive_path_is_suspicious(entry["name"])]
+    empty = [entry["name"] for entry in files if int(entry["size"]) == 0]
+    encrypted = [entry["name"] for entry in files if entry["encrypted"]]
+    images = [
+        entry
+        for entry in files
+        if Path(str(entry["name"])).suffix.lower() in ARCHIVE_IMAGE_EXTENSIONS
+    ]
+    extensions: dict[str, int] = {}
+    for entry in files:
+        extension = Path(str(entry["name"])).suffix.lower() or "(none)"
+        extensions[extension] = extensions.get(extension, 0) + 1
+    top_folders = sorted(
+        {
+            PurePosixPath(str(entry["name"]).replace("\\", "/")).parts[0]
+            for entry in files
+            if len(PurePosixPath(str(entry["name"]).replace("\\", "/")).parts) > 1
+        }
+    )
+    return {
+        "ok": True,
+        "healthy": not suspicious,
+        "path": str(source),
+        "format": archive_format,
+        "bytes": source.stat().st_size,
+        "dependency": dependency,
+        "entryCount": len(entries),
+        "fileCount": len(files),
+        "folderCount": sum(1 for entry in entries if entry["isDir"]),
+        "imageCount": len(images),
+        "emptyFileCount": len(empty),
+        "encryptedFileCount": len(encrypted),
+        "suspiciousPathCount": len(suspicious),
+        "totalUncompressedBytes": sum(int(entry["size"]) for entry in files),
+        "totalCompressedBytes": sum(int(entry["compressedSize"]) for entry in files),
+        "extensions": dict(sorted(extensions.items())),
+        "topFolders": top_folders[:100],
+        "suspiciousPaths": suspicious[:100],
+        "emptyFiles": empty[:100],
+        "sample": files[:100],
+        "extracted": False,
+        "filesChanged": False,
+    }
 
 
 def job_database_diagnostics(database_path: Path | None = None) -> dict[str, Any]:

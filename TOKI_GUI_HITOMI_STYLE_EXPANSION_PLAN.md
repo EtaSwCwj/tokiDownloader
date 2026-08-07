@@ -186,7 +186,7 @@ GUI가 실행 중이면 CLI 변경도 IPC를 통해 즉시 반영한다. `settin
 - [x] 작업 저장 스냅샷과 JSON 내보내기·가져오기
 - [x] 작품 그룹 생성·이름 변경·이동·해제
 - [x] 로컬 작품 폴더 검사 작업
-- [ ] 로컬 압축 파일 검사 작업
+- [x] 로컬 압축 파일 검사 작업
 - [ ] 제목·작가·그룹·ID 통합 검색
 - [ ] 작품 중복 및 이미지 해시 중복 검사
 - [ ] 작품 ID/원본 URL/저장 폴더 경로 복사
@@ -216,6 +216,14 @@ Python 127건과 Node 7건을 통과했다.
 우클릭 메뉴가 같은 서비스를 사용한다. 실제 DB는 백업 후 v3으로 마이그레이션했으며 시험
 그룹은 만들지 않았다. 빈 상태 관리창은 `logs/work-group-manager-gui.png`로 확인했다.
 Python 130건과 Node 7건을 통과했다.
+
+로컬 압축 작품 검사는 압축 해제 없이 중앙 목록만 읽어 이미지·빈 파일·암호화·경로 탈출
+위험을 보고한다. ZIP/CBZ는 기본 지원하고 7Z/RAR 계열은 `requirements-archive-tools.txt`의
+선택 모듈과 `setup-gui.cmd -WithArchiveTools`로 분리했다. `local inspect --path`,
+`--show-gui`, `--close` 및 도구 메뉴가 같은 서비스를 사용한다. 정상 ZIP 1파일·이미지 1장을
+읽기 전용으로 검사한 화면은 `logs/archive-inspection-gui.png`로 확인했다.
+Python 133건과 Node 7건을 통과했으며 `doctor --json`에서 py7zr·rarfile 설치 여부를
+선택 의존성으로 확인한다.
 
 ### 단계 C. 보기·빠른 실행·트레이
 

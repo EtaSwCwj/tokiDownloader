@@ -14,6 +14,46 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_local_archive_inspect_cli_supports_json_gui_and_close(self) -> None:
+        inspect_args = build_parser().parse_args(
+            ["local", "inspect", "--path", "work.cbz", "--json"]
+        )
+        report = {
+            "ok": True,
+            "format": "zip",
+            "fileCount": 3,
+            "imageCount": 2,
+            "suspiciousPathCount": 0,
+        }
+        with (
+            patch("toki_app.inspect_local_archive", return_value=report) as inspect,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(inspect_args), 0)
+        inspect.assert_called_once_with(Path("work.cbz"))
+
+        show_args = build_parser().parse_args(
+            ["local", "inspect", "--path", "work.cbz", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_args), 0)
+        request.assert_called_once_with(
+            {"action": "show_archive_inspection", "path": "work.cbz"}
+        )
+
+        close_args = build_parser().parse_args(["local", "inspect", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_args), 0)
+        request.assert_called_once_with({"action": "close_archive_inspection"})
+
     def test_group_cli_routes_service_and_gui_management_contracts(self) -> None:
         create_args = build_parser().parse_args(
             ["group", "create", "--name", "나중에 읽기", "--json"]

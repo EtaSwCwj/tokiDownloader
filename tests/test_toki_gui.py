@@ -107,6 +107,25 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_archive_inspection_ipc_can_show_and_close_result_window(self) -> None:
+        calls = []
+        harness = type("ArchiveInspectionHarness", (), {})()
+        harness.show_archive_inspection = (
+            lambda path: calls.append(("show", path)) or True
+        )
+        harness.close_archive_inspection = lambda: calls.append(("close",)) or True
+
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_archive_inspection", "path": "work.cbz"}
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_archive_inspection"}
+        )
+
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(calls, [("show", "work.cbz"), ("close",)])
+
     def test_group_ipc_routes_all_manager_and_assignment_actions(self) -> None:
         calls = []
         harness = type("GroupHarness", (), {})()

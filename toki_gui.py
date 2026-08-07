@@ -119,6 +119,7 @@ from toki_core import (
     hydrate_job_metadata,
     import_app_settings,
     import_jobs_snapshot,
+    inspect_local_archive,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
@@ -1429,6 +1430,62 @@ class WorkGroupManagerDialog(QDialog):
         self.refresh()
 
 
+class ArchiveInspectionDialog(QDialog):
+    def __init__(self, result: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.result = result
+        self.setWindowTitle("로컬 압축 작품 검사")
+        self.resize(680, 500)
+        layout = QVBoxLayout(self)
+        heading = QLabel("압축 작품 검사 결과")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        path_label = QLabel(str(result.get("path") or ""))
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+        state = "안전 경로" if result.get("healthy") else "확인 필요한 경로 발견"
+        summary = QLabel(
+            f"{str(result.get('format') or '').upper()} · {state} · "
+            f"파일 {result.get('fileCount', 0)}개 · 이미지 {result.get('imageCount', 0)}개"
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        lines = [
+            f"압축 크기: {int(result.get('bytes') or 0):,} bytes",
+            f"원본 합계: {int(result.get('totalUncompressedBytes') or 0):,} bytes",
+            f"빈 파일: {result.get('emptyFileCount', 0)}",
+            f"암호화 파일: {result.get('encryptedFileCount', 0)}",
+            f"의심 경로: {result.get('suspiciousPathCount', 0)}",
+            f"검사 모듈: {(result.get('dependency') or {}).get('name', '-')}",
+            "압축 해제: 하지 않음",
+            "파일 변경: 없음",
+        ]
+        suspicious = result.get("suspiciousPaths") or []
+        if suspicious:
+            lines.extend(["", "[확인 필요한 경로]", *map(str, suspicious)])
+        empty_files = result.get("emptyFiles") or []
+        if empty_files:
+            lines.extend(["", "[빈 파일]", *map(str, empty_files)])
+        sample = result.get("sample") or []
+        if sample:
+            lines.extend(["", "[파일 예시]"])
+            lines.extend(
+                f"{item.get('name')} ({int(item.get('size') or 0):,} bytes)"
+                for item in sample[:30]
+            )
+        details.setPlainText("\n".join(lines))
+        layout.addWidget(details, 1)
+        note = QLabel("읽기 전용 검사입니다. 압축 내용은 추출하지 않습니다.")
+        note.setObjectName("mutedLabel")
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
@@ -2017,6 +2074,7 @@ class MainWindow(QMainWindow):
         self.active_settings_dialog: SettingsDialog | None = None
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
         self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
+        self.active_archive_inspection_dialog: ArchiveInspectionDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -2128,6 +2186,8 @@ class MainWindow(QMainWindow):
         self.import_jobs_action.triggered.connect(self.choose_jobs_snapshot_import)
         self.group_manager_action = QAction("작품 그룹 관리...", self)
         self.group_manager_action.triggered.connect(self.show_group_manager)
+        self.archive_inspection_action = QAction("로컬 압축 작품 검사...", self)
+        self.archive_inspection_action.triggered.connect(self.choose_archive_inspection)
 
         self.open_folder_action = QAction("저장 폴더 열기", self)
         self.open_folder_action.setShortcuts(
@@ -2262,6 +2322,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.open_folder_action)
         tools_menu.addAction(self.details_action)
         tools_menu.addAction(self.refresh_list_action)
+        tools_menu.addAction(self.archive_inspection_action)
         tools_menu.addAction(self.thumbnail_cache_action)
         tools_menu.addAction(self.cleanup_records_action)
         tools_menu.addAction(self.run_retention_action)
@@ -4020,6 +4081,44 @@ class MainWindow(QMainWindow):
         self.active_group_manager_dialog.close()
         return True
 
+    def choose_archive_inspection(self) -> bool:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self,
+            "로컬 압축 작품 검사",
+            str(Path(self.output_edit.text() or ROOT_DIR)),
+            "압축 작품 (*.zip *.cbz *.7z *.cb7 *.rar *.cbr)",
+        )
+        return self.show_archive_inspection(selected) if selected else False
+
+    def show_archive_inspection(self, archive_path: str) -> bool:
+        result = inspect_local_archive(Path(archive_path))
+        if self.active_archive_inspection_dialog:
+            self.active_archive_inspection_dialog.close()
+        dialog = ArchiveInspectionDialog(result, self)
+        self.active_archive_inspection_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_archive_inspection_dialog", None)
+                if self.active_archive_inspection_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log(
+            f"로컬 압축 작품 검사: 파일 {result['fileCount']}개, "
+            f"의심 경로 {result['suspiciousPathCount']}개"
+        )
+        return True
+
+    def close_archive_inspection(self) -> bool:
+        if not self.active_archive_inspection_dialog:
+            return False
+        self.active_archive_inspection_dialog.close()
+        return True
+
     def close_settings_dialog(self) -> bool:
         if not self.active_settings_dialog:
             return False
@@ -5259,6 +5358,11 @@ class MainWindow(QMainWindow):
         ):
             screenshot = self.active_group_manager_dialog.grab()
         elif (
+            self.active_archive_inspection_dialog
+            and self.active_archive_inspection_dialog.isVisible()
+        ):
+            screenshot = self.active_archive_inspection_dialog.grab()
+        elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
         ):
@@ -5687,6 +5791,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
             "toki-cli.cmd group list|create|rename|assign|unassign|manage [options]\n"
+            "toki-cli.cmd local inspect [--path ARCHIVE --json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
@@ -5902,6 +6007,10 @@ class MainWindow(QMainWindow):
                 and self.active_group_manager_dialog.isVisible()
             ),
             "groupCount": len(list_work_collections()),
+            "archiveInspectionOpen": bool(
+                self.active_archive_inspection_dialog
+                and self.active_archive_inspection_dialog.isVisible()
+            ),
             "window": {
                 **self.window_snapshot(),
                 "restorePlan": getattr(self, "window_restore_plan", None),
@@ -6163,6 +6272,12 @@ class MainWindow(QMainWindow):
             return {"shown": self.show_group_manager()}
         if action == "close_group_manager":
             return {"closed": self.close_group_manager()}
+        if action == "show_archive_inspection":
+            return {
+                "shown": self.show_archive_inspection(str(request.get("path") or ""))
+            }
+        if action == "close_archive_inspection":
+            return {"closed": self.close_archive_inspection()}
         if action == "tray":
             return self.handle_tray_command(
                 str(request.get("command") or "status"),

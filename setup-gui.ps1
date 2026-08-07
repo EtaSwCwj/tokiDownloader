@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$CheckOnly,
-    [switch]$WithImageTools
+    [switch]$WithImageTools,
+    [switch]$WithArchiveTools
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +45,7 @@ $requiredFiles = @(
     'package.json',
     'package-lock.json',
     'requirements-gui.txt',
+    'requirements-archive-tools.txt',
     'toki_app.py',
     'toki_gui.py',
     'down.js'
@@ -79,6 +81,12 @@ if (-not $CheckOnly) {
         Invoke-Checked -Program $venvPython -Arguments @(
             '-m', 'pip', 'install', '--disable-pip-version-check',
             '-r', (Join-Path $projectRoot 'requirements-image-tools.txt')
+        )
+    }
+    if ($WithArchiveTools) {
+        Invoke-Checked -Program $venvPython -Arguments @(
+            '-m', 'pip', 'install', '--disable-pip-version-check',
+            '-r', (Join-Path $projectRoot 'requirements-archive-tools.txt')
         )
     }
 
