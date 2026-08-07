@@ -40,10 +40,11 @@ CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
 CONFIG_SCHEMA_VERSION = 1
-JOB_DB_SCHEMA_VERSION = 2
+JOB_DB_SCHEMA_VERSION = 3
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
     2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
+    3: "작품 정리 그룹과 작품별 그룹 멤버십",
 }
 _DATABASE_MIGRATION_REPORTS: dict[str, dict[str, Any]] = {}
 TAG_COLORS = {
@@ -1398,6 +1399,7 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
     path = Path(database_path) if database_path is not None else JOB_DB_PATH
     existed_before = path.is_file()
     connection = sqlite3.connect(path, timeout=10)
+    connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     database_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -1563,6 +1565,32 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
         connection.execute(
             f"CREATE INDEX IF NOT EXISTS {index_name} ON jobs({columns})"
         )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_collections (
+            collection_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_collection_memberships (
+            work_key TEXT PRIMARY KEY,
+            collection_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(work_key) REFERENCES jobs(work_key) ON DELETE CASCADE,
+            FOREIGN KEY(collection_id) REFERENCES work_collections(collection_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_collection_memberships_group "
+        "ON work_collection_memberships(collection_id, updated_at DESC)"
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2208,6 +2236,182 @@ def import_jobs_snapshot(
         "remappedJobIds": remapped_job_ids,
         "downloadFilesChanged": False,
     }
+
+
+def _normalize_collection_name(name: str) -> str:
+    value = " ".join(str(name or "").split())
+    if not value:
+        raise ValueError("그룹 이름을 입력해주세요.")
+    if len(value) > 100:
+        raise ValueError("그룹 이름은 100자 이하여야 합니다.")
+    return value
+
+
+def list_work_collections(*, database_path: Path | None = None) -> list[dict[str, Any]]:
+    connection = _connect_job_db(database_path)
+    try:
+        rows = connection.execute(
+            """
+            SELECT c.collection_id, c.name, c.created_at, c.updated_at,
+                   COUNT(m.work_key) AS member_count
+            FROM work_collections AS c
+            LEFT JOIN work_collection_memberships AS m
+              ON m.collection_id = c.collection_id
+            GROUP BY c.collection_id
+            ORDER BY c.name COLLATE NOCASE ASC, c.collection_id ASC
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return [
+        {
+            "groupId": str(row[0]),
+            "name": str(row[1]),
+            "createdAt": str(row[2]),
+            "updatedAt": str(row[3]),
+            "memberCount": int(row[4]),
+        }
+        for row in rows
+    ]
+
+
+def create_work_collection(
+    name: str, *, database_path: Path | None = None
+) -> dict[str, Any]:
+    clean_name = _normalize_collection_name(name)
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    collection_id = uuid.uuid4().hex[:10]
+    connection = _connect_job_db(database_path)
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO work_collections(collection_id, name, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (collection_id, clean_name, now, now),
+            )
+    except sqlite3.IntegrityError as error:
+        raise ValueError(f"같은 이름의 그룹이 이미 있습니다: {clean_name}") from error
+    finally:
+        connection.close()
+    return {
+        "groupId": collection_id,
+        "name": clean_name,
+        "createdAt": now,
+        "updatedAt": now,
+        "memberCount": 0,
+    }
+
+
+def rename_work_collection(
+    collection_id: str,
+    name: str,
+    *,
+    database_path: Path | None = None,
+) -> dict[str, Any]:
+    clean_id = str(collection_id or "").strip()
+    clean_name = _normalize_collection_name(name)
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    connection = _connect_job_db(database_path)
+    try:
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE work_collections SET name = ?, updated_at = ? "
+                    "WHERE collection_id = ?",
+                    (clean_name, now, clean_id),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError(f"같은 이름의 그룹이 이미 있습니다: {clean_name}") from error
+        if cursor.rowcount != 1:
+            raise ValueError(f"작품 그룹을 찾을 수 없습니다: {clean_id}")
+        member_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM work_collection_memberships WHERE collection_id = ?",
+                (clean_id,),
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+    return {
+        "groupId": clean_id,
+        "name": clean_name,
+        "updatedAt": now,
+        "memberCount": member_count,
+    }
+
+
+def assign_job_to_collection(
+    job_id: str,
+    collection_id: str | None,
+    *,
+    database_path: Path | None = None,
+) -> dict[str, Any]:
+    clean_job_id = str(job_id or "").strip()
+    clean_collection_id = str(collection_id or "").strip()
+    connection = _connect_job_db(database_path)
+    try:
+        row = connection.execute(
+            "SELECT work_key FROM jobs WHERE job_id = ?", (clean_job_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"작업 기록을 찾을 수 없습니다: {clean_job_id}")
+        work_key = str(row[0])
+        if clean_collection_id:
+            group_row = connection.execute(
+                "SELECT name FROM work_collections WHERE collection_id = ?",
+                (clean_collection_id,),
+            ).fetchone()
+            if not group_row:
+                raise ValueError(f"작품 그룹을 찾을 수 없습니다: {clean_collection_id}")
+            now = datetime.now().astimezone().isoformat(timespec="seconds")
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO work_collection_memberships(work_key, collection_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(work_key) DO UPDATE SET
+                        collection_id=excluded.collection_id,
+                        updated_at=excluded.updated_at
+                    """,
+                    (work_key, clean_collection_id, now),
+                )
+            group = {"groupId": clean_collection_id, "name": str(group_row[0])}
+        else:
+            with connection:
+                connection.execute(
+                    "DELETE FROM work_collection_memberships WHERE work_key = ?", (work_key,)
+                )
+            group = None
+    finally:
+        connection.close()
+    return {
+        "ok": True,
+        "jobId": clean_job_id,
+        "workKey": work_key,
+        "group": group,
+        "metadataChanged": False,
+        "downloadFilesChanged": False,
+    }
+
+
+def work_collection_for_job(
+    job_id: str, *, database_path: Path | None = None
+) -> dict[str, Any] | None:
+    connection = _connect_job_db(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT c.collection_id, c.name
+            FROM jobs AS j
+            JOIN work_collection_memberships AS m ON m.work_key = j.work_key
+            JOIN work_collections AS c ON c.collection_id = m.collection_id
+            WHERE j.job_id = ?
+            """,
+            (str(job_id or "").strip(),),
+        ).fetchone()
+    finally:
+        connection.close()
+    return {"groupId": str(row[0]), "name": str(row[1])} if row else None
 
 
 def job_database_diagnostics(database_path: Path | None = None) -> dict[str, Any]:

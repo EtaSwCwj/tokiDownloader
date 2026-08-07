@@ -14,6 +14,46 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_group_cli_routes_service_and_gui_management_contracts(self) -> None:
+        create_args = build_parser().parse_args(
+            ["group", "create", "--name", "나중에 읽기", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch(
+                "toki_app.create_work_collection",
+                return_value={"groupId": "g1", "name": "나중에 읽기"},
+            ) as creator,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(create_args), 0)
+        creator.assert_called_once_with("나중에 읽기")
+
+        assign_args = build_parser().parse_args(
+            ["group", "assign", "--job", "job-1", "--group", "g1", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                return_value={"ok": True, "group": {"name": "나중에 읽기"}},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(assign_args), 0)
+        request.assert_called_once_with(
+            {"action": "assign_group", "jobId": "job-1", "groupId": "g1"}
+        )
+
+        manage_args = build_parser().parse_args(["group", "manage", "--show-gui"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(manage_args), 0)
+        request.assert_called_once_with({"action": "show_group_manager"})
+
     def test_jobs_snapshot_cli_previews_and_requires_confirmation(self) -> None:
         export_args = build_parser().parse_args(
             ["jobs", "export", "--output", "jobs.json", "--json"]

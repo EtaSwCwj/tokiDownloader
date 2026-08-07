@@ -25,12 +25,14 @@ from toki_core import (
     SETTING_KEYS,
     DownloadJob,
     append_log,
+    assign_job_to_collection,
     build_job_list_view_state,
     build_downloader_args,
     clear_log_file,
     cleanup_thumbnail_cache,
     cleanup_run_history,
     config_schema_status,
+    create_work_collection,
     find_node,
     hydrate_job_metadata,
     job_database_diagnostics,
@@ -54,6 +56,7 @@ from toki_core import (
     load_jobs_page,
     log_retention_status,
     list_job_episode_images,
+    list_work_collections,
     load_run,
     load_runs_page,
     move_job_folder,
@@ -73,6 +76,7 @@ from toki_core import (
     resolve_cover_path,
     resource_budget,
     reset_app_settings,
+    rename_work_collection,
     retry_backoff_seconds,
     run_job_database_benchmark,
     run_stability_recovery_test,
@@ -433,6 +437,28 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_import.add_argument(
         "--via-gui", action="store_true", help="실행 중인 GUI의 공용 서비스로 가져오기"
     )
+    group_parser = subparsers.add_parser("group", help="작품 정리 그룹 관리")
+    group_commands = group_parser.add_subparsers(dest="group_command", required=True)
+    group_list = group_commands.add_parser("list", help="작품 그룹 목록")
+    group_list.add_argument("--json", action="store_true", help="JSON으로 출력")
+    group_create = group_commands.add_parser("create", help="작품 그룹 생성")
+    group_create.add_argument("--name", required=True, help="새 그룹 이름")
+    group_create.add_argument("--json", action="store_true", help="JSON으로 출력")
+    group_rename = group_commands.add_parser("rename", help="작품 그룹 이름 변경")
+    group_rename.add_argument("--group", required=True, help="그룹 ID")
+    group_rename.add_argument("--name", required=True, help="새 이름")
+    group_rename.add_argument("--json", action="store_true", help="JSON으로 출력")
+    group_assign = group_commands.add_parser("assign", help="작품을 그룹에 배정")
+    group_assign.add_argument("--job", required=True, help="작업 ID")
+    group_assign.add_argument("--group", required=True, help="그룹 ID")
+    group_assign.add_argument("--json", action="store_true", help="JSON으로 출력")
+    group_unassign = group_commands.add_parser("unassign", help="작품을 미분류로 이동")
+    group_unassign.add_argument("--job", required=True, help="작업 ID")
+    group_unassign.add_argument("--json", action="store_true", help="JSON으로 출력")
+    group_manage = group_commands.add_parser("manage", help="GUI 작품 그룹 관리 창")
+    group_manage_window = group_manage.add_mutually_exclusive_group(required=True)
+    group_manage_window.add_argument("--show-gui", action="store_true", help="관리 창 열기")
+    group_manage_window.add_argument("--close", action="store_true", help="관리 창 닫기")
 
     download = subparsers.add_parser("download", help="다운로드 작업 추가")
     download.add_argument("--url", required=True, help="작품 회차 목록 URL")
@@ -1124,6 +1150,56 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"기존 작품 건너뜀 {result['skippedExistingWorks']}"
             )
         return 0 if result.get("ok") else 2
+    if command == "group":
+        if args.group_command == "manage":
+            ensure_gui_running()
+            action = "show_group_manager" if args.show_gui else "close_group_manager"
+            result = control_request({"action": action})
+            print_json(result)
+            return 0
+        use_gui = gui_is_running()
+        if args.group_command == "list":
+            groups = (
+                control_request({"action": "groups"})["groups"]
+                if use_gui
+                else list_work_collections()
+            )
+            result = {"ok": True, "count": len(groups), "groups": groups}
+        elif args.group_command == "create":
+            result = (
+                control_request({"action": "create_group", "name": args.name})
+                if use_gui
+                else create_work_collection(args.name)
+            )
+            result = {"ok": True, **result}
+        elif args.group_command == "rename":
+            result = (
+                control_request(
+                    {"action": "rename_group", "groupId": args.group, "name": args.name}
+                )
+                if use_gui
+                else rename_work_collection(args.group, args.name)
+            )
+            result = {"ok": True, **result}
+        else:
+            group_id = args.group if args.group_command == "assign" else None
+            result = (
+                control_request(
+                    {"action": "assign_group", "jobId": args.job, "groupId": group_id or ""}
+                )
+                if use_gui
+                else assign_job_to_collection(args.job, group_id)
+            )
+        if getattr(args, "json", False):
+            print_json(result)
+        elif args.group_command == "list":
+            for group in result["groups"]:
+                print(f"{group['groupId']} | {group['name']} | {group['memberCount']}개")
+        elif args.group_command in {"create", "rename"}:
+            print(f"{result['groupId']} | {result['name']}")
+        else:
+            print(result["group"]["name"] if result.get("group") else "미분류")
+        return 0 if result.get("ok", True) else 2
     if command == "shortcuts":
         if args.show_gui or args.close:
             ensure_gui_running()

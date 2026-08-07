@@ -184,7 +184,7 @@ GUI가 실행 중이면 CLI 변경도 IPC를 통해 즉시 반영한다. `settin
 ### 단계 B. 작업·도구 메뉴
 
 - [x] 작업 저장 스냅샷과 JSON 내보내기·가져오기
-- [ ] 작품 그룹 생성·이름 변경·이동·해제
+- [x] 작품 그룹 생성·이름 변경·이동·해제
 - [x] 로컬 작품 폴더 검사 작업
 - [ ] 로컬 압축 파일 검사 작업
 - [ ] 제목·작가·그룹·ID 통합 검색
@@ -210,6 +210,12 @@ duplicates images --job ID --algorithm phash --json
 `--show-gui`, `--via-gui`, `--close`가 같은 서비스를 사용한다. 실제 DB 2작품·3실행 기록을
 내보낸 뒤 무변경 GUI 미리보기와 `logs/jobs-snapshot-import-gui.png` 캡처를 확인했으며
 Python 127건과 Node 7건을 통과했다.
+
+작품 정리 그룹은 DB v3의 별도 그룹·멤버십 테이블을 사용해 폴더명용 번역/출판 `group`
+메타데이터와 분리했다. `group list/create/rename/assign/unassign/manage`와 작업 메뉴·작품
+우클릭 메뉴가 같은 서비스를 사용한다. 실제 DB는 백업 후 v3으로 마이그레이션했으며 시험
+그룹은 만들지 않았다. 빈 상태 관리창은 `logs/work-group-manager-gui.png`로 확인했다.
+Python 130건과 Node 7건을 통과했다.
 
 ### 단계 C. 보기·빠른 실행·트레이
 

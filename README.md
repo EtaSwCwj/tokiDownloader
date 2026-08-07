@@ -90,6 +90,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd jobs import --input "D:\Backup\toki-jobs.json" --show-gui
 .\toki-cli.cmd jobs import --input "D:\Backup\toki-jobs.json" --execute --yes --json
 .\toki-cli.cmd jobs import --close
+.\toki-cli.cmd group list --json
+.\toki-cli.cmd group create --name "나중에 읽기" --json
+.\toki-cli.cmd group rename --group 그룹ID --name "즐겨찾기" --json
+.\toki-cli.cmd group assign --job 작업ID --group 그룹ID --json
+.\toki-cli.cmd group unassign --job 작업ID --json
+.\toki-cli.cmd group manage --show-gui
 
 # 다운로드 추가
 .\toki-cli.cmd download --url "https://newtoki1.org/manhwa/34732" --start 1 --last 10 --output "D:\Manga"
@@ -301,6 +307,12 @@ GUI 실행 중 CLI로 설정을 바꾸거나 가져오면 현재 창에도 즉�
 않고 누락된 작품·실행만 추가하며, 미완료 상태는 실행 프로세스 없이 `중지됨`으로 복원합니다.
 다운로드 폴더와 파일은 읽거나 변경하지 않습니다. 작업 메뉴의 내보내기·가져오기와
 `--show-gui`, `--via-gui`도 같은 서비스를 사용합니다.
+
+`group` 명령과 `작업 → 작품 그룹 관리...`는 많은 작품을 목록 정리용 그룹으로 묶습니다.
+작품 우클릭 메뉴의 `작품 정리 그룹`에서 바로 배정하거나 `미분류`로 되돌릴 수 있습니다.
+이 그룹은 작품 폴더명의 `[작가][번역/출판 그룹]` 및 `metadata.json`의 `group`과 별개이며,
+배정·이름 변경으로 다운로드 파일이나 메타데이터가 바뀌지 않습니다. 그룹 관리창의 모든
+동작은 `group list/create/rename/assign/unassign/manage` CLI로 동일하게 실행할 수 있습니다.
 
 디스플레이 탭의 `편안하게`는 표지·상세·진행률 막대를 유지하고, `간략하게`는 66px
 높이에서 표지를 생략하고 핵심 정보와 진행률을 표시합니다. `set-settings --row-density

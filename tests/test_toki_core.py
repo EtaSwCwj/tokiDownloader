@@ -23,6 +23,7 @@ from toki_core import (
     build_work_key,
     cleanup_thumbnail_cache,
     cleanup_run_history,
+    create_work_collection,
     count_jobs,
     count_runs,
     dependency_diagnostics,
@@ -35,6 +36,7 @@ from toki_core import (
     export_jobs_snapshot,
     hydrate_job_metadata,
     import_jobs_snapshot,
+    list_work_collections,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
@@ -61,6 +63,7 @@ from toki_core import (
     plan_window_geometry,
     read_run_log,
     rebuild_job_metadata,
+    rename_work_collection,
     recover_interrupted_jobs,
     retry_backoff_seconds,
     resolve_cover_path,
@@ -72,6 +75,7 @@ from toki_core import (
     run_stability_recovery_test,
     save_jobs,
     save_runs,
+    assign_job_to_collection,
     set_job_pause_state,
     set_process_tree_paused,
     should_auto_retry,
@@ -81,6 +85,7 @@ from toki_core import (
     update_job_note,
     verify_job_files,
     update_job_markers,
+    work_collection_for_job,
 )
 
 
@@ -719,6 +724,38 @@ class CoreContractTests(unittest.TestCase):
 
 
 class JobRepositoryTests(unittest.TestCase):
+    def test_work_collections_create_rename_assign_and_unassign_without_file_changes(self) -> None:
+        job = DownloadJob(
+            job_id="group-job",
+            url="https://newtoki1.org/manhwa/7788",
+            output_dir=self.temp_dir.name,
+            group="N／A",
+        )
+        marker = Path(self.temp_dir.name) / "download.txt"
+        marker.write_text("keep", encoding="utf-8")
+        save_jobs([job])
+
+        created = create_work_collection("나중에 읽기")
+        self.assertEqual(created["memberCount"], 0)
+        renamed = rename_work_collection(created["groupId"], "즐겨찾기")
+        self.assertEqual(renamed["name"], "즐겨찾기")
+        assigned = assign_job_to_collection(job.job_id, created["groupId"])
+        self.assertEqual(assigned["group"]["name"], "즐겨찾기")
+        self.assertFalse(assigned["metadataChanged"])
+        self.assertFalse(assigned["downloadFilesChanged"])
+        self.assertEqual(work_collection_for_job(job.job_id)["groupId"], created["groupId"])
+        self.assertEqual(list_work_collections()[0]["memberCount"], 1)
+        self.assertEqual(load_job_by_work_key(job.work_key).group, "N／A")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+
+        unassigned = assign_job_to_collection(job.job_id, None)
+        self.assertIsNone(unassigned["group"])
+        self.assertIsNone(work_collection_for_job(job.job_id))
+        self.assertEqual(list_work_collections()[0]["memberCount"], 0)
+
+        with self.assertRaises(ValueError):
+            create_work_collection("즐겨찾기")
+
     def test_job_snapshot_export_preview_and_additive_import_preserve_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1014,7 +1051,7 @@ class JobRepositoryTests(unittest.TestCase):
         schema = toki_core.database_schema_status(self.database_path)
         self.assertEqual(schema["version"], toki_core.JOB_DB_SCHEMA_VERSION)
         self.assertEqual(
-            [item["version"] for item in schema["migrations"]], [1, 2]
+            [item["version"] for item in schema["migrations"]], [1, 2, 3]
         )
         self.assertTrue(Path(schema["lastMigration"]["backupPath"]).is_file())
 

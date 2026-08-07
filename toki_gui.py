@@ -96,6 +96,7 @@ from toki_core import (
     DownloadJob,
     DownloadRun,
     append_bounded_text,
+    assign_job_to_collection,
     available_work_slots,
     append_log,
     build_job_list_view_state,
@@ -106,6 +107,7 @@ from toki_core import (
     cleanup_thumbnail_cache,
     count_jobs,
     count_runs,
+    create_work_collection,
     delete_job_record,
     delete_job_records,
     dependency_diagnostics,
@@ -125,6 +127,7 @@ from toki_core import (
     load_job_by_work_key,
     load_jobs_page,
     list_job_episode_images,
+    list_work_collections,
     log_retention_status,
     load_run,
     load_runs_page,
@@ -143,6 +146,7 @@ from toki_core import (
     read_log_tail,
     read_run_log,
     rebuild_job_metadata as execute_metadata_rebuild,
+    rename_work_collection,
     recover_interrupted_jobs,
     rescan_job_parameters,
     resource_admission,
@@ -164,6 +168,7 @@ from toki_core import (
     update_app_settings,
     validate_url,
     verify_job_files,
+    work_collection_for_job,
 )
 
 
@@ -1339,6 +1344,91 @@ class JobsSnapshotImportDialog(QDialog):
         self.update_result(result)
 
 
+class WorkGroupManagerDialog(QDialog):
+    def __init__(self, owner: "MainWindow") -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.setWindowTitle("작품 그룹 관리")
+        self.resize(580, 430)
+        layout = QVBoxLayout(self)
+        heading = QLabel("작품 정리 그룹")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        note = QLabel(
+            "목록 정리용 그룹입니다. 작품의 작가·번역 그룹 메타데이터와 다운로드 폴더명은 바뀌지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["그룹 이름", "작품 수"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
+        layout.addWidget(self.table, 1)
+        editor = QHBoxLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("새 그룹 이름 또는 선택한 그룹의 새 이름")
+        editor.addWidget(self.name_edit, 1)
+        create_button = QPushButton("새 그룹")
+        create_button.clicked.connect(self._create)
+        editor.addWidget(create_button)
+        self.rename_button = QPushButton("이름 변경")
+        self.rename_button.clicked.connect(self._rename)
+        editor.addWidget(self.rename_button)
+        layout.addLayout(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.refresh()
+
+    def selected_group_id(self) -> str:
+        row = self.table.currentRow()
+        if row < 0:
+            return ""
+        item = self.table.item(row, 0)
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def refresh(self) -> None:
+        groups = self.owner.list_groups_snapshot()["groups"]
+        self.table.setRowCount(len(groups))
+        for row, group in enumerate(groups):
+            name_item = QTableWidgetItem(str(group["name"]))
+            name_item.setData(Qt.ItemDataRole.UserRole, str(group["groupId"]))
+            count_item = QTableWidgetItem(str(group["memberCount"]))
+            count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 0, name_item)
+            self.table.setItem(row, 1, count_item)
+        self.rename_button.setEnabled(bool(self.selected_group_id()))
+
+    def _selection_changed(self) -> None:
+        row = self.table.currentRow()
+        if row >= 0 and self.table.item(row, 0):
+            self.name_edit.setText(self.table.item(row, 0).text())
+        self.rename_button.setEnabled(bool(self.selected_group_id()))
+
+    def _create(self) -> None:
+        try:
+            self.owner.create_work_group(self.name_edit.text())
+        except (ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "그룹을 만들 수 없음", str(error))
+            return
+        self.name_edit.clear()
+        self.refresh()
+
+    def _rename(self) -> None:
+        try:
+            self.owner.rename_work_group(self.selected_group_id(), self.name_edit.text())
+        except (ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "그룹 이름을 바꿀 수 없음", str(error))
+            return
+        self.refresh()
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
@@ -1926,6 +2016,7 @@ class MainWindow(QMainWindow):
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
+        self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -2035,6 +2126,8 @@ class MainWindow(QMainWindow):
         self.export_jobs_action.triggered.connect(self.choose_jobs_snapshot_export)
         self.import_jobs_action = QAction("작업 스냅샷 가져오기...", self)
         self.import_jobs_action.triggered.connect(self.choose_jobs_snapshot_import)
+        self.group_manager_action = QAction("작품 그룹 관리...", self)
+        self.group_manager_action.triggered.connect(self.show_group_manager)
 
         self.open_folder_action = QAction("저장 폴더 열기", self)
         self.open_folder_action.setShortcuts(
@@ -2161,6 +2254,7 @@ class MainWindow(QMainWindow):
         work_menu.addSeparator()
         work_menu.addAction(self.export_jobs_action)
         work_menu.addAction(self.import_jobs_action)
+        work_menu.addAction(self.group_manager_action)
         work_menu.addSeparator()
         work_menu.addAction(self.exit_action)
 
@@ -3871,6 +3965,61 @@ class MainWindow(QMainWindow):
         self.active_jobs_snapshot_dialog.close()
         return True
 
+    def list_groups_snapshot(self) -> dict[str, Any]:
+        groups = list_work_collections()
+        return {"ok": True, "count": len(groups), "groups": groups}
+
+    def create_work_group(self, name: str) -> dict[str, Any]:
+        result = create_work_collection(name)
+        if self.active_group_manager_dialog:
+            self.active_group_manager_dialog.refresh()
+        self.log(f"작품 그룹 생성: {result['name']}")
+        return result
+
+    def rename_work_group(self, group_id: str, name: str) -> dict[str, Any]:
+        result = rename_work_collection(group_id, name)
+        if self.active_group_manager_dialog:
+            self.active_group_manager_dialog.refresh()
+        self.log(f"작품 그룹 이름 변경: {result['name']}")
+        return result
+
+    def assign_work_group(self, job_id: str, group_id: str) -> dict[str, Any]:
+        result = assign_job_to_collection(job_id, group_id or None)
+        if self.active_group_manager_dialog:
+            self.active_group_manager_dialog.refresh()
+        label = result["group"]["name"] if result.get("group") else "미분류"
+        self.log(f"작품 정리 그룹: {label}", job_id=job_id)
+        self.statusBar().showMessage(f"작품을 {label} 그룹으로 이동했습니다.", 3500)
+        return result
+
+    def show_group_manager(self) -> bool:
+        if self.active_group_manager_dialog:
+            self.active_group_manager_dialog.show()
+            self.active_group_manager_dialog.raise_()
+            self.active_group_manager_dialog.activateWindow()
+            return True
+        dialog = WorkGroupManagerDialog(self)
+        self.active_group_manager_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(
+            lambda _object=None, selected=dialog: (
+                setattr(self, "active_group_manager_dialog", None)
+                if self.active_group_manager_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log("작품 그룹 관리 창 표시")
+        return True
+
+    def close_group_manager(self) -> bool:
+        if not self.active_group_manager_dialog:
+            return False
+        self.active_group_manager_dialog.close()
+        return True
+
     def close_settings_dialog(self) -> bool:
         if not self.active_settings_dialog:
             return False
@@ -4781,6 +4930,31 @@ class MainWindow(QMainWindow):
             "고정 해제" if job.pinned else "목록 상단에 고정",
             lambda: self.set_job_pin(job.job_id, not job.pinned),
         )
+        collection_menu = menu.addMenu("작품 정리 그룹")
+        current_collection = work_collection_for_job(job.job_id)
+        unassigned_action = collection_menu.addAction("미분류")
+        unassigned_action.setCheckable(True)
+        unassigned_action.setChecked(current_collection is None)
+        unassigned_action.triggered.connect(
+            lambda _checked=False: self.assign_work_group(job.job_id, "")
+        )
+        groups = list_work_collections()
+        if groups:
+            collection_menu.addSeparator()
+        for group in groups:
+            action = collection_menu.addAction(str(group["name"]))
+            action.setCheckable(True)
+            action.setChecked(
+                bool(current_collection)
+                and current_collection.get("groupId") == group["groupId"]
+            )
+            action.triggered.connect(
+                lambda _checked=False, selected=str(group["groupId"]): self.assign_work_group(
+                    job.job_id, selected
+                )
+            )
+        collection_menu.addSeparator()
+        collection_menu.addAction("그룹 관리...", self.show_group_manager)
         tag_menu = menu.addMenu("색상 태그")
         for label, color in (
             ("없음", "none"),
@@ -5079,6 +5253,11 @@ class MainWindow(QMainWindow):
             and self.active_jobs_snapshot_dialog.isVisible()
         ):
             screenshot = self.active_jobs_snapshot_dialog.grab()
+        elif (
+            self.active_group_manager_dialog
+            and self.active_group_manager_dialog.isVisible()
+        ):
+            screenshot = self.active_group_manager_dialog.grab()
         elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
@@ -5507,6 +5686,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
             "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
+            "toki-cli.cmd group list|create|rename|assign|unassign|manage [options]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
             "toki-cli.cmd tray status|show|hide|notify [--message TEXT]\n"
             "toki-cli.cmd retry [--job ID]\n"
@@ -5717,6 +5897,11 @@ class MainWindow(QMainWindow):
                 self.active_jobs_snapshot_dialog
                 and self.active_jobs_snapshot_dialog.isVisible()
             ),
+            "groupManagerOpen": bool(
+                self.active_group_manager_dialog
+                and self.active_group_manager_dialog.isVisible()
+            ),
+            "groupCount": len(list_work_collections()),
             "window": {
                 **self.window_snapshot(),
                 "restorePlan": getattr(self, "window_restore_plan", None),
@@ -5962,6 +6147,22 @@ class MainWindow(QMainWindow):
             return {"shown": self.show_jobs_snapshot_import(str(request.get("input") or ""))}
         if action == "close_jobs_snapshot_import":
             return {"closed": self.close_jobs_snapshot_dialog()}
+        if action == "groups":
+            return self.list_groups_snapshot()
+        if action == "create_group":
+            return self.create_work_group(str(request.get("name") or ""))
+        if action == "rename_group":
+            return self.rename_work_group(
+                str(request.get("groupId") or ""), str(request.get("name") or "")
+            )
+        if action == "assign_group":
+            return self.assign_work_group(
+                str(request.get("jobId") or ""), str(request.get("groupId") or "")
+            )
+        if action == "show_group_manager":
+            return {"shown": self.show_group_manager()}
+        if action == "close_group_manager":
+            return {"closed": self.close_group_manager()}
         if action == "tray":
             return self.handle_tray_command(
                 str(request.get("command") or "status"),

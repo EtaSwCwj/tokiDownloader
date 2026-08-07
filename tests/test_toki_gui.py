@@ -107,6 +107,53 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_group_ipc_routes_all_manager_and_assignment_actions(self) -> None:
+        calls = []
+        harness = type("GroupHarness", (), {})()
+        harness.list_groups_snapshot = lambda: {"ok": True, "groups": []}
+        harness.create_work_group = (
+            lambda name: calls.append(("create", name)) or {"groupId": "g1", "name": name}
+        )
+        harness.rename_work_group = (
+            lambda group_id, name: calls.append(("rename", group_id, name))
+            or {"groupId": group_id, "name": name}
+        )
+        harness.assign_work_group = (
+            lambda job_id, group_id: calls.append(("assign", job_id, group_id))
+            or {"ok": True}
+        )
+        harness.show_group_manager = lambda: calls.append(("show",)) or True
+        harness.close_group_manager = lambda: calls.append(("close",)) or True
+
+        self.assertEqual(
+            MainWindow._handle_control_action(harness, {"action": "groups"})["groups"],
+            [],
+        )
+        MainWindow._handle_control_action(
+            harness, {"action": "create_group", "name": "읽을 것"}
+        )
+        MainWindow._handle_control_action(
+            harness, {"action": "rename_group", "groupId": "g1", "name": "완독"}
+        )
+        MainWindow._handle_control_action(
+            harness, {"action": "assign_group", "jobId": "j1", "groupId": "g1"}
+        )
+        shown = MainWindow._handle_control_action(harness, {"action": "show_group_manager"})
+        closed = MainWindow._handle_control_action(harness, {"action": "close_group_manager"})
+
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(
+            calls,
+            [
+                ("create", "읽을 것"),
+                ("rename", "g1", "완독"),
+                ("assign", "j1", "g1"),
+                ("show",),
+                ("close",),
+            ],
+        )
+
     def test_jobs_snapshot_ipc_routes_export_preview_execute_show_and_close(self) -> None:
         calls = []
         harness = type("JobsSnapshotHarness", (), {})()
