@@ -59,6 +59,7 @@ from youtube_provider import (
     youtube_format_policy_snapshot,
     youtube_metadata_policy_snapshot,
     youtube_collection_policy_snapshot,
+    youtube_chapter_policy_snapshot,
 )
 from toki_core import (
     APP_VERSION,
@@ -1033,6 +1034,22 @@ def build_parser() -> argparse.ArgumentParser:
             collection_command.add_argument("--input", required=True)
         collection_command.add_argument("--order", choices=YOUTUBE_COLLECTION_ORDERS)
         collection_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_chapters = youtube_commands.add_parser("chapters", help="미디어 챕터 마커")
+    youtube_chapter_commands = youtube_chapters.add_subparsers(
+        dest="youtube_chapter_command", required=True
+    )
+    youtube_chapter_status = youtube_chapter_commands.add_parser(
+        "status", help="현재 챕터 마커 정책"
+    )
+    youtube_chapter_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name in ("set", "plan"):
+        chapter_command = youtube_chapter_commands.add_parser(
+            name, help="챕터 정책 저장" if name == "set" else "오프라인 인자 계획"
+        )
+        if name == "plan":
+            chapter_command.add_argument("--input", required=True)
+        chapter_command.add_argument("--embed", choices=("on", "off"))
+        chapter_command.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2919,6 +2936,32 @@ def run_cli(args: argparse.Namespace) -> int:
             if gui_is_running()
             else settings_snapshot()
         )
+        if args.youtube_command == "chapters":
+            embed = (
+                None if args.youtube_chapter_command == "status" or args.embed is None
+                else args.embed == "on"
+            )
+            if args.youtube_chapter_command == "status":
+                result = youtube_chapter_policy_snapshot(current)
+            elif args.youtube_chapter_command == "set":
+                if embed is None:
+                    raise ValueError("저장할 YouTube 챕터 마커 설정을 지정하세요.")
+                updates = {"youtubeEmbedChapters": embed}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **youtube_chapter_policy_snapshot(saved)}
+            else:
+                plan_config = (
+                    current if embed is None else {**current, "youtubeEmbedChapters": embed}
+                )
+                result = plan_youtube_format(args.input, plan_config)
+            print_json(result)
+            return 0
         if args.youtube_command == "collection":
             order = args.order if args.youtube_collection_command != "status" else None
             if args.youtube_collection_command == "status":

@@ -161,6 +161,22 @@ def _normalize_youtube_boolean(value: Any, label: str, default: bool = False) ->
     return value
 
 
+def youtube_chapter_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    embed_chapters = _normalize_youtube_boolean(
+        source.get("youtubeEmbedChapters"), "YouTube 챕터 마커 포함"
+    )
+    return {
+        "ok": True,
+        "embedChapters": embed_chapters,
+        "sourceChaptersRequired": True,
+        "postProcessingRequired": embed_chapters,
+        "requiresFfmpeg": embed_chapters,
+        "networkRequested": False,
+        "downloadExecuted": False,
+    }
+
+
 def youtube_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
     write_thumbnail = _normalize_youtube_boolean(
@@ -293,6 +309,7 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
     source = config if isinstance(config, dict) else {}
     metadata_policy = youtube_metadata_policy_snapshot(source)
     collection_policy = youtube_collection_policy_snapshot(source)
+    chapter_policy = youtube_chapter_policy_snapshot(source)
     return {
         "ok": True,
         "mode": normalize_youtube_format_mode(source.get("youtubeFormatMode")),
@@ -319,6 +336,7 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
             source.get("youtubeAudioTrackMode", "preferred_single")
         ),
         "collectionOrder": collection_policy["order"],
+        "embedChapters": chapter_policy["embedChapters"],
         "writeThumbnail": metadata_policy["writeThumbnail"],
         "embedThumbnail": metadata_policy["embedThumbnail"],
         "writeInfoJson": metadata_policy["writeInfoJson"],
@@ -409,8 +427,13 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
     if sidecar_metadata:
         arguments.append("--no-write-playlist-metafiles")
     if policy["embedMetadata"]:
-        arguments.extend(("--embed-metadata", "--no-embed-chapters", "--no-embed-info-json"))
+        arguments.extend(("--embed-metadata", "--no-embed-info-json"))
         requires_ffmpeg = True
+    if policy["embedChapters"]:
+        arguments.append("--embed-chapters")
+        requires_ffmpeg = True
+    elif policy["embedMetadata"]:
+        arguments.append("--no-embed-chapters")
     if policy["container"] != "auto" and policy["mode"] != "audio_only":
         arguments.extend(("--merge-output-format", policy["container"]))
         arguments.extend(("--remux-video", policy["container"]))
@@ -430,7 +453,7 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         "requiresYtDlp": True,
         "requiresFfmpeg": requires_ffmpeg,
         "postProcessingRequired": bool(
-            policy["embedThumbnail"] or policy["embedMetadata"]
+            policy["embedThumbnail"] or policy["embedMetadata"] or policy["embedChapters"]
         ),
         "externalRequestRequiresConfirmation": True,
         "networkRequested": False,

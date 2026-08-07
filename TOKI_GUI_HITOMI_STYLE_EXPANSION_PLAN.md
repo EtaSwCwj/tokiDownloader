@@ -670,7 +670,7 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 - [x] 선호 언어, 자막, 오디오 트랙
 - [x] 썸네일과 메타데이터
 - [x] 채널/재생목록 순서
-- [ ] 챕터 마커
+- [x] 챕터 마커
 - [ ] 업로드 날짜를 파일 수정 날짜로 적용
 - [ ] 진행률, 중지, 재시도와 실행 이력 통합
 
@@ -732,6 +732,17 @@ streams/playlists/featured 탭을 오프라인으로 구분한다. 채널 기본
 `logs/youtube-channel-playlist-order.png`에 화면을 보존했으며 채널 접속·다운로드는 실행하지
 않았다.
 Python 242건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 YouTube 챕터 마커 구현: 설정 스키마 v28에 기본 꺼짐인 챕터 포함 여부를
+추가했다. 원본이 제공한 챕터만 `--embed-chapters`로 포함하고 새 구간을 추측하지 않는다.
+기존 미디어 메타데이터 옵션과 독립적으로 동작하며, 메타데이터만 켜면 계속
+`--no-embed-chapters`를 명시하고 두 설정을 함께 켜면 `--embed-metadata`,
+`--embed-chapters`, `--no-embed-info-json`을 충돌 없이 계획한다. `youtube chapters
+status|set|plan`, GUI 체크박스와 상태 JSON이 같은 공용 서비스를 사용하며 FFmpeg 후처리
+필요 여부를 반환한다. CLI로 실행 중 GUI에 챕터 포함을 적용해 화면과 오프라인 인자를
+확인한 뒤 기본 꺼짐으로 복원했다. `logs/youtube-chapter-markers.png`에 화면을 보존했으며
+외부 요청·다운로드·미디어 수정은 실행하지 않았다.
+Python 243건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ## 6. 기능별 안전 경계
 

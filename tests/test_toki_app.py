@@ -1249,6 +1249,35 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(collection_set), 0)
         update.assert_called_once_with({"youtubeCollectionOrder": "reverse"})
 
+        chapters = build_parser().parse_args(
+            [
+                "youtube", "chapters", "plan", "--input",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "--embed", "on", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(chapters), 0)
+        payload = json.loads(output.getvalue())
+        self.assertIn("--embed-chapters", payload["arguments"])
+        self.assertTrue(payload["postProcessingRequired"])
+
+        chapters_set = build_parser().parse_args(
+            ["youtube", "chapters", "set", "--embed", "on", "--json"]
+        )
+        expected = {**default_config(), "youtubeEmbedChapters": True}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value=expected) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(chapters_set), 0)
+        update.assert_called_once_with({"youtubeEmbedChapters": True})
+
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (

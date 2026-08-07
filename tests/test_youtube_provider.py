@@ -15,7 +15,7 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 27)
+        self.assertEqual(config["configVersion"], 28)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)
@@ -27,6 +27,7 @@ class YouTubeProviderTests(unittest.TestCase):
         self.assertFalse(policy["writeInfoJson"])
         self.assertFalse(policy["writeDescription"])
         self.assertFalse(policy["embedMetadata"])
+        self.assertFalse(policy["embedChapters"])
 
     def test_filename_template_is_windows_safe_and_rejects_arbitrary_expressions(self) -> None:
         preview = preview_youtube_filename(
@@ -159,6 +160,27 @@ class YouTubeProviderTests(unittest.TestCase):
         with self.assertRaises(YouTubePolicyError):
             inspect_youtube_url("https://www.youtube.com/@OpenAI/unknown-tab")
 
+    def test_chapter_markers_are_independent_from_metadata_embedding(self) -> None:
+        chapters = plan_youtube_format(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            {**default_config(), "youtubeEmbedChapters": True},
+        )
+        self.assertIn("--embed-chapters", chapters["arguments"])
+        self.assertNotIn("--embed-metadata", chapters["arguments"])
+        self.assertTrue(chapters["postProcessingRequired"])
+        self.assertTrue(chapters["requiresFfmpeg"])
+        combined = plan_youtube_format(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            {
+                **default_config(),
+                "youtubeEmbedMetadata": True,
+                "youtubeEmbedChapters": True,
+            },
+        )
+        self.assertIn("--embed-metadata", combined["arguments"])
+        self.assertIn("--embed-chapters", combined["arguments"])
+        self.assertNotIn("--no-embed-chapters", combined["arguments"])
+
     def test_invalid_urls_and_config_values_are_rejected_or_migrated(self) -> None:
         with self.assertRaises(YouTubePolicyError) as caught:
             inspect_youtube_url("https://example.com/watch?v=abc")
@@ -176,6 +198,7 @@ class YouTubeProviderTests(unittest.TestCase):
                 "youtubeWriteDescription": "false",
                 "youtubeEmbedMetadata": "on",
                 "youtubeCollectionOrder": "random",
+                "youtubeEmbedChapters": "yes",
             }
         )
         defaults = default_config()
@@ -197,5 +220,6 @@ class YouTubeProviderTests(unittest.TestCase):
             "youtubeWriteDescription",
             "youtubeEmbedMetadata",
             "youtubeCollectionOrder",
+            "youtubeEmbedChapters",
         ):
             self.assertEqual(normalized[key], defaults[key])
