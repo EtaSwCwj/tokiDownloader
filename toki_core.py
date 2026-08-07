@@ -57,6 +57,12 @@ from youtube_provider import (
 
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_PATH = ROOT_DIR / "VERSION"
+APP_DISPLAY_NAME = "tokiDownloader"
+APP_ORGANIZATION_NAME = "EtaSwCwj"
+APP_ORGANIZATION_DOMAIN = "github.com/EtaSwCwj"
+WINDOWS_APP_USER_MODEL_ID = "EtaSwCwj.tokiDownloader.GUI.1"
+APP_ICON_PATH = ROOT_DIR / "assets" / "toki-downloader.png"
+APP_EXECUTABLE_ICON_PATH = ROOT_DIR / "assets" / "toki-downloader.ico"
 APP_VERSION = (
     VERSION_PATH.read_text(encoding="utf-8").strip()
     if VERSION_PATH.is_file()
@@ -71,6 +77,11 @@ JOB_DB_PATH = ROOT_DIR / "jobs.db"
 THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
+_APPLICATION_IDENTITY_RUNTIME: dict[str, Any] = {
+    "attempted": False,
+    "applied": False,
+    "error": "",
+}
 _INITIALIZED_JOB_DBS: set[str] = set()
 CONFIG_SCHEMA_VERSION = 29
 JOB_DB_SCHEMA_VERSION = 4
@@ -150,6 +161,62 @@ TAG_COLORS = {
     "purple": "#8856c6",
     "gray": "#7b8794",
 }
+
+
+def application_identity_snapshot() -> dict[str, Any]:
+    icon_exists = APP_ICON_PATH.is_file() and APP_ICON_PATH.stat().st_size > 0
+    executable_icon_exists = (
+        APP_EXECUTABLE_ICON_PATH.is_file()
+        and APP_EXECUTABLE_ICON_PATH.stat().st_size > 0
+    )
+    return {
+        "ok": icon_exists and executable_icon_exists,
+        "displayName": APP_DISPLAY_NAME,
+        "organizationName": APP_ORGANIZATION_NAME,
+        "organizationDomain": APP_ORGANIZATION_DOMAIN,
+        "windowsAppUserModelId": WINDOWS_APP_USER_MODEL_ID,
+        "iconPath": str(APP_ICON_PATH),
+        "iconExists": icon_exists,
+        "executableIconPath": str(APP_EXECUTABLE_ICON_PATH),
+        "executableIconExists": executable_icon_exists,
+        "plannedExecutableName": "tokiDownloader.exe",
+        "runningExecutable": str(Path(sys.executable).resolve()),
+        "windowsTaskbarIsolationConfigured": bool(
+            WINDOWS_APP_USER_MODEL_ID and icon_exists
+        ),
+        "attempted": bool(_APPLICATION_IDENTITY_RUNTIME["attempted"]),
+        "applied": bool(_APPLICATION_IDENTITY_RUNTIME["applied"]),
+        "error": str(_APPLICATION_IDENTITY_RUNTIME["error"]),
+        "networkRequested": False,
+    }
+
+
+def apply_windows_app_user_model_id(
+    *,
+    platform_name: str | None = None,
+    setter: Callable[[str], int] | None = None,
+) -> dict[str, Any]:
+    selected_platform = str(platform_name or os.name)
+    _APPLICATION_IDENTITY_RUNTIME.update(
+        {"attempted": selected_platform == "nt", "applied": False, "error": ""}
+    )
+    if selected_platform != "nt":
+        return application_identity_snapshot()
+    try:
+        if setter is None:
+            import ctypes
+
+            native = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+            native.argtypes = [ctypes.c_wchar_p]
+            native.restype = ctypes.c_long
+            setter = native
+        result = int(setter(WINDOWS_APP_USER_MODEL_ID))
+        if result != 0:
+            raise OSError(f"HRESULT 0x{result & 0xFFFFFFFF:08X}")
+        _APPLICATION_IDENTITY_RUNTIME["applied"] = True
+    except Exception as error:
+        _APPLICATION_IDENTITY_RUNTIME["error"] = f"{type(error).__name__}: {error}"
+    return application_identity_snapshot()
 SETTING_KEYS = frozenset(
     {
         "outputDir",

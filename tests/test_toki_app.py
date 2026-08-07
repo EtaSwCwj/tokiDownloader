@@ -17,6 +17,59 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_app_identity_cli_reports_local_and_live_gui_state(self) -> None:
+        local_args = build_parser().parse_args(["app-identity", "--json"])
+        local = {
+            "ok": True,
+            "displayName": "tokiDownloader",
+            "windowsAppUserModelId": "EtaSwCwj.tokiDownloader.GUI.1",
+            "iconExists": True,
+            "applied": False,
+        }
+        with (
+            patch("toki_app.application_identity_snapshot", return_value=local),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(local_args), 0)
+        self.assertEqual(json.loads(stdout.getvalue()), local)
+
+        live_args = build_parser().parse_args(
+            ["app-identity", "--via-gui", "--json"]
+        )
+        live = {**local, "applied": True}
+        with (
+            patch("toki_app.control_request", return_value=live) as request,
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(live_args), 0)
+        request.assert_called_once_with({"action": "application_identity"})
+        self.assertTrue(json.loads(stdout.getvalue())["applied"])
+
+        show_args = build_parser().parse_args(
+            ["app-identity", "--show-gui", "--json"]
+        )
+        close_args = build_parser().parse_args(
+            ["app-identity", "--close", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running") as ensure,
+            patch(
+                "toki_app.control_request",
+                side_effect=[{"shown": True, **live}, {"closed": True}],
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_args), 0)
+            self.assertEqual(run_cli(close_args), 0)
+        self.assertEqual(ensure.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in request.call_args_list],
+            [
+                {"action": "show_application_identity"},
+                {"action": "close_application_identity"},
+            ],
+        )
+
     def test_hitomi_original_image_cli_uses_shared_offline_plan(self) -> None:
         status_args = build_parser().parse_args(
             ["hitomi", "images", "status", "--json"]

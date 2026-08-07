@@ -149,6 +149,46 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_application_identity_has_unique_assets_and_windows_app_id(self) -> None:
+        configured = toki_core.application_identity_snapshot()
+        self.assertTrue(configured["ok"])
+        self.assertEqual(configured["displayName"], "tokiDownloader")
+        self.assertEqual(
+            configured["windowsAppUserModelId"], "EtaSwCwj.tokiDownloader.GUI.1"
+        )
+        self.assertTrue(configured["iconExists"])
+        self.assertTrue(configured["executableIconExists"])
+        self.assertEqual(Path(configured["iconPath"]).suffix, ".png")
+        self.assertEqual(Path(configured["executableIconPath"]).suffix, ".ico")
+        self.assertTrue(
+            Path(configured["iconPath"])
+            .read_bytes()
+            .startswith(b"\x89PNG\r\n\x1a\n")
+        )
+        ico_header = Path(configured["executableIconPath"]).read_bytes()[:6]
+        self.assertEqual(ico_header[:4], b"\x00\x00\x01\x00")
+        self.assertGreaterEqual(int.from_bytes(ico_header[4:6], "little"), 7)
+
+        calls: list[str] = []
+        applied = toki_core.apply_windows_app_user_model_id(
+            platform_name="nt",
+            setter=lambda value: calls.append(value) or 0,
+        )
+        self.assertEqual(calls, ["EtaSwCwj.tokiDownloader.GUI.1"])
+        self.assertTrue(applied["applied"])
+        self.assertEqual(applied["error"], "")
+
+        failed = toki_core.apply_windows_app_user_model_id(
+            platform_name="nt", setter=lambda _value: 1
+        )
+        self.assertFalse(failed["applied"])
+        self.assertIn("HRESULT", failed["error"])
+        unsupported = toki_core.apply_windows_app_user_model_id(
+            platform_name="posix"
+        )
+        self.assertFalse(unsupported["attempted"])
+        self.assertFalse(unsupported["applied"])
+
     def test_local_api_is_loopback_token_authenticated_and_action_limited(self) -> None:
         config = default_config()
         self.assertFalse(config["localApiEnabled"])

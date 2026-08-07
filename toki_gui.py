@@ -41,6 +41,7 @@ from PyQt6.QtGui import (
     QFont,
     QImage,
     QImageReader,
+    QIcon,
     QKeySequence,
     QPainter,
     QPalette,
@@ -144,9 +145,11 @@ def webengine_runtime_status() -> dict[str, Any]:
     }
 
 from toki_core import (
+    APP_ICON_PATH,
     APP_VERSION,
     ACTIVE_JOB_STATES,
     archive_viewer_policy_snapshot,
+    application_identity_snapshot,
     CONTROL_SERVER_NAME,
     EVENT_PREFIX,
     JOB_DB_PATH,
@@ -2925,6 +2928,83 @@ class HitomiMetadataDialog(QDialog):
         }
 
 
+class ApplicationIdentityDialog(QDialog):
+    def __init__(self, owner: "MainWindow") -> None:
+        super().__init__(owner)
+        self.identity = application_identity_snapshot()
+        self.setWindowTitle("tokiDownloader 앱 정보")
+        self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
+        self.resize(640, 390)
+        layout = QVBoxLayout(self)
+
+        heading = QHBoxLayout()
+        icon_label = QLabel()
+        pixmap = QPixmap(str(APP_ICON_PATH))
+        if not pixmap.isNull():
+            icon_label.setPixmap(
+                pixmap.scaled(
+                    104,
+                    104,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        heading.addWidget(icon_label)
+        title_box = QVBoxLayout()
+        title = QLabel(f"tokiDownloader {APP_VERSION}")
+        title.setObjectName("dialogTitle")
+        title_box.addWidget(title)
+        summary = QLabel(
+            "다른 Python/PyQt 프로그램과 작업 표시줄 아이콘 및 그룹을 분리하는 "
+            "Windows 앱 정체성입니다."
+        )
+        summary.setObjectName("mutedLabel")
+        summary.setWordWrap(True)
+        title_box.addWidget(summary)
+        title_box.addStretch(1)
+        heading.addLayout(title_box, 1)
+        layout.addLayout(heading)
+
+        form = QFormLayout()
+        form.addRow("앱 이름", QLabel(str(self.identity["displayName"])))
+        form.addRow("조직", QLabel(str(self.identity["organizationName"])))
+        app_id = QLineEdit(str(self.identity["windowsAppUserModelId"]))
+        app_id.setReadOnly(True)
+        form.addRow("Windows AppUserModelID", app_id)
+        applied = "적용됨" if self.identity["applied"] else "적용되지 않음"
+        if self.identity.get("error"):
+            applied += f" · {self.identity['error']}"
+        form.addRow("현재 프로세스", QLabel(applied))
+        icon_path = QLineEdit(str(self.identity["iconPath"]))
+        icon_path.setReadOnly(True)
+        form.addRow("런타임 아이콘", icon_path)
+        executable = QLineEdit(
+            f"{self.identity['plannedExecutableName']} · "
+            f"{self.identity['executableIconPath']}"
+        )
+        executable.setReadOnly(True)
+        form.addRow("배포 EXE", executable)
+        layout.addLayout(form)
+
+        note = QLabel(
+            "CLI: app-identity --via-gui --json · 상태 확인은 외부 네트워크나 사용자 파일을 "
+            "변경하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.button(QDialogButtonBox.StandardButton.Close).setToolTip(
+            "CLI: app-identity --close --json"
+        )
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {"open": self.isVisible(), **self.identity}
+
+
 class EmbeddedBrowserDialog(QDialog):
     OFFLINE_HTML = """
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -5490,6 +5570,7 @@ class MainWindow(QMainWindow):
         self.last_clipboard_text = ""
         self.last_clipboard_inspection: dict[str, Any] = {}
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
+        self.active_application_identity_dialog: ApplicationIdentityDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
         self.dirty_job_ids: set[str] = set()
@@ -5529,7 +5610,12 @@ class MainWindow(QMainWindow):
         self.restore_position: QPoint | None = None
         self.geometry_restored = False
         self._restore_window_geometry(window_config)
-        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+        app_icon = QIcon(str(APP_ICON_PATH))
+        self.setWindowIcon(
+            app_icon
+            if not app_icon.isNull()
+            else self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        )
 
         self._build_actions()
         self._build_ui()
@@ -5721,6 +5807,11 @@ class MainWindow(QMainWindow):
         self.shortcut_help_action = QAction("키보드 단축키...", self)
         self.shortcut_help_action.triggered.connect(self.show_shortcut_help)
 
+        self.application_identity_action = QAction("tokiDownloader 앱 정보...", self)
+        self.application_identity_action.triggered.connect(
+            self.show_application_identity
+        )
+
         self.focus_url_action = QAction("URL 입력으로 이동", self)
         self.focus_url_action.setShortcuts(
             [QKeySequence(key) for key in keyboard_shortcut_keys("focus.url")]
@@ -5814,6 +5905,7 @@ class MainWindow(QMainWindow):
         self.help_menu = self.menuBar().addMenu(self.strings["main.menu.help"])
         help_menu = self.help_menu
         help_menu.addAction(self.shortcut_help_action)
+        help_menu.addAction(self.application_identity_action)
         cli_action = help_menu.addAction("CLI 명령 보기")
         cli_action.triggered.connect(self.show_cli_help)
 
@@ -10552,6 +10644,11 @@ class MainWindow(QMainWindow):
         if notification_box:
             screenshot = notification_box.grab()
         elif (
+            self.active_application_identity_dialog
+            and self.active_application_identity_dialog.isVisible()
+        ):
+            screenshot = self.active_application_identity_dialog.grab()
+        elif (
             self.active_shortcut_help_dialog
             and self.active_shortcut_help_dialog.isVisible()
         ):
@@ -11091,6 +11188,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd performance stability [--records N --cycles N --json|--via-gui]\n"
             "toki-cli.cmd performance resources --json\n"
             "toki-cli.cmd performance event-policy --event EVENT --json\n"
+            "toki-cli.cmd app-identity [--json|--via-gui|--show-gui|--close]\n"
             "toki-cli.cmd doctor [--json|--show-gui|--close]\n"
             "toki-cli.cmd diagnostics export [--output PATH --json|--via-gui]\n"
             "toki-cli.cmd thumbnail-cache status|cleanup [--execute --json]\n"
@@ -11100,6 +11198,32 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd show\n"
             "toki-cli.cmd quit",
         )
+
+    def show_application_identity(self) -> dict[str, Any]:
+        if self.active_application_identity_dialog:
+            self.active_application_identity_dialog.close()
+        dialog = ApplicationIdentityDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.active_application_identity_dialog = dialog
+        selected = dialog
+        dialog.destroyed.connect(
+            lambda _object=None: (
+                setattr(self, "active_application_identity_dialog", None)
+                if self.active_application_identity_dialog is selected
+                else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log("앱 정보 창 표시")
+        return {"shown": True, **dialog.state_snapshot()}
+
+    def close_application_identity(self) -> bool:
+        if not self.active_application_identity_dialog:
+            return False
+        self.active_application_identity_dialog.close()
+        return True
 
     def show_shortcut_help(self) -> bool:
         if self.active_shortcut_help_dialog:
@@ -11221,6 +11345,12 @@ class MainWindow(QMainWindow):
                 context.job.job_id for context in active_contexts if context.paused
             ],
             "actions": self._action_availability_snapshot(),
+            "applicationIdentity": application_identity_snapshot(),
+            "applicationIdentityDialog": (
+                self.active_application_identity_dialog.state_snapshot()
+                if self.active_application_identity_dialog
+                else {"open": False}
+            ),
             "jobs": [job.to_dict() for job in self.jobs.values()],
             "loadedJobCount": len(self.jobs),
             "totalJobCount": self.history_all_total,
@@ -11632,6 +11762,12 @@ class MainWindow(QMainWindow):
         action = request.get("action")
         if action == "ping":
             return {"pong": True}
+        if action == "application_identity":
+            return application_identity_snapshot()
+        if action == "show_application_identity":
+            return self.show_application_identity()
+        if action == "close_application_identity":
+            return {"closed": self.close_application_identity()}
         if action == "enqueue":
             job = self.enqueue_download(
                 url=str(request.get("url") or ""),

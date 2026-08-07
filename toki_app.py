@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from PyQt6.QtCore import QCoreApplication, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
@@ -66,9 +66,15 @@ from youtube_provider import (
     youtube_mtime_policy_snapshot,
 )
 from toki_core import (
+    APP_DISPLAY_NAME,
+    APP_ICON_PATH,
+    APP_ORGANIZATION_DOMAIN,
+    APP_ORGANIZATION_NAME,
     APP_VERSION,
     COOKIE_PROVIDERS,
     archive_viewer_policy_snapshot,
+    application_identity_snapshot,
+    apply_windows_app_user_model_id,
     available_ui_languages,
     apply_config_migrations,
     apply_database_migrations,
@@ -349,6 +355,7 @@ def ensure_gui_running(timeout_seconds: float = 12.0) -> None:
 
 
 def run_gui() -> int:
+    identity = apply_windows_app_user_model_id()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -356,9 +363,20 @@ def run_gui() -> int:
         Qt.ApplicationAttribute.AA_ShareOpenGLContexts
     )
     app = QApplication(sys.argv)
-    app.setApplicationName("tokiDownloader")
-    app.setOrganizationName("tokiDownloader")
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    app.setOrganizationName(APP_ORGANIZATION_NAME)
+    app.setOrganizationDomain(APP_ORGANIZATION_DOMAIN)
+    app_icon = QIcon(str(APP_ICON_PATH))
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     app.setFont(QFont("Malgun Gothic", 9))
+    if identity.get("error"):
+        append_log(
+            f"Windows 앱 ID 적용 실패: {identity['error']}",
+            level="WARNING",
+            job_id="gui",
+        )
 
     def log_unhandled_exception(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         details = "".join(traceback.format_exception(exc_type, exc, tb)).rstrip()
@@ -596,6 +614,20 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_window = doctor.add_mutually_exclusive_group()
     doctor_window.add_argument("--show-gui", action="store_true", help="GUI 진단창 열기")
     doctor_window.add_argument("--close", action="store_true", help="GUI 진단창 닫기")
+    app_identity = subparsers.add_parser(
+        "app-identity", help="앱 이름·아이콘·Windows 작업 표시줄 ID 조회"
+    )
+    app_identity_mode = app_identity.add_mutually_exclusive_group()
+    app_identity_mode.add_argument(
+        "--via-gui", action="store_true", help="실행 중인 GUI의 실제 적용 상태 조회"
+    )
+    app_identity_mode.add_argument(
+        "--show-gui", action="store_true", help="아이콘과 앱 ID가 표시된 GUI 창 열기"
+    )
+    app_identity_mode.add_argument(
+        "--close", action="store_true", help="열린 앱 정보 창 닫기"
+    )
+    app_identity.add_argument("--json", action="store_true", help="JSON으로 출력")
     migrate = subparsers.add_parser("migrate", help="설정과 작업 DB 스키마 점검·마이그레이션")
     migrate_commands = migrate.add_subparsers(dest="migrate_command", required=True)
     migrate_status = migrate_commands.add_parser("status", help="현재 스키마 버전 조회")
@@ -2211,6 +2243,38 @@ def run_cli(args: argparse.Namespace) -> int:
         ensure_gui_running()
         control_request({"action": "show"})
         return 0
+    if command == "app-identity":
+        if args.show_gui or args.close:
+            ensure_gui_running()
+            result = control_request(
+                {
+                    "action": (
+                        "show_application_identity"
+                        if args.show_gui
+                        else "close_application_identity"
+                    )
+                }
+            )
+        else:
+            result = (
+                control_request({"action": "application_identity"})
+                if args.via_gui
+                else application_identity_snapshot()
+            )
+        if args.json:
+            print_json(result)
+        elif args.show_gui:
+            print("앱 정보 창을 열었습니다.")
+        elif args.close:
+            print("앱 정보 창을 닫았습니다.")
+        else:
+            print(
+                f"{result['displayName']} | AppUserModelID: "
+                f"{result['windowsAppUserModelId']} | 아이콘: "
+                f"{'정상' if result['iconExists'] else '없음'} | 적용: "
+                f"{'예' if result['applied'] else '아니요'}"
+            )
+        return 0 if result.get("ok", bool(args.show_gui or args.close)) else 2
     if command == "doctor":
         if args.show_gui or args.close:
             ensure_gui_running()

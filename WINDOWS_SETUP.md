@@ -27,10 +27,13 @@ YouTube 선택 공급자까지 사용할 경우 `setup-gui.cmd -WithYouTube`를 
 - 콘솔 없는 일반 실행: `start-gui.vbs` 더블클릭
 - 콘솔에서 GUI 실행/앞으로 가져오기: `.\toki-cli.cmd gui`
 - 환경 진단: `.\toki-cli.cmd doctor --show-gui --json`
+- 작업 표시줄 앱 ID·아이콘 확인: `.\toki-cli.cmd app-identity --via-gui --json`
 - 전체 점검: `.\toki-cli.cmd self-test --json`
 
 GUI가 켜지면 저장 폴더를 먼저 선택한다. 자동화 브라우저는 기본적으로 숨김 전용 프로필을
 사용하며 개인 Chrome 프로필이나 쿠키를 자동으로 읽지 않는다.
+Windows 작업 표시줄에서는 고유 AppUserModelID와 전용 아이콘을 사용하므로 다른 Python GUI와
+같은 그룹으로 묶이지 않는다. 소스 실행과 향후 `tokiDownloader.exe` 배포가 같은 아이콘을 쓴다.
 
 ## 업데이트
 

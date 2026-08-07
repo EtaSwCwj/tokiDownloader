@@ -275,6 +275,14 @@ Python 144건과 Node 7건을 통과했다.
 사용자 설정은 목록·썸네일 보통·불투명 100%·항상 위 끔으로 복원했다. Python 144건과
 Node 7건을 통과했다.
 
+2026-08-07 Windows 작업 표시줄 분리: 다른 Python/PyQt GUI와 같은 기본 아이콘·그룹으로 보이는
+문제를 해결하기 위해 전용 SVG·PNG·다중 크기 ICO, `EtaSwCwj.tokiDownloader.GUI.1`
+AppUserModelID, 고유 앱·조직 이름을 창 생성 전에 적용했다. `app-identity --json|--via-gui`,
+GUI IPC와 `status --json`으로 아이콘 존재·배포 EXE 이름·실제 Windows API 적용 성공을 확인하며
+향후 PyInstaller도 `tokiDownloader.exe`와 같은 ICO를 사용한다. 실행 중 GUI에서 `applied: true`,
+아이콘 파일 둘과 화면 `logs/app-identity-taskbar.png`를 확인했다. Python 266건, Node 16건,
+GUI 자체 점검 6/6과 필수 환경 진단 5/5를 통과했다.
+
 빠른 실행 막대는 다운로드·중지·전체 재검사·폴더·작품 정보·중복 검사·설정·화면 캡처 중
 원하는 항목만 표시한다. 디스플레이 설정의 체크 목록은 내부 드래그 이동으로 표시 순서를
 바꾸고 `set-settings --quick-actions ID,...`도 같은 설정을 적용한다. 선택·실행 상태에 따른

@@ -203,6 +203,37 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_application_identity_ipc_reports_live_taskbar_configuration(self) -> None:
+        expected = {
+            "ok": True,
+            "displayName": "tokiDownloader",
+            "windowsAppUserModelId": "EtaSwCwj.tokiDownloader.GUI.1",
+            "iconExists": True,
+            "applied": True,
+        }
+        calls = []
+        harness = type("ApplicationIdentityHarness", (), {})()
+        harness.show_application_identity = (
+            lambda: calls.append("show") or {"shown": True, **expected}
+        )
+        harness.close_application_identity = (
+            lambda: calls.append("close") or True
+        )
+        with patch("toki_gui.application_identity_snapshot", return_value=expected):
+            result = MainWindow._handle_control_action(
+                harness, {"action": "application_identity"}
+            )
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_application_identity"}
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_application_identity"}
+        )
+        self.assertEqual(result, expected)
+        self.assertTrue(shown["shown"])
+        self.assertEqual(closed, {"closed": True})
+        self.assertEqual(calls, ["show", "close"])
+
     def test_public_ip_button_requires_yes_before_starting_service(self) -> None:
         harness = type("PublicIpHarness", (), {})()
         starts = []

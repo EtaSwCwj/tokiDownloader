@@ -360,6 +360,15 @@ GUI 실행 인자와 취소의 멱등성을 자동 테스트했다. 실제 사�
 - 흰 배경/흰 글씨 같은 테마 대비 회귀가 없다.
 - 모든 설정 변경을 CLI와 `status --json`으로 확인할 수 있다.
 
+2026-08-07 Windows 앱 정체성 분리: Qt 기본 다운로드 아이콘과 공용 `pythonw.exe` 정체성 대신
+전용 SVG·PNG·다중 크기 ICO를 추가하고 GUI 창 생성 전에
+`EtaSwCwj.tokiDownloader.GUI.1` AppUserModelID를 적용한다. 앱 표시 이름·조직 이름·아이콘을
+QApplication과 MainWindow에 함께 적용하며 `app-identity --json|--via-gui`, GUI IPC와
+`status --json`이 설정 상태와 실제 Windows API 적용 결과를 보고한다. 배포 계획도 고유
+`tokiDownloader.exe` 이름과 ICO를 사용하도록 고정했다. `logs/app-identity-taskbar.png`에서 새
+아이콘이 적용된 GUI 대비를 확인했다. Python 266건, Node 16건, GUI 자체 점검 6/6과 필수
+환경 진단 5/5를 통과했다.
+
 2026-08-07 일반 설정 기반: `도구 → 설정...`에 일반·네트워크·고급 탭을 추가하고 기본
 저장 폴더, 브라우저 표시, 로그 패널, 작품/이미지 동시성, 재시도 횟수·대기와 로그 파일
 크기·백업 수를 한 번에 저장한다. `settings`, `settings --show-gui --tab ...`,

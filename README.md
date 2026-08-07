@@ -127,6 +127,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd local-api request --method POST --path "/v1/control" --body '{"action":"memory_status"}' --json
 .\toki-cli.cmd local-api token --copy --yes --json
 .\toki-cli.cmd local-api token --rotate --yes --json
+.\toki-cli.cmd app-identity --json
+.\toki-cli.cmd app-identity --via-gui --json
+.\toki-cli.cmd app-identity --show-gui --json
+.\toki-cli.cmd app-identity --close --json
 .\toki-cli.cmd hitomi status --json
 .\toki-cli.cmd hitomi inspect --input "https://hitomi.la/manga/sample-1234567.html" --json
 .\toki-cli.cmd hitomi inspect --input "1234567" --provider hitomi --show-gui --json
@@ -366,6 +370,15 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `--safe`는 모니터 분리나 해상도 변경으로 창이 화면 밖에 있을 때 현재 사용 가능한 화면으로
 복구합니다. 다중 모니터의 정상적인 음수 좌표는 그대로 유지합니다. `status --json`의
 `window`에서 현재 모니터 이름, 배율, 화면 안 배치 여부와 전체 모니터 목록을 확인할 수 있습니다.
+
+Windows에서는 `EtaSwCwj.tokiDownloader.GUI.1` AppUserModelID와 전용 PNG/ICO 아이콘을 GUI
+창 생성 전에 적용합니다. 따라서 같은 Python 3.13 또는 `pythonw.exe`로 실행되는 다른 PyQt
+프로그램과 작업 표시줄 아이콘·그룹이 분리됩니다. `app-identity --json`은 저장된 앱 이름,
+아이콘 파일과 배포 EXE 계획을 검사하고, GUI 실행 뒤 `app-identity --via-gui --json`은 Windows
+API 적용 성공 여부까지 확인합니다. 아이콘 원본은 `assets\toki-downloader.svg`, 런타임 PNG와
+배포용 ICO는 `scripts\generate_app_icons.py`로 동일하게 재생성할 수 있습니다. 도움말의
+`tokiDownloader 앱 정보...` 또는 `app-identity --show-gui`는 실제 아이콘·AppUserModelID·
+배포 EXE 계획을 같은 대화상자에서 보여주며 모든 버튼은 대응 CLI를 갖습니다.
 
 설정의 디스플레이 페이지에서 목록/아이콘 보기, 썸네일 표시와 크기, 항상 위, 창 불투명도를
 바꿀 수 있습니다. 같은 값은 `set-settings --view-mode list|icon --thumbnails on|off
