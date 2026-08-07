@@ -29,6 +29,7 @@ from toki_core import (
     assign_job_to_collection,
     build_job_list_view_state,
     build_downloader_args,
+    browser_launch_policy,
     clear_log_file,
     cleanup_thumbnail_cache,
     cleanup_run_history,
@@ -935,6 +936,18 @@ def build_parser() -> argparse.ArgumentParser:
     language_set = language_commands.add_parser("set", help="UI 언어 설정")
     language_set.add_argument("code", help="언어 코드")
     language_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    browser_mode = subparsers.add_parser(
+        "browser-mode", help="자동화 브라우저의 headless·진단 표시 정책"
+    )
+    browser_mode_commands = browser_mode.add_subparsers(
+        dest="browser_mode_command", required=True
+    )
+    browser_mode_status = browser_mode_commands.add_parser("status", help="현재 정책")
+    browser_mode_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    browser_mode_set = browser_mode_commands.add_parser("set", help="기본 정책 변경")
+    browser_mode_set.add_argument("mode", choices=("headless", "visible"))
+    browser_mode_set.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     completion_action = subparsers.add_parser(
         "completion-action", help="모든 작업 완료 후 동작 조회·설정·미리보기"
@@ -2459,6 +2472,24 @@ def run_cli(args: argparse.Namespace) -> int:
                     print(f"{item['code']}: {item['name']}")
             else:
                 print(f"UI 언어: {result['language']}")
+        return 0
+    if command == "browser-mode":
+        if args.browser_mode_command == "set":
+            updates = {"showBrowser": args.mode == "visible"}
+            if gui_is_running():
+                settings = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                settings = update_app_settings(updates)
+            result = {"saved": True, **browser_launch_policy(settings["showBrowser"])}
+        else:
+            result = browser_launch_policy(settings_snapshot()["showBrowser"])
+        if args.json:
+            print_json(result)
+        else:
+            print(f"브라우저 모드: {result['mode']}")
+            print("개인 Chrome 프로필 사용: 안 함")
         return 0
     if command == "completion-action":
         subcommand = args.completion_command

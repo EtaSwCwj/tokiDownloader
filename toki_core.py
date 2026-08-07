@@ -506,6 +506,23 @@ def normalize_background_image(value: str | None) -> str:
     return str(Path(raw).expanduser())
 
 
+def browser_launch_policy(show_browser: bool | None = None) -> dict[str, Any]:
+    visible = bool(show_browser)
+    return {
+        "mode": "visible-diagnostic" if visible else "headless",
+        "showBrowser": visible,
+        "windowVisible": visible,
+        "personalChromeProfile": False,
+        "profileIsolation": "temporary-automation-profile",
+        "recommended": not visible,
+        "purpose": (
+            "사이트 인증·선택자 문제를 사용자가 직접 확인"
+            if visible
+            else "백그라운드 다운로드"
+        ),
+    }
+
+
 def normalize_folder_name_template(value: str | None) -> str:
     template = str(value or "").strip()
     if not template:

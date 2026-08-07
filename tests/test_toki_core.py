@@ -22,6 +22,7 @@ from toki_core import (
     build_downloader_args,
     build_job_list_view_state,
     build_work_key,
+    browser_launch_policy,
     cleanup_thumbnail_cache,
     cleanup_run_history,
     completion_action_plan,
@@ -105,6 +106,17 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_browser_policy_defaults_to_hidden_isolated_automation_profile(self) -> None:
+        headless = browser_launch_policy(False)
+        self.assertEqual(headless["mode"], "headless")
+        self.assertFalse(headless["windowVisible"])
+        self.assertFalse(headless["personalChromeProfile"])
+        self.assertTrue(headless["recommended"])
+        visible = browser_launch_policy(True)
+        self.assertEqual(visible["mode"], "visible-diagnostic")
+        self.assertTrue(visible["windowVisible"])
+        self.assertFalse(visible["recommended"])
+
     def test_korean_ui_resources_and_display_preferences_are_validated(self) -> None:
         languages = available_ui_languages()
         self.assertIn({"code": "ko", "name": "한국어"}, languages)

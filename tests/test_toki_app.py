@@ -14,6 +14,33 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_browser_mode_cli_reports_and_sets_shared_policy(self) -> None:
+        status = build_parser().parse_args(["browser-mode", "status", "--json"])
+        with (
+            patch("toki_app.settings_snapshot", return_value={"showBrowser": False}),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status), 0)
+
+        update = build_parser().parse_args(
+            ["browser-mode", "set", "visible", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request", return_value={"showBrowser": True}
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(update), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_settings",
+                "updates": {"showBrowser": True},
+                "reset": False,
+            }
+        )
+
     def test_clipboard_cli_inspects_duplicates_and_updates_monitor(self) -> None:
         inspect_args = build_parser().parse_args(
             [

@@ -202,6 +202,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd folder-template --template "[{author}][{group}] {title}" --output "D:\Manga" --json
 .\toki-cli.cmd language list --json
 .\toki-cli.cmd language set ko --json
+.\toki-cli.cmd browser-mode status --json
+.\toki-cli.cmd browser-mode set headless --json
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -276,6 +278,11 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 키를 전체 DB와 비교하고, 이미 등록된 작품은 건너뛰며 새 작품은 확인 질문 뒤에만 대기열에
 추가합니다. `clipboard inspect --text URL --json`은 추가 없이 판정만 수행하고,
 `clipboard monitor --state on|off`로 감지 설정을 바꿉니다.
+
+자동화 브라우저는 기본 `headless`라 다운로드 중 별도 Chrome 창을 띄우지 않습니다.
+`browser-mode set visible`은 사이트 인증이나 화면 선택자 문제를 직접 확인할 때만 사용하는
+진단 모드이며 개인 Chrome 계정·프로필을 연결하지 않습니다. 확인 후
+`browser-mode set headless`로 되돌리면 다음 실행부터 다시 백그라운드로 동작합니다.
 
 일반 설정의 작품 폴더명은 기본적으로 `[작가][그룹] 제목` 규칙을 사용합니다.
 `{author}`, `{group}`, `{title}`, `{site}`, `{id}`를 조합할 수 있고 `{title}`은 필수입니다.
