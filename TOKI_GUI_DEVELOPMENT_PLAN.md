@@ -542,6 +542,14 @@ GUI에서 CLI 적용·복원과 `logs/hitomi-filename-settings.png` 캡처를 �
 파일 생성은 수행하지 않았으며 100,000장 숫자 방식의 제한 샘플 회귀를 포함해 Python
 219건, Node 16건, 자체 점검 6/6을 통과했다.
 
+2026-08-07 Hitomi 제외 태그 정책: 설정 스키마 v19에 중복 없는 최대 500개 제외 규칙을
+추가했다. 네임스페이스 규칙은 정확히 일치하고 이름 규칙은 모든 네임스페이스의 같은 이름을
+판정하며, 공용 서비스가 `exclude`/`continue` 결정과 일치 근거를 반환한다. `hitomi tags
+status|set|evaluate`, GUI 여러 줄 편집기와 `status --json`을 연결하고 로컬 픽스처 및 실행
+중 GUI의 CLI 적용·빈 기본값 복원을 검증했다. 화면은
+`logs/hitomi-excluded-tags-settings.png`에 보존했으며 외부 요청은 수행하지 않았다.
+Python 222건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

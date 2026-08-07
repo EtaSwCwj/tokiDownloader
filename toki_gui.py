@@ -103,6 +103,7 @@ from hitomi_provider import (
     HITOMI_SERVER_CATALOG,
     HitomiReferenceError,
     fetch_hitomi_metadata,
+    hitomi_excluded_tag_policy_snapshot,
     hitomi_filename_policy_snapshot,
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_request_plan,
@@ -3184,7 +3185,7 @@ class SettingsDialog(QDialog):
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
-        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 이미지 파일명 원본 숫자 youtube yt-dlp ffmpeg 의존성 플러그인",
+        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 이미지 파일명 원본 숫자 제외 태그 규칙 youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
     def __init__(self, owner: "MainWindow") -> None:
@@ -3679,6 +3680,15 @@ class SettingsDialog(QDialog):
             "CLI: hitomi filenames set --mode original|number|number_original --json"
         )
         provider_form.addRow("이미지 파일명", self.hitomi_filename_mode_combo)
+        self.hitomi_excluded_tags_edit = QPlainTextEdit()
+        self.hitomi_excluded_tags_edit.setMaximumHeight(76)
+        self.hitomi_excluded_tags_edit.setPlaceholderText(
+            "예: guro, female:full color · 비워두면 제외 안 함"
+        )
+        self.hitomi_excluded_tags_edit.setToolTip(
+            "쉼표 또는 세미콜론으로 구분 · CLI: hitomi tags set --tags TAGS --json"
+        )
+        provider_form.addRow("제외 태그", self.hitomi_excluded_tags_edit)
         hitomi_inspector_button = QPushButton("Hitomi URL / ID 분석...")
         hitomi_inspector_button.setToolTip(
             "CLI: hitomi inspect --input URL_OR_ID --show-gui --json"
@@ -3864,6 +3874,13 @@ class SettingsDialog(QDialog):
             "hitomiFilenameMode": str(
                 self.hitomi_filename_mode_combo.currentData() or "number_original"
             ),
+            "hitomiExcludedTags": [
+                part.strip()
+                for part in re.split(
+                    r"[,;\n]", self.hitomi_excluded_tags_edit.toPlainText()
+                )
+                if part.strip()
+            ],
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -3956,6 +3973,9 @@ class SettingsDialog(QDialog):
             str(values["hitomiFilenameMode"])
         )
         self.hitomi_filename_mode_combo.setCurrentIndex(max(0, filename_index))
+        self.hitomi_excluded_tags_edit.setPlainText(
+            "\n".join(str(tag) for tag in values["hitomiExcludedTags"])
+        )
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -4195,6 +4215,7 @@ class SettingsDialog(QDialog):
             "hitomiFilenameMode": str(
                 self.hitomi_filename_mode_combo.currentData()
             ),
+            "hitomiExcludedTags": self.hitomi_excluded_tags_edit.toPlainText(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -10285,7 +10306,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
             "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd image-processing status|set [options]\n"
-            "toki-cli.cmd hitomi status|inspect|close|server status|set|plan|metadata status|set|plan|parse|fetch|show|close|filenames status|set|plan [options]\n"
+            "toki-cli.cmd hitomi status|inspect|close|server status|set|plan|metadata status|set|plan|parse|fetch|show|close|filenames status|set|plan|tags status|set|evaluate [options]\n"
             "toki-cli.cmd pdf status|set|plan|generate|cancel|close [options]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
@@ -10496,6 +10517,7 @@ class MainWindow(QMainWindow):
             "hitomiServer": hitomi_server_policy_snapshot(self.config),
             "hitomiMetadataPolicy": hitomi_metadata_policy_snapshot(self.config),
             "hitomiFilenamePolicy": hitomi_filename_policy_snapshot(self.config),
+            "hitomiExcludedTagPolicy": hitomi_excluded_tag_policy_snapshot(self.config),
             "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),

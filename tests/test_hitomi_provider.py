@@ -7,15 +7,18 @@ from pathlib import Path
 
 from hitomi_provider import (
     HitomiReferenceError,
+    evaluate_hitomi_excluded_tags,
     fetch_hitomi_metadata,
     hitomi_provider_capabilities,
     hitomi_filename_policy_snapshot,
+    hitomi_excluded_tag_policy_snapshot,
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_server_policy_snapshot,
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
     normalize_hitomi_server_priority,
+    normalize_hitomi_excluded_tags,
     plan_hitomi_image_filenames,
     parse_hitomi_metadata_payload,
     plan_hitomi_server,
@@ -316,6 +319,50 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertEqual(len(result["sample"]), 3)
         self.assertEqual(result["sample"][-1]["fileName"], "000003.jpg")
         self.assertTrue(result["sampleTruncated"])
+
+    def test_excluded_tags_match_exact_namespace_or_unqualified_name(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "1234567", FIXTURE_DIR / "galleryinfo_1234567.js"
+        )
+        self.assertEqual(default_config()["hitomiExcludedTags"], [])
+        disabled = hitomi_excluded_tag_policy_snapshot(default_config())
+        self.assertFalse(disabled["enabled"])
+        self.assertFalse(disabled["networkRequested"])
+
+        unqualified = evaluate_hitomi_excluded_tags(
+            metadata, rules=" Full   Color ; unrelated ; full color "
+        )
+        self.assertTrue(unqualified["excluded"])
+        self.assertEqual(unqualified["decision"], "exclude")
+        self.assertEqual(
+            unqualified["matches"],
+            [{"rule": "full color", "tag": "female:full color"}],
+        )
+        exact = evaluate_hitomi_excluded_tags(
+            metadata, rules=["male:full color", "uncensored"]
+        )
+        self.assertEqual(
+            exact["matches"], [{"rule": "uncensored", "tag": "uncensored"}]
+        )
+        continued = evaluate_hitomi_excluded_tags(
+            metadata, rules="male:full color"
+        )
+        self.assertFalse(continued["excluded"])
+        self.assertEqual(continued["decision"], "continue")
+
+    def test_excluded_tag_rules_are_bounded_validated_and_migrated(self) -> None:
+        self.assertEqual(
+            normalize_hitomi_excluded_tags("Artist:Sample, artist:sample;guro"),
+            ["artist:sample", "guro"],
+        )
+        with self.assertRaises(ValueError):
+            normalize_hitomi_excluded_tags(["bad\ttag"])
+        with self.assertRaises(ValueError):
+            normalize_hitomi_excluded_tags([f"tag-{index}" for index in range(501)])
+        with self.assertRaises(ValueError):
+            validate_app_setting_updates({"hitomiExcludedTags": [":broken"]})
+        migrated = normalize_config({"configVersion": 18})
+        self.assertEqual(migrated["hitomiExcludedTags"], [])
 
 
 if __name__ == "__main__":

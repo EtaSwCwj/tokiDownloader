@@ -29,6 +29,7 @@ import psutil
 
 from hitomi_provider import (
     HITOMI_SERVER_IDS,
+    normalize_hitomi_excluded_tags,
     normalize_hitomi_filename_mode,
     normalize_hitomi_manual_server,
     normalize_hitomi_metadata_mode,
@@ -53,7 +54,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 18
+CONFIG_SCHEMA_VERSION = 19
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -145,6 +146,7 @@ SETTING_KEYS = frozenset(
         "hitomiServerPriority",
         "hitomiMetadataMode",
         "hitomiFilenameMode",
+        "hitomiExcludedTags",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -447,6 +449,7 @@ def default_config() -> dict[str, Any]:
         "hitomiServerPriority": list(HITOMI_SERVER_IDS),
         "hitomiMetadataMode": "auto",
         "hitomiFilenameMode": "number_original",
+        "hitomiExcludedTags": [],
     }
 
 
@@ -1581,6 +1584,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("hitomiFilenameMode"),
         defaults["hitomiFilenameMode"],
     )
+    normalized["hitomiExcludedTags"] = _safe_normalize(
+        normalize_hitomi_excluded_tags,
+        source.get("hitomiExcludedTags"),
+        defaults["hitomiExcludedTags"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -1785,6 +1793,7 @@ def validate_app_setting_updates(
         "hitomiServerPriority": normalize_hitomi_server_priority,
         "hitomiMetadataMode": normalize_hitomi_metadata_mode,
         "hitomiFilenameMode": normalize_hitomi_filename_mode,
+        "hitomiExcludedTags": normalize_hitomi_excluded_tags,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

@@ -142,6 +142,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi filenames status --json
 .\toki-cli.cmd hitomi filenames set --mode number_original --json
 .\toki-cli.cmd hitomi filenames plan --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --mode number_original --sample-limit 20 --json
+.\toki-cli.cmd hitomi tags status --json
+.\toki-cli.cmd hitomi tags set --tags "guro,female:full color" --json
+.\toki-cli.cmd hitomi tags evaluate --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
+.\toki-cli.cmd hitomi tags set --clear --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -724,8 +728,8 @@ inspect --input URL_OR_ID --provider auto|hitomi|exhentai --json`은 외부 네�
 ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에 원문을 남기지 않으며 끝 4자리
 힌트만 표시합니다. `--show-gui`로 같은 분석기를 GUI 대화상자에서 열고 `hitomi close`로
 닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
-false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`로 구현 범위를 명확히
-표시합니다.
+false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`,
+`excludedTagPolicy: true`로 구현 범위를 명확히 표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
@@ -764,6 +768,16 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 `hitomi.filename_original_missing` 오류를 냅니다. `hitomi filenames status|set|plan`과 공급자
 설정 탭이 같은 서비스를 사용하며, `plan --fixture`는 네트워크 없이 실제 저장 이름을
 미리 확인합니다. 검증 화면은 `logs\hitomi-filename-settings.png`에 있습니다.
+
+설정 스키마 v19는 최대 500개의 Hitomi 제외 태그를 저장합니다. 공급자 설정의 여러 줄
+입력창 또는 `hitomi tags set --tags TAGS`에서 줄바꿈·쉼표·세미콜론으로 규칙을 구분하고,
+대소문자·연속 공백·중복을 정규화합니다. `female:full color`처럼 네임스페이스를 지정한
+규칙은 정확히 같은 태그만 일치하고, `full color`처럼 이름만 지정하면
+`female:full color` 또는 `male:full color`도 일치합니다. 규칙 하나는 100자로 제한하고 제어
+문자와 잘못된 `:tag` 형식은 거부합니다. `hitomi tags evaluate --fixture PATH`는 외부 접속
+없이 공통 메타데이터의 `exclude` 또는 `continue` 결정과 일치 규칙을 반환합니다. 실제 GUI에
+CLI 규칙을 적용하고 다시 빈 기본 목록으로 복원했으며 검증 화면은
+`logs\hitomi-excluded-tags-settings.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

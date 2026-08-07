@@ -16,6 +16,75 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_excluded_tag_cli_uses_shared_offline_policy(self) -> None:
+        status_args = build_parser().parse_args(
+            ["hitomi", "tags", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertEqual(json.loads(stdout.getvalue())["rules"], [])
+
+        set_args = build_parser().parse_args(
+            ["hitomi", "tags", "set", "--tags", "guro, full color", "--json"]
+        )
+        saved = {**default_config(), "hitomiExcludedTags": ["guro", "full color"]}
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"hitomiExcludedTags": "guro, full color"},
+                "reset": False,
+            },
+        )
+
+        fixture = Path(__file__).parent / "fixtures" / "hitomi" / "galleryinfo_1234567.js"
+        evaluate_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "tags",
+                "evaluate",
+                "--input",
+                "1234567",
+                "--fixture",
+                str(fixture),
+                "--tags",
+                "full color",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(evaluate_args), 0)
+        result = json.loads(stdout.getvalue())
+        self.assertTrue(result["excluded"])
+        self.assertEqual(result["matches"][0]["tag"], "female:full color")
+        self.assertFalse(result["networkRequested"])
+
+        clear_args = build_parser().parse_args(
+            ["hitomi", "tags", "set", "--clear", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            patch("toki_app.update_app_settings", return_value=default_config()) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(clear_args), 0)
+        update.assert_called_once_with({"hitomiExcludedTags": []})
+
     def test_hitomi_filename_cli_uses_shared_offline_policy(self) -> None:
         status_args = build_parser().parse_args(
             ["hitomi", "filenames", "status", "--json"]

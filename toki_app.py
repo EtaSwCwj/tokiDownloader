@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import QApplication
 from hitomi_provider import (
     HitomiReferenceError,
     fetch_hitomi_metadata,
+    evaluate_hitomi_excluded_tags,
+    hitomi_excluded_tag_policy_snapshot,
     hitomi_filename_policy_snapshot,
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_request_plan,
@@ -944,6 +946,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--sample-limit", type=int, default=100, help="출력할 샘플 수(최대 1000)"
     )
     hitomi_filename_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_tags = hitomi_commands.add_parser(
+        "tags", help="Hitomi 제외 태그 규칙과 로컬 판정"
+    )
+    hitomi_tag_commands = hitomi_tags.add_subparsers(
+        dest="hitomi_tag_command", required=True
+    )
+    hitomi_tag_status = hitomi_tag_commands.add_parser(
+        "status", help="현재 제외 태그 규칙 조회"
+    )
+    hitomi_tag_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_tag_set = hitomi_tag_commands.add_parser(
+        "set", help="쉼표·세미콜론 구분 제외 태그 저장"
+    )
+    hitomi_tag_set_mode = hitomi_tag_set.add_mutually_exclusive_group(required=True)
+    hitomi_tag_set_mode.add_argument("--tags", help="예: guro,female:full color")
+    hitomi_tag_set_mode.add_argument("--clear", action="store_true", help="모든 제외 태그 해제")
+    hitomi_tag_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_tag_evaluate = hitomi_tag_commands.add_parser(
+        "evaluate", help="로컬 메타데이터 픽스처의 제외 여부 판정"
+    )
+    hitomi_tag_evaluate.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+    hitomi_tag_evaluate.add_argument(
+        "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+    )
+    hitomi_tag_evaluate.add_argument("--fixture", required=True, help="로컬 JS/JSON 픽스처 경로")
+    hitomi_tag_evaluate.add_argument(
+        "--tags", help="저장 설정 대신 이 판정에만 적용할 규칙"
+    )
+    hitomi_tag_evaluate.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2472,6 +2503,39 @@ def run_cli(args: argparse.Namespace) -> int:
                         config=current,
                         mode=args.mode,
                         sample_limit=args.sample_limit,
+                    )
+                except HitomiReferenceError as error:
+                    result = error.to_dict()
+        elif args.hitomi_command == "tags":
+            current = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            subcommand = args.hitomi_tag_command
+            if subcommand == "status":
+                result = hitomi_excluded_tag_policy_snapshot(current)
+            elif subcommand == "set":
+                updates = {"hitomiExcludedTags": [] if args.clear else args.tags}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **hitomi_excluded_tag_policy_snapshot(saved)}
+            else:
+                try:
+                    metadata = load_hitomi_metadata_fixture(
+                        args.input,
+                        Path(args.fixture),
+                        provider_hint=args.provider,
+                    )
+                    result = evaluate_hitomi_excluded_tags(
+                        metadata,
+                        config=current,
+                        rules=args.tags,
                     )
                 except HitomiReferenceError as error:
                     result = error.to_dict()

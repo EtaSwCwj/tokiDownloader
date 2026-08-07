@@ -46,6 +46,8 @@ HITOMI_METADATA_MODES = ("auto", "required", "disabled")
 HITOMI_FILENAME_MODES = ("original", "number", "number_original")
 HITOMI_FILENAME_PLAN_MAX_FILES = 100_000
 HITOMI_FILENAME_SAMPLE_LIMIT = 1_000
+HITOMI_EXCLUDED_TAG_MAX_RULES = 500
+HITOMI_EXCLUDED_TAG_MAX_LENGTH = 100
 HITOMI_METADATA_ENDPOINT = "https://ltn.hitomi.la/galleries/{gallery_id}.js"
 EHENTAI_METADATA_ENDPOINT = "https://api.e-hentai.org/api.php"
 _GALLERY_ID = re.compile(r"^[0-9]{1,18}$")
@@ -83,6 +85,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "download": False,
         "metadata": True,
         "imageFilenamePolicy": True,
+        "excludedTagPolicy": True,
         "metadataExternalRequestRequiresConfirmation": True,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
@@ -93,6 +96,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
             "ExHentai 갤러리 토큰은 결과와 로그에 원문으로 표시하지 않습니다.",
             "메타데이터 요청은 명시적 확인 뒤에만 실행하며 다운로드는 아직 활성화되지 않았습니다.",
             "이미지 파일명 계획은 로컬 메타데이터만 사용하며 Windows 충돌을 방지합니다.",
+            "제외 태그 판정은 정규화한 로컬 메타데이터에만 적용합니다.",
         ],
     }
 
@@ -256,6 +260,109 @@ def plan_hitomi_image_filenames(
         "collisionCount": collision_count,
         "missingOriginalCount": missing_original_count,
         "sample": sample,
+    }
+
+
+def _normalize_hitomi_tag_rule(value: Any) -> str:
+    raw = str(value or "")
+    if any(ord(character) < 32 for character in raw):
+        raise ValueError("Hitomi 제외 태그에 제어 문자를 사용할 수 없습니다.")
+    normalized = " ".join(raw.strip().lower().split())
+    if not normalized:
+        raise ValueError("빈 Hitomi 제외 태그는 사용할 수 없습니다.")
+    if len(normalized) > HITOMI_EXCLUDED_TAG_MAX_LENGTH:
+        raise ValueError(
+            f"Hitomi 제외 태그는 {HITOMI_EXCLUDED_TAG_MAX_LENGTH}자 이하여야 합니다."
+        )
+    if normalized.startswith(":") or normalized.endswith(":"):
+        raise ValueError("Hitomi 제외 태그의 네임스페이스 형식이 올바르지 않습니다.")
+    return normalized
+
+
+def normalize_hitomi_excluded_tags(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        candidates = re.split(r"[,;\n]", value)
+    elif isinstance(value, set):
+        candidates = sorted(value, key=lambda item: str(item).casefold())
+    elif isinstance(value, (list, tuple)):
+        candidates = list(value)
+    else:
+        raise ValueError("Hitomi 제외 태그는 문자열 또는 배열이어야 합니다.")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not str(candidate or "").strip():
+            continue
+        rule = _normalize_hitomi_tag_rule(candidate)
+        if rule in seen:
+            continue
+        seen.add(rule)
+        normalized.append(rule)
+        if len(normalized) > HITOMI_EXCLUDED_TAG_MAX_RULES:
+            raise ValueError(
+                f"Hitomi 제외 태그는 {HITOMI_EXCLUDED_TAG_MAX_RULES}개까지 저장할 수 있습니다."
+            )
+    return normalized
+
+
+def hitomi_excluded_tag_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    rules = normalize_hitomi_excluded_tags(source.get("hitomiExcludedTags"))
+    return {
+        "ok": True,
+        "enabled": bool(rules),
+        "rules": rules,
+        "ruleCount": len(rules),
+        "maxRules": HITOMI_EXCLUDED_TAG_MAX_RULES,
+        "matching": "exact_namespace_or_unqualified_name",
+        "networkRequested": False,
+    }
+
+
+def evaluate_hitomi_excluded_tags(
+    metadata: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    rules: Any = None,
+) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise HitomiReferenceError(
+            "hitomi.tags_metadata_invalid",
+            "제외 태그 판정에는 공통 갤러리 메타데이터 객체가 필요합니다.",
+        )
+    policy = hitomi_excluded_tag_policy_snapshot(
+        {"hitomiExcludedTags": rules} if rules is not None else config
+    )
+    source_tags = metadata.get("tags")
+    tags = normalize_hitomi_excluded_tags(
+        source_tags if isinstance(source_tags, list) else []
+    )
+    matches: list[dict[str, str]] = []
+    for rule in policy["rules"]:
+        matched_tag = next(
+            (
+                tag
+                for tag in tags
+                if tag == rule or (":" not in rule and tag.partition(":")[2] == rule)
+            ),
+            "",
+        )
+        if matched_tag:
+            matches.append({"rule": rule, "tag": matched_tag})
+    return {
+        **policy,
+        "galleryId": str(metadata.get("galleryId") or ""),
+        "workKey": str(metadata.get("workKey") or ""),
+        "tagCount": len(tags),
+        "tags": tags,
+        "excluded": bool(matches),
+        "matchedCount": len(matches),
+        "matches": matches,
+        "decision": "exclude" if matches else "continue",
     }
 
 
