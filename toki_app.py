@@ -852,6 +852,21 @@ def build_parser() -> argparse.ArgumentParser:
     set_settings.add_argument(
         "--theme", choices=("system", "light", "dark"), help="GUI 색상 테마"
     )
+    set_settings.add_argument(
+        "--view-mode", choices=("list", "icon"), help="작품 목록 또는 아이콘 보기"
+    )
+    set_settings.add_argument(
+        "--thumbnails", choices=("on", "off"), help="작품 썸네일 표시"
+    )
+    set_settings.add_argument(
+        "--thumbnail-size",
+        choices=("small", "medium", "large"),
+        help="작품 썸네일 크기",
+    )
+    set_settings.add_argument(
+        "--always-on-top", choices=("on", "off"), help="창을 항상 위에 표시"
+    )
+    set_settings.add_argument("--opacity", type=int, help="창 불투명도 50~100")
     set_settings.add_argument("--tray", choices=("on", "off"), help="시스템 트레이 사용")
     set_settings.add_argument(
         "--close-to-tray", choices=("on", "off"), help="창 닫기 시 트레이로 숨김"
@@ -2247,12 +2262,19 @@ def run_cli(args: argparse.Namespace) -> int:
             "logBackupCount": args.log_backups,
             "rowDensity": args.row_density,
             "theme": args.theme,
+            "listViewMode": args.view_mode,
+            "thumbnailSize": args.thumbnail_size,
+            "windowOpacity": args.opacity,
         }
         updates = {key: value for key, value in mapping.items() if value is not None}
         if args.show_browser is not None:
             updates["showBrowser"] = args.show_browser == "on"
         if args.log_visible is not None:
             updates["logVisible"] = args.log_visible == "on"
+        if args.thumbnails is not None:
+            updates["thumbnailsVisible"] = args.thumbnails == "on"
+        if args.always_on_top is not None:
+            updates["alwaysOnTop"] = args.always_on_top == "on"
         for argument, key in (
             (args.tray, "trayEnabled"),
             (args.close_to_tray, "closeToTray"),

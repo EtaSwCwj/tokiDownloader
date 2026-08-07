@@ -236,6 +236,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 복구합니다. 다중 모니터의 정상적인 음수 좌표는 그대로 유지합니다. `status --json`의
 `window`에서 현재 모니터 이름, 배율, 화면 안 배치 여부와 전체 모니터 목록을 확인할 수 있습니다.
 
+설정의 디스플레이 페이지에서 목록/아이콘 보기, 썸네일 표시와 크기, 항상 위, 창 불투명도를
+바꿀 수 있습니다. 같은 값은 `set-settings --view-mode list|icon --thumbnails on|off
+--thumbnail-size small|medium|large --always-on-top on|off --opacity 50~100`으로 적용하고
+`status --json`의 `view`로 확인합니다. 아이콘 보기도 SQLite 페이지 조회, GUI 최대 2,000개
+보유, 100개 배치 레이아웃을 유지해 기록 전체를 한 번에 메모리에 올리지 않습니다.
+
 `performance audit`은 작품 목록의 갱신일·제목·진행률 정렬과 상태 필터 조합 6가지를
 `EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,
 전체 임시 정렬이 발생하는지를 JSON으로 반환합니다. `--show-gui`는 같은 결과를 도구 메뉴의

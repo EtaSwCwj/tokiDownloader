@@ -447,6 +447,9 @@ class CoreContractTests(unittest.TestCase):
                         "logBackupCount": 99,
                         "rowDensity": "giant",
                         "theme": "sepia",
+                        "listViewMode": "tiles",
+                        "thumbnailSize": "huge",
+                        "windowOpacity": 10,
                         "trayEnabled": "yes",
                     }
                 ),
@@ -461,6 +464,9 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(loaded["logMaxMiB"], 2)
                 self.assertEqual(loaded["rowDensity"], "comfortable")
                 self.assertEqual(loaded["theme"], "system")
+                self.assertEqual(loaded["listViewMode"], "list")
+                self.assertEqual(loaded["thumbnailSize"], "medium")
+                self.assertEqual(loaded["windowOpacity"], 100)
                 self.assertFalse(loaded["trayEnabled"])
 
                 output = root / "새 저장 폴더"
@@ -477,6 +483,11 @@ class CoreContractTests(unittest.TestCase):
                         "logBackupCount": 3,
                         "rowDensity": "compact",
                         "theme": "dark",
+                        "listViewMode": "icon",
+                        "thumbnailsVisible": False,
+                        "thumbnailSize": "large",
+                        "alwaysOnTop": True,
+                        "windowOpacity": 85,
                         "trayEnabled": True,
                         "closeToTray": True,
                         "notifyOnComplete": False,
@@ -487,6 +498,11 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(updated["logBackupCount"], 3)
                 self.assertEqual(updated["rowDensity"], "compact")
                 self.assertEqual(updated["theme"], "dark")
+                self.assertEqual(updated["listViewMode"], "icon")
+                self.assertFalse(updated["thumbnailsVisible"])
+                self.assertEqual(updated["thumbnailSize"], "large")
+                self.assertTrue(updated["alwaysOnTop"])
+                self.assertEqual(updated["windowOpacity"], 85)
                 self.assertTrue(updated["trayEnabled"])
                 self.assertTrue(updated["closeToTray"])
                 self.assertFalse(updated["notifyOnComplete"])

@@ -440,6 +440,9 @@ class JobItemDelegate(QStyledItemDelegate):
         self.cache_limit = 128
         self.density = density
         self.theme = theme
+        self.view_mode = "list"
+        self.thumbnails_visible = True
+        self.thumbnail_size = "medium"
 
     def set_density(self, density: str) -> None:
         self.density = density
@@ -447,7 +450,23 @@ class JobItemDelegate(QStyledItemDelegate):
     def set_theme(self, theme: str) -> None:
         self.theme = theme
 
+    def set_view_preferences(
+        self, view_mode: str, thumbnails_visible: bool, thumbnail_size: str
+    ) -> None:
+        self.view_mode = view_mode
+        self.thumbnails_visible = thumbnails_visible
+        self.thumbnail_size = thumbnail_size
+
+    def _thumbnail_dimensions(self) -> tuple[int, int]:
+        return {
+            "small": (76, 100),
+            "large": (130, 170),
+        }.get(self.thumbnail_size, (100, 130))
+
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        if self.view_mode == "icon":
+            width, height = self._thumbnail_dimensions()
+            return QSize(width + 36, height + 20)
         view = self.parent()
         width = option.rect.width()
         if isinstance(view, QListView):
@@ -457,6 +476,10 @@ class JobItemDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         job = index.data(JobListModel.JobRole)
         if not isinstance(job, DownloadJob):
+            return
+
+        if self.view_mode == "icon":
+            self._paint_icon(painter, option, job)
             return
 
         painter.save()
@@ -479,7 +502,8 @@ class JobItemDelegate(QStyledItemDelegate):
             painter.fillRect(tag_rect, QColor(TAG_COLORS[job.tag_color]))
 
         compact = self.density == "compact"
-        if compact:
+        show_cover = not compact and self.thumbnails_visible
+        if not show_cover:
             body_x = card.left() + 10
         else:
             cover_rect = card.adjusted(9, 8, 0, -8)
@@ -487,7 +511,7 @@ class JobItemDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor(border_color), 1))
             painter.setBrush(QColor(surface_color))
             painter.drawRoundedRect(cover_rect, 4, 4)
-            cover = self._cover(job.cover_path)
+            cover = self._cover(job.cover_path, 50, 66)
             if cover:
                 x = cover_rect.x() + (cover_rect.width() - cover.width()) // 2
                 y = cover_rect.y() + (cover_rect.height() - cover.height()) // 2
@@ -571,11 +595,82 @@ class JobItemDelegate(QStyledItemDelegate):
         painter.drawText(progress_rect, Qt.AlignmentFlag.AlignCenter, f"{progress}%")
         painter.restore()
 
-    def _cover(self, cover_path: str) -> QPixmap | None:
+    def _paint_icon(
+        self, painter: QPainter, option: QStyleOptionViewItem, job: DownloadJob
+    ) -> None:
+        painter.save()
+        dark = self.theme == "dark"
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        border = QColor("#5f9ee8" if selected else ("#46505d" if dark else "#d8dde5"))
+        surface = QColor("#26374b" if selected and dark else ("#252a31" if dark else "#ffffff"))
+        text = QColor("#edf2f7" if dark else "#20262e")
+        muted = QColor("#aeb9c7" if dark else "#667282")
+        card = option.rect.adjusted(4, 4, -4, -4)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(surface)
+        painter.drawRoundedRect(card, 6, 6)
+
+        thumb_width, thumb_height = self._thumbnail_dimensions()
+        cover_rect = QRect(
+            card.center().x() - thumb_width // 2,
+            card.top() + 10,
+            thumb_width,
+            thumb_height,
+        )
+        if self.thumbnails_visible:
+            cover = self._cover(job.cover_path, thumb_width, thumb_height)
+            if cover:
+                painter.drawPixmap(
+                    cover_rect.x() + (cover_rect.width() - cover.width()) // 2,
+                    cover_rect.y() + (cover_rect.height() - cover.height()) // 2,
+                    cover,
+                )
+            else:
+                painter.setPen(muted)
+                painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "표지 없음")
+        else:
+            painter.setPen(muted)
+            painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "썸네일 숨김")
+
+        state_rect = QRect(cover_rect.left() + 5, cover_rect.top() + 5, 70, 22)
+        state_colors = {
+            "실행 중": "#1a73e8",
+            "일시정지": "#8856c6",
+            "재시도 대기": "#cf7a18",
+            "완료": "#3b7d44",
+            "오류": "#d13b32",
+            "중지됨": "#cf7a18",
+            "인증 필요": "#b33a7a",
+        }
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(state_colors.get(job.state, "#7b8794")))
+        painter.drawRoundedRect(state_rect, 3, 3)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(state_rect, Qt.AlignmentFlag.AlignCenter, job.state)
+
+        title_rect = QRect(cover_rect.left(), cover_rect.bottom() - 43, cover_rect.width(), 43)
+        painter.fillRect(title_rect, QColor(0, 0, 0, 170))
+        font = QFont(option.font)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff") if self.thumbnails_visible else text)
+        title = f"★ {job.title}" if job.pinned else job.title
+        painter.drawText(
+            title_rect,
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            painter.fontMetrics().elidedText(
+                title, Qt.TextElideMode.ElideRight, max(20, title_rect.width() * 2)
+            ),
+        )
+        painter.restore()
+
+    def _cover(self, cover_path: str, width: int, height: int) -> QPixmap | None:
         if not cover_path:
             return None
         try:
-            disk_cache_path = thumbnail_cache_path(cover_path)
+            disk_cache_path = thumbnail_cache_path(
+                cover_path, width=width, height=height
+            )
         except OSError:
             return None
         cache_key = str(disk_cache_path)
@@ -599,7 +694,7 @@ class JobItemDelegate(QStyledItemDelegate):
         if source.isNull():
             return None
         scaled = source.scaled(
-            QSize(50, 66),
+            QSize(width, height),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -1588,7 +1683,7 @@ class SettingsDialog(QDialog):
     TAB_SEARCH_TERMS = (
         "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
-        "디스플레이 화면 테마 밝게 어둡게 목록 밀도 표지 진행률",
+        "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률",
         "고급 로그 파일 크기 보존 순환 기록",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
@@ -1684,6 +1779,23 @@ class SettingsDialog(QDialog):
         self.row_density_combo.addItem("편안하게 - 표지와 진행률 표시", "comfortable")
         self.row_density_combo.addItem("간략하게 - 낮은 행으로 많이 표시", "compact")
         display_form.addRow("작품 목록 밀도", self.row_density_combo)
+        self.list_view_mode_combo = QComboBox()
+        self.list_view_mode_combo.addItem("목록 보기", "list")
+        self.list_view_mode_combo.addItem("아이콘 보기", "icon")
+        display_form.addRow("작품 보기 방식", self.list_view_mode_combo)
+        self.thumbnails_visible_check = QCheckBox("작품 대표 이미지 표시")
+        display_form.addRow("썸네일", self.thumbnails_visible_check)
+        self.thumbnail_size_combo = QComboBox()
+        self.thumbnail_size_combo.addItem("작게", "small")
+        self.thumbnail_size_combo.addItem("보통", "medium")
+        self.thumbnail_size_combo.addItem("크게", "large")
+        display_form.addRow("썸네일 크기", self.thumbnail_size_combo)
+        self.always_on_top_check = QCheckBox("다른 창 위에 항상 표시")
+        display_form.addRow("항상 위", self.always_on_top_check)
+        self.window_opacity_spin = QSpinBox()
+        self.window_opacity_spin.setRange(50, 100)
+        self.window_opacity_spin.setSuffix("%")
+        display_form.addRow("창 불투명도", self.window_opacity_spin)
         display_note = QLabel(
             "간략하게 모드는 표지를 생략하고 상태·제목·핵심 정보와 진행률을 한 줄 카드에 표시합니다."
         )
@@ -1820,6 +1932,13 @@ class SettingsDialog(QDialog):
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
         self.theme_combo.setCurrentIndex(max(0, theme_index))
+        view_index = self.list_view_mode_combo.findData(str(values["listViewMode"]))
+        self.list_view_mode_combo.setCurrentIndex(max(0, view_index))
+        self.thumbnails_visible_check.setChecked(bool(values["thumbnailsVisible"]))
+        size_index = self.thumbnail_size_combo.findData(str(values["thumbnailSize"]))
+        self.thumbnail_size_combo.setCurrentIndex(max(0, size_index))
+        self.always_on_top_check.setChecked(bool(values["alwaysOnTop"]))
+        self.window_opacity_spin.setValue(int(values["windowOpacity"]))
 
     def _load_defaults(self) -> None:
         from toki_core import default_config
@@ -1852,6 +1971,11 @@ class SettingsDialog(QDialog):
             "logBackupCount": self.log_backups_spin.value(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
+            "listViewMode": str(self.list_view_mode_combo.currentData()),
+            "thumbnailsVisible": self.thumbnails_visible_check.isChecked(),
+            "thumbnailSize": str(self.thumbnail_size_combo.currentData()),
+            "alwaysOnTop": self.always_on_top_check.isChecked(),
+            "windowOpacity": self.window_opacity_spin.value(),
         }
 
     def _apply(self, *, close_after: bool) -> None:
@@ -2211,6 +2335,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_ui()
         self._apply_style()
+        self._apply_display_preferences(self.config)
         try:
             self.thumbnail_cache_report = cleanup_thumbnail_cache(execute=True)
         except OSError as error:
@@ -4392,10 +4517,16 @@ class MainWindow(QMainWindow):
         self.theme_mode = str(result["theme"])
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self._apply_style()
+        self._apply_display_preferences(result)
         delegate = self.task_list.itemDelegate()
         if isinstance(delegate, JobItemDelegate):
             delegate.set_density(str(result["rowDensity"]))
             delegate.set_theme(self.resolved_theme)
+            delegate.set_view_preferences(
+                str(result["listViewMode"]),
+                bool(result["thumbnailsVisible"]),
+                str(result["thumbnailSize"]),
+            )
             self.task_list.setUniformItemSizes(False)
             self.task_list.doItemsLayout()
             self.task_list.setUniformItemSizes(True)
@@ -4410,6 +4541,44 @@ class MainWindow(QMainWindow):
         )
         QTimer.singleShot(0, self._start_next_job)
         return result
+
+    def _apply_display_preferences(self, values: dict[str, Any]) -> None:
+        mode = str(values.get("listViewMode") or "list")
+        size = str(values.get("thumbnailSize") or "medium")
+        visible = bool(values.get("thumbnailsVisible", True))
+        delegate = self.task_list.itemDelegate()
+        if isinstance(delegate, JobItemDelegate):
+            delegate.set_view_preferences(mode, visible, size)
+        self.task_list.setLayoutMode(QListView.LayoutMode.Batched)
+        self.task_list.setBatchSize(100)
+        if mode == "icon":
+            dimensions = {
+                "small": QSize(112, 120),
+                "large": QSize(166, 190),
+            }.get(size, QSize(136, 150))
+            self.task_list.setViewMode(QListView.ViewMode.IconMode)
+            self.task_list.setFlow(QListView.Flow.LeftToRight)
+            self.task_list.setWrapping(True)
+            self.task_list.setGridSize(dimensions)
+        else:
+            self.task_list.setViewMode(QListView.ViewMode.ListMode)
+            self.task_list.setFlow(QListView.Flow.TopToBottom)
+            self.task_list.setWrapping(False)
+            self.task_list.setGridSize(QSize())
+        self.task_list.setUniformItemSizes(True)
+        self.task_list.doItemsLayout()
+        self.task_list.viewport().update()
+
+        always_on_top = bool(values.get("alwaysOnTop", False))
+        currently_on_top = bool(
+            self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+        )
+        if always_on_top != currently_on_top:
+            was_visible = self.isVisible()
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
+            if was_visible:
+                self.show()
+        self.setWindowOpacity(max(0.5, min(1.0, int(values.get("windowOpacity", 100)) / 100)))
 
     def _configure_tray(self) -> None:
         enabled = bool(self.config.get("trayEnabled", False))
@@ -6241,6 +6410,15 @@ class MainWindow(QMainWindow):
             "retryCount": self.retry_count_spin.value(),
             "retryBackoffSeconds": self.retry_backoff_spin.value(),
             "settings": settings_snapshot(self.config),
+            "view": {
+                "mode": str(self.config.get("listViewMode") or "list"),
+                "thumbnailsVisible": bool(self.config.get("thumbnailsVisible", True)),
+                "thumbnailSize": str(self.config.get("thumbnailSize") or "medium"),
+                "alwaysOnTop": bool(self.config.get("alwaysOnTop", False)),
+                "windowOpacity": int(self.config.get("windowOpacity", 100)),
+                "loadedLimit": int(self.resource_limits["maxLoadedJobs"]),
+                "batchSize": 100,
+            },
             "startupRecovery": self.startup_recovery,
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),

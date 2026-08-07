@@ -677,6 +677,11 @@ class WorkSchedulerTests(unittest.TestCase):
             "logBackupCount": 3,
             "rowDensity": "compact",
             "theme": "dark",
+            "listViewMode": "icon",
+            "thumbnailsVisible": False,
+            "thumbnailSize": "large",
+            "alwaysOnTop": True,
+            "windowOpacity": 85,
         }
         harness = type("SettingsHarness", (), {})()
         harness.config = {}
@@ -698,6 +703,8 @@ class WorkSchedulerTests(unittest.TestCase):
         harness._start_next_job = lambda: None
         harness._resolve_theme = lambda mode: mode
         harness._apply_style = lambda: None
+        display_updates = []
+        harness._apply_display_preferences = lambda values: display_updates.append(values)
         harness._configure_tray = lambda: None
         harness.resolved_theme = "light"
         harness.theme_mode = "system"
@@ -718,6 +725,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(harness.output_edit.value, r"C:\Manga")
         self.assertEqual(harness.work_concurrency_spin.value, 3)
         self.assertFalse(harness.log_box.value)
+        self.assertEqual(display_updates, [result])
         self.assertTrue(
             all(
                 not widget.blocked

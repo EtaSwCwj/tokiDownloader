@@ -757,6 +757,9 @@ class CliParserTests(unittest.TestCase):
                 "--show-browser", "on", "--log-visible", "off",
                 "--log-max-mib", "8", "--log-backups", "4",
                 "--row-density", "compact", "--theme", "dark", "--json",
+                "--view-mode", "icon", "--thumbnails", "off",
+                "--thumbnail-size", "large", "--always-on-top", "on",
+                "--opacity", "85",
             ]
         )
         with (
@@ -775,8 +778,13 @@ class CliParserTests(unittest.TestCase):
                     "logBackupCount": 4,
                     "rowDensity": "compact",
                     "theme": "dark",
+                    "listViewMode": "icon",
+                    "thumbnailSize": "large",
+                    "windowOpacity": 85,
                     "showBrowser": True,
                     "logVisible": False,
+                    "thumbnailsVisible": False,
+                    "alwaysOnTop": True,
                 },
                 "reset": False,
             }

@@ -40,7 +40,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 JOB_DB_SCHEMA_VERSION = 4
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
@@ -71,6 +71,11 @@ SETTING_KEYS = frozenset(
         "logMaxMiB",
         "logBackupCount",
         "rowDensity",
+        "listViewMode",
+        "thumbnailsVisible",
+        "thumbnailSize",
+        "alwaysOnTop",
+        "windowOpacity",
         "theme",
         "trayEnabled",
         "closeToTray",
@@ -312,6 +317,11 @@ def default_config() -> dict[str, Any]:
         "logMaxMiB": 2,
         "logBackupCount": 1,
         "rowDensity": "comfortable",
+        "listViewMode": "list",
+        "thumbnailsVisible": True,
+        "thumbnailSize": "medium",
+        "alwaysOnTop": False,
+        "windowOpacity": 100,
         "theme": "system",
         "trayEnabled": False,
         "closeToTray": False,
@@ -358,6 +368,27 @@ def normalize_theme(value: str | None) -> str:
     return normalized
 
 
+def normalize_list_view_mode(value: str | None) -> str:
+    normalized = str(value or "list").strip().lower()
+    if normalized not in {"list", "icon"}:
+        raise ValueError("목록 보기 방식은 list 또는 icon이어야 합니다.")
+    return normalized
+
+
+def normalize_thumbnail_size(value: str | None) -> str:
+    normalized = str(value or "medium").strip().lower()
+    if normalized not in {"small", "medium", "large"}:
+        raise ValueError("썸네일 크기는 small, medium 또는 large여야 합니다.")
+    return normalized
+
+
+def normalize_window_opacity(value: int | None) -> int:
+    normalized = 100 if value is None else int(value)
+    if not 50 <= normalized <= 100:
+        raise ValueError("창 불투명도는 50~100이어야 합니다.")
+    return normalized
+
+
 def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
@@ -385,6 +416,8 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "minimizeToTray",
         "notifyOnComplete",
         "notifyOnError",
+        "thumbnailsVisible",
+        "alwaysOnTop",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -428,6 +461,21 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("theme"),
         defaults["theme"],
     )
+    normalized["listViewMode"] = _safe_normalize(
+        normalize_list_view_mode,
+        source.get("listViewMode"),
+        defaults["listViewMode"],
+    )
+    normalized["thumbnailSize"] = _safe_normalize(
+        normalize_thumbnail_size,
+        source.get("thumbnailSize"),
+        defaults["thumbnailSize"],
+    )
+    normalized["windowOpacity"] = _safe_normalize(
+        normalize_window_opacity,
+        source.get("windowOpacity"),
+        defaults["windowOpacity"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -441,14 +489,28 @@ def _apply_log_policy(config: dict[str, Any]) -> None:
 
 def load_config() -> dict[str, Any]:
     config = default_config()
+    source_version = CONFIG_SCHEMA_VERSION
     if CONFIG_PATH.exists():
         try:
             loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
+                source_version = int(loaded.get("configVersion") or 0)
                 config.update(loaded)
         except (OSError, json.JSONDecodeError):
             pass
     normalized = normalize_config(config)
+    if CONFIG_PATH.is_file() and source_version < CONFIG_SCHEMA_VERSION:
+        backup = CONFIG_PATH.with_suffix(
+            CONFIG_PATH.suffix + f".pre-v{CONFIG_SCHEMA_VERSION}.bak"
+        )
+        if not backup.exists():
+            shutil.copy2(CONFIG_PATH, backup)
+        temporary = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, CONFIG_PATH)
     _apply_log_policy(normalized)
     return normalized
 
@@ -562,6 +624,8 @@ def validate_app_setting_updates(
         "minimizeToTray",
         "notifyOnComplete",
         "notifyOnError",
+        "thumbnailsVisible",
+        "alwaysOnTop",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -576,6 +640,9 @@ def validate_app_setting_updates(
         "logBackupCount": normalize_log_backup_count,
         "rowDensity": normalize_row_density,
         "theme": normalize_theme,
+        "listViewMode": normalize_list_view_mode,
+        "thumbnailSize": normalize_thumbnail_size,
+        "windowOpacity": normalize_window_opacity,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
