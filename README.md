@@ -176,6 +176,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd youtube chapters status --json
 .\toki-cli.cmd youtube chapters set --embed on --json
 .\toki-cli.cmd youtube chapters plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
+.\toki-cli.cmd youtube mtime status --json
+.\toki-cli.cmd youtube mtime set --state on --json
+.\toki-cli.cmd youtube mtime plan --file "D:\Videos\video.mp4" --upload-date 20260807 --json
+.\toki-cli.cmd youtube mtime apply --file "D:\Videos\video.mp4" --upload-date 20260807 --state on --yes --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -901,6 +905,14 @@ YouTube 챕터 마커는 기본적으로 꺼져 있으며 영상 원본이 제�
 `--embed-metadata --embed-chapters --no-embed-info-json` 조합으로 계획합니다. `youtube
 chapters status|set|plan`과 GUI가 같은 정책을 사용하고 `plan`은 URL과 인자만 로컬에서
 계산합니다. 화면은 `logs\youtube-chapter-markers.png`에 있습니다.
+
+YouTube 업로드 날짜 파일 시간 적용은 기본적으로 꺼져 있습니다. yt-dlp의 `--mtime`은 HTTP
+Last-Modified 값을 쓰므로 이 기능에는 사용하지 않습니다. 검증된 `upload_date` 8자리를 UTC
+자정으로 변환해 파일 수정 시각만 바꾸고 기존 접근 시각은 보존합니다. 한국 시간에서는 같은
+날짜 오전 9시로 표시됩니다. 심볼릭 링크는 거부하고 `youtube mtime plan`은 파일을 바꾸지
+않으며, `apply`는 기존 파일과 명시적인 `--yes`가 있어야만 실행됩니다. 자동 다운로드가
+활성화되면 같은 서비스가 완료 후 작업으로 연결되며 현재 형식 계획의 `postDownloadActions`
+에서도 확인할 수 있습니다. 화면은 `logs\youtube-upload-date-mtime.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

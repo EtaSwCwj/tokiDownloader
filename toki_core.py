@@ -68,7 +68,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 28
+CONFIG_SCHEMA_VERSION = 29
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -228,6 +228,7 @@ SETTING_KEYS = frozenset(
         "youtubeEmbedMetadata",
         "youtubeCollectionOrder",
         "youtubeEmbedChapters",
+        "youtubeApplyUploadDateMtime",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -552,6 +553,7 @@ def default_config() -> dict[str, Any]:
         "youtubeEmbedMetadata": False,
         "youtubeCollectionOrder": "site",
         "youtubeEmbedChapters": False,
+        "youtubeApplyUploadDateMtime": False,
     }
 
 
@@ -1690,6 +1692,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "youtubeWriteDescription",
         "youtubeEmbedMetadata",
         "youtubeEmbedChapters",
+        "youtubeApplyUploadDateMtime",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -2073,6 +2076,7 @@ def validate_app_setting_updates(
         "youtubeWriteDescription",
         "youtubeEmbedMetadata",
         "youtubeEmbedChapters",
+        "youtubeApplyUploadDateMtime",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):

@@ -1278,6 +1278,51 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(chapters_set), 0)
         update.assert_called_once_with({"youtubeEmbedChapters": True})
 
+        mtime_plan = build_parser().parse_args(
+            [
+                "youtube", "mtime", "plan", "--file", "C:\\Temp\\video.mp4",
+                "--upload-date", "20260807", "--state", "on", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(mtime_plan), 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["wouldModifyFileTimestamp"])
+        self.assertFalse(payload["executed"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "video.mp4"
+            target.write_bytes(b"test")
+            mtime_apply = build_parser().parse_args(
+                [
+                    "youtube", "mtime", "apply", "--file", str(target),
+                    "--upload-date", "20260807", "--state", "on", "--yes", "--json",
+                ]
+            )
+            with (
+                patch("toki_app.gui_is_running", return_value=False),
+                patch("toki_app.settings_snapshot", return_value=default_config()),
+                redirect_stdout(StringIO()) as output,
+            ):
+                self.assertEqual(run_cli(mtime_apply), 0)
+            self.assertTrue(json.loads(output.getvalue())["executed"])
+
+        mtime_set = build_parser().parse_args(
+            ["youtube", "mtime", "set", "--state", "on", "--json"]
+        )
+        expected = {**default_config(), "youtubeApplyUploadDateMtime": True}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value=expected) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(mtime_set), 0)
+        update.assert_called_once_with({"youtubeApplyUploadDateMtime": True})
+
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (

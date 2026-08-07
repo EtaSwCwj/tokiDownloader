@@ -54,12 +54,15 @@ from youtube_provider import (
     YOUTUBE_AUDIO_TRACK_MODES,
     YOUTUBE_COLLECTION_ORDERS,
     YouTubePolicyError,
+    apply_youtube_upload_date_mtime,
     plan_youtube_format,
+    plan_youtube_upload_date_mtime,
     preview_youtube_filename,
     youtube_format_policy_snapshot,
     youtube_metadata_policy_snapshot,
     youtube_collection_policy_snapshot,
     youtube_chapter_policy_snapshot,
+    youtube_mtime_policy_snapshot,
 )
 from toki_core import (
     APP_VERSION,
@@ -1050,6 +1053,29 @@ def build_parser() -> argparse.ArgumentParser:
             chapter_command.add_argument("--input", required=True)
         chapter_command.add_argument("--embed", choices=("on", "off"))
         chapter_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_mtime = youtube_commands.add_parser(
+        "mtime", help="업로드 날짜를 파일 수정 시각으로 적용"
+    )
+    youtube_mtime_commands = youtube_mtime.add_subparsers(
+        dest="youtube_mtime_command", required=True
+    )
+    youtube_mtime_status = youtube_mtime_commands.add_parser(
+        "status", help="현재 파일 시간 정책"
+    )
+    youtube_mtime_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_mtime_set = youtube_mtime_commands.add_parser("set", help="파일 시간 정책 저장")
+    youtube_mtime_set.add_argument("--state", choices=("on", "off"), required=True)
+    youtube_mtime_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name in ("plan", "apply"):
+        mtime_command = youtube_mtime_commands.add_parser(
+            name, help="파일 변경 없이 시간 계획" if name == "plan" else "확인 후 파일 시간 적용"
+        )
+        mtime_command.add_argument("--file", required=True)
+        mtime_command.add_argument("--upload-date", required=True, help="YYYYMMDD")
+        mtime_command.add_argument("--state", choices=("on", "off"))
+        if name == "apply":
+            mtime_command.add_argument("--yes", action="store_true", help="파일 수정 시각 변경 확인")
+        mtime_command.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2936,6 +2962,35 @@ def run_cli(args: argparse.Namespace) -> int:
             if gui_is_running()
             else settings_snapshot()
         )
+        if args.youtube_command == "mtime":
+            if args.youtube_mtime_command == "status":
+                result = youtube_mtime_policy_snapshot(current)
+            elif args.youtube_mtime_command == "set":
+                updates = {"youtubeApplyUploadDateMtime": args.state == "on"}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **youtube_mtime_policy_snapshot(saved)}
+            else:
+                enabled = None if args.state is None else args.state == "on"
+                if args.youtube_mtime_command == "apply":
+                    result = apply_youtube_upload_date_mtime(
+                        args.file,
+                        args.upload_date,
+                        config=current,
+                        enabled=enabled,
+                        confirmed=args.yes,
+                    )
+                else:
+                    result = plan_youtube_upload_date_mtime(
+                        args.file, args.upload_date, config=current, enabled=enabled
+                    )
+            print_json(result)
+            return 0
         if args.youtube_command == "chapters":
             embed = (
                 None if args.youtube_chapter_command == "status" or args.embed is None

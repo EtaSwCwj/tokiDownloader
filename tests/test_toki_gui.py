@@ -753,6 +753,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("썸네일 정보 json"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("채널 재생목록 역순"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("챕터 마커"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("업로드 날짜 mtime"), [4])
         self.assertEqual(
             SettingsDialog.matching_tab_indexes("서버 자동 수동 우선순위"), [4]
         )

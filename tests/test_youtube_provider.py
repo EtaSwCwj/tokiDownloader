@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from toki_core import default_config, normalize_config
 from youtube_provider import (
     YouTubePolicyError,
+    apply_youtube_upload_date_mtime,
     inspect_youtube_url,
     plan_youtube_format,
+    plan_youtube_upload_date_mtime,
     preview_youtube_filename,
     youtube_format_policy_snapshot,
 )
@@ -15,7 +19,7 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 28)
+        self.assertEqual(config["configVersion"], 29)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)
@@ -28,6 +32,7 @@ class YouTubeProviderTests(unittest.TestCase):
         self.assertFalse(policy["writeDescription"])
         self.assertFalse(policy["embedMetadata"])
         self.assertFalse(policy["embedChapters"])
+        self.assertFalse(policy["applyUploadDateMtime"])
 
     def test_filename_template_is_windows_safe_and_rejects_arbitrary_expressions(self) -> None:
         preview = preview_youtube_filename(
@@ -181,6 +186,42 @@ class YouTubeProviderTests(unittest.TestCase):
         self.assertIn("--embed-chapters", combined["arguments"])
         self.assertNotIn("--no-embed-chapters", combined["arguments"])
 
+    def test_upload_date_mtime_plan_and_confirmed_temp_file_apply_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "영상.mp4"
+            target.write_bytes(b"test")
+            plan = plan_youtube_upload_date_mtime(
+                target, "20260807", config=default_config(), enabled=True
+            )
+            self.assertEqual(plan["targetUtc"], "2026-08-07T00:00:00+00:00")
+            self.assertTrue(plan["requiresConfirmation"])
+            self.assertFalse(plan["executed"])
+            with self.assertRaisesRegex(ValueError, "--yes"):
+                apply_youtube_upload_date_mtime(
+                    target, "20260807", config=default_config(), enabled=True
+                )
+            applied = apply_youtube_upload_date_mtime(
+                target,
+                "20260807",
+                config=default_config(),
+                enabled=True,
+                confirmed=True,
+            )
+            self.assertTrue(applied["executed"])
+            self.assertEqual(target.stat().st_mtime_ns, applied["afterMtimeNs"])
+            self.assertEqual(applied["afterMtimeNs"], plan["targetTimestampNs"])
+            self.assertTrue(applied["accessTimePreserved"])
+        with self.assertRaisesRegex(ValueError, "유효하지 않은"):
+            plan_youtube_upload_date_mtime("video.mp4", "20260230", enabled=True)
+        format_plan = plan_youtube_format(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            {**default_config(), "youtubeApplyUploadDateMtime": True},
+        )
+        self.assertEqual(
+            format_plan["postDownloadActions"][0]["action"],
+            "set_mtime_from_upload_date",
+        )
+
     def test_invalid_urls_and_config_values_are_rejected_or_migrated(self) -> None:
         with self.assertRaises(YouTubePolicyError) as caught:
             inspect_youtube_url("https://example.com/watch?v=abc")
@@ -199,6 +240,7 @@ class YouTubeProviderTests(unittest.TestCase):
                 "youtubeEmbedMetadata": "on",
                 "youtubeCollectionOrder": "random",
                 "youtubeEmbedChapters": "yes",
+                "youtubeApplyUploadDateMtime": "yes",
             }
         )
         defaults = default_config()
@@ -221,5 +263,6 @@ class YouTubeProviderTests(unittest.TestCase):
             "youtubeEmbedMetadata",
             "youtubeCollectionOrder",
             "youtubeEmbedChapters",
+            "youtubeApplyUploadDateMtime",
         ):
             self.assertEqual(normalized[key], defaults[key])

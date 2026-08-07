@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -177,6 +180,99 @@ def youtube_chapter_policy_snapshot(config: dict[str, Any] | None = None) -> dic
     }
 
 
+def youtube_mtime_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    apply_upload_date = _normalize_youtube_boolean(
+        source.get("youtubeApplyUploadDateMtime"), "YouTube 업로드 날짜 파일 시간 적용"
+    )
+    return {
+        "ok": True,
+        "applyUploadDateMtime": apply_upload_date,
+        "sourceField": "upload_date",
+        "sourceTimezone": "UTC",
+        "ytDlpMtimeOptionUsed": False,
+        "preserveAccessTime": True,
+        "rejectSymlinks": True,
+        "networkRequested": False,
+        "downloadExecuted": False,
+    }
+
+
+def normalize_youtube_upload_date(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not re.fullmatch(r"\d{8}", normalized):
+        raise ValueError("YouTube 업로드 날짜는 YYYYMMDD 8자리여야 합니다.")
+    try:
+        datetime.strptime(normalized, "%Y%m%d")
+    except ValueError as error:
+        raise ValueError("유효하지 않은 YouTube 업로드 날짜입니다.") from error
+    return normalized
+
+
+def plan_youtube_upload_date_mtime(
+    file_path: str | Path,
+    upload_date: Any,
+    *,
+    config: dict[str, Any] | None = None,
+    enabled: bool | None = None,
+) -> dict[str, Any]:
+    policy_source = dict(config) if isinstance(config, dict) else {}
+    if enabled is not None:
+        policy_source["youtubeApplyUploadDateMtime"] = enabled
+    policy = youtube_mtime_policy_snapshot(policy_source)
+    normalized_date = normalize_youtube_upload_date(upload_date)
+    target = Path(os.path.abspath(os.fspath(Path(file_path).expanduser())))
+    moment = datetime.strptime(normalized_date, "%Y%m%d").replace(tzinfo=timezone.utc)
+    timestamp = int(moment.timestamp())
+    timestamp_ns = timestamp * 1_000_000_000
+    return {
+        **policy,
+        "filePath": str(target),
+        "uploadDate": normalized_date,
+        "targetTimestamp": timestamp,
+        "targetTimestampNs": timestamp_ns,
+        "targetUtc": moment.isoformat(),
+        "targetLocal": moment.astimezone().isoformat(),
+        "wouldModifyFileTimestamp": policy["applyUploadDateMtime"],
+        "requiresConfirmation": policy["applyUploadDateMtime"],
+        "executed": False,
+    }
+
+
+def apply_youtube_upload_date_mtime(
+    file_path: str | Path,
+    upload_date: Any,
+    *,
+    config: dict[str, Any] | None = None,
+    enabled: bool | None = None,
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    plan = plan_youtube_upload_date_mtime(
+        file_path, upload_date, config=config, enabled=enabled
+    )
+    if not plan["applyUploadDateMtime"]:
+        raise ValueError("YouTube 업로드 날짜 파일 시간 적용을 먼저 켜주세요.")
+    if not confirmed:
+        raise ValueError("파일 수정 시각을 바꾸려면 --yes 확인이 필요합니다.")
+    target = Path(plan["filePath"])
+    if target.is_symlink():
+        raise ValueError("심볼릭 링크의 파일 시간은 변경하지 않습니다.")
+    if not target.is_file():
+        raise ValueError(f"파일을 찾을 수 없습니다: {target}")
+    before = target.stat()
+    target_ns = int(plan["targetTimestampNs"])
+    os.utime(target, ns=(before.st_atime_ns, target_ns))
+    after = target.stat()
+    return {
+        **plan,
+        "executed": True,
+        "requiresConfirmation": False,
+        "beforeMtimeNs": before.st_mtime_ns,
+        "afterMtimeNs": after.st_mtime_ns,
+        "accessTimePreserved": after.st_atime_ns == before.st_atime_ns,
+    }
+
+
 def youtube_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
     write_thumbnail = _normalize_youtube_boolean(
@@ -310,6 +406,7 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
     metadata_policy = youtube_metadata_policy_snapshot(source)
     collection_policy = youtube_collection_policy_snapshot(source)
     chapter_policy = youtube_chapter_policy_snapshot(source)
+    mtime_policy = youtube_mtime_policy_snapshot(source)
     return {
         "ok": True,
         "mode": normalize_youtube_format_mode(source.get("youtubeFormatMode")),
@@ -337,6 +434,7 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
         ),
         "collectionOrder": collection_policy["order"],
         "embedChapters": chapter_policy["embedChapters"],
+        "applyUploadDateMtime": mtime_policy["applyUploadDateMtime"],
         "writeThumbnail": metadata_policy["writeThumbnail"],
         "embedThumbnail": metadata_policy["embedThumbnail"],
         "writeInfoJson": metadata_policy["writeInfoJson"],
@@ -454,6 +552,18 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         "requiresFfmpeg": requires_ffmpeg,
         "postProcessingRequired": bool(
             policy["embedThumbnail"] or policy["embedMetadata"] or policy["embedChapters"]
+        ),
+        "postDownloadActions": (
+            [
+                {
+                    "action": "set_mtime_from_upload_date",
+                    "sourceField": "upload_date",
+                    "sourceTimezone": "UTC",
+                    "preserveAccessTime": True,
+                }
+            ]
+            if policy["applyUploadDateMtime"]
+            else []
         ),
         "externalRequestRequiresConfirmation": True,
         "networkRequested": False,
