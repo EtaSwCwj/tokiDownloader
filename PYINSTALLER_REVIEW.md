@@ -27,7 +27,11 @@
 4. `onedir` 빌드부터 doctor, 다운로드 스모크, 마이그레이션과 제거 테스트를 수행한다.
 5. 코드 서명과 자동 업데이트가 준비된 뒤에만 일반 사용자 배포물로 승격한다.
 
-Windows 빌드는 반드시 `--name tokiDownloader --icon assets\toki-downloader.ico`를 사용한다.
+향후 4단계의 Windows `onedir` 시험 빌드는 반드시
+`--name tokiDownloader --icon assets\toki-downloader.ico --add-data "assets;assets"`를 사용해
+EXE 리소스와 런타임 PNG·ICO를 함께 포함한다. 현재 `ROOT_DIR = Path(__file__).parent` 조회는
+추가 데이터가 배치되는 소스/onedir/onefile의 코드 리소스 루트를 가리키지만, 일반 배포 전에는
+위의 데이터 경로 분리와 frozen 재진입 문제를 먼저 해결해야 한다.
 런타임은 `EtaSwCwj.tokiDownloader.GUI.1` AppUserModelID를 GUI 창보다 먼저 적용하므로 소스 실행과
 배포 EXE가 같은 작업 표시줄 정체성을 유지한다. 다른 Python GUI 프로젝트는 서로 다른 EXE
 이름·아이콘·AppUserModelID를 사용해야 한다.

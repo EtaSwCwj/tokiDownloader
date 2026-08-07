@@ -38,10 +38,12 @@ class CliParserTests(unittest.TestCase):
         )
         live = {**local, "applied": True}
         with (
+            patch("toki_app.ensure_gui_running") as ensure_live,
             patch("toki_app.control_request", return_value=live) as request,
             redirect_stdout(StringIO()) as stdout,
         ):
             self.assertEqual(run_cli(live_args), 0)
+        ensure_live.assert_called_once_with()
         request.assert_called_once_with({"action": "application_identity"})
         self.assertTrue(json.loads(stdout.getvalue())["applied"])
 
@@ -69,6 +71,19 @@ class CliParserTests(unittest.TestCase):
                 {"action": "close_application_identity"},
             ],
         )
+
+        text_close_args = build_parser().parse_args(["app-identity", "--close"])
+        for closed, expected_text in (
+            (True, "앱 정보 창을 닫았습니다."),
+            (False, "앱 정보 창은 이미 닫혀 있습니다."),
+        ):
+            with (
+                patch("toki_app.ensure_gui_running"),
+                patch("toki_app.control_request", return_value={"closed": closed}),
+                redirect_stdout(StringIO()) as stdout,
+            ):
+                self.assertEqual(run_cli(text_close_args), 0)
+            self.assertEqual(stdout.getvalue().strip(), expected_text)
 
     def test_hitomi_original_image_cli_uses_shared_offline_plan(self) -> None:
         status_args = build_parser().parse_args(
@@ -584,6 +599,25 @@ class CliParserTests(unittest.TestCase):
             cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
         )
         self.assertNotIn("ipb_pass_hash", output.getvalue())
+
+        hitomi_cookie_args = build_parser().parse_args(
+            [
+                "hitomi", "metadata", "fetch",
+                "--input", "42", "--use-cookies", "--yes", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            patch("toki_app.provider_cookie_request_header") as cookie_header,
+            patch("toki_app.fetch_hitomi_metadata") as fetch,
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(hitomi_cookie_args), 2)
+        blocked = json.loads(output.getvalue())
+        self.assertEqual(blocked["errorCode"], "hitomi.cookie_host_mismatch")
+        cookie_header.assert_not_called()
+        fetch.assert_not_called()
 
         show_args = build_parser().parse_args(
             [

@@ -42,6 +42,7 @@ from hitomi_provider import (
     plan_hitomi_metadata_files,
     plan_hitomi_server,
     select_hitomi_display_title,
+    validate_hitomi_metadata_cookie_destination,
     write_hitomi_metadata_files,
 )
 from youtube_provider import (
@@ -999,7 +1000,7 @@ def build_parser() -> argparse.ArgumentParser:
             metadata_command.add_argument(
                 "--use-cookies",
                 action="store_true",
-                help="확인 후 OS 보안 저장소의 해당 공급자 쿠키 사용",
+                help="ExHentai/E-Hentai에서만 확인 후 OS 보안 저장소 쿠키 사용",
             )
     hitomi_metadata_decide = hitomi_metadata_commands.add_parser(
         "decide", help="외부 요청 없이 모드별 성공·실패 후속 동작 계산"
@@ -2244,8 +2245,9 @@ def run_cli(args: argparse.Namespace) -> int:
         control_request({"action": "show"})
         return 0
     if command == "app-identity":
-        if args.show_gui or args.close:
+        if args.show_gui or args.close or args.via_gui:
             ensure_gui_running()
+        if args.show_gui or args.close:
             result = control_request(
                 {
                     "action": (
@@ -2266,13 +2268,17 @@ def run_cli(args: argparse.Namespace) -> int:
         elif args.show_gui:
             print("앱 정보 창을 열었습니다.")
         elif args.close:
-            print("앱 정보 창을 닫았습니다.")
+            print(
+                "앱 정보 창을 닫았습니다."
+                if result.get("closed")
+                else "앱 정보 창은 이미 닫혀 있습니다."
+            )
         else:
             print(
-                f"{result['displayName']} | AppUserModelID: "
-                f"{result['windowsAppUserModelId']} | 아이콘: "
-                f"{'정상' if result['iconExists'] else '없음'} | 적용: "
-                f"{'예' if result['applied'] else '아니요'}"
+                f"{result.get('displayName', 'tokiDownloader')} | AppUserModelID: "
+                f"{result.get('windowsAppUserModelId', '')} | 아이콘: "
+                f"{'정상' if result.get('iconExists') else '없음'} | 적용: "
+                f"{'예' if result.get('applied') else '아니요'}"
             )
         return 0 if result.get("ok", bool(args.show_gui or args.close)) else 2
     if command == "doctor":
@@ -2859,6 +2865,10 @@ def run_cli(args: argparse.Namespace) -> int:
                                     config=current,
                                 )
                                 request = request_plan.get("request") or {}
+                                validate_hitomi_metadata_cookie_destination(
+                                    str(request_plan["provider"]),
+                                    str(request.get("url") or ""),
+                                )
                                 fetch_options["cookie_header"] = (
                                     provider_cookie_request_header(
                                         str(request_plan["provider"]),

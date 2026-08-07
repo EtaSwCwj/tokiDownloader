@@ -367,47 +367,6 @@ class HitomiReferenceTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "hitomi.metadata_redirect_blocked")
 
-    def test_metadata_network_failures_have_stable_safe_error_codes(self) -> None:
-        cases = (
-            (URLError(socket.gaierror(11001, "host lookup failed")), "hitomi.metadata_dns"),
-            (URLError(TimeoutError("timed out")), "hitomi.metadata_timeout"),
-            (
-                URLError(ssl.SSLCertVerificationError("certificate verify failed")),
-                "hitomi.metadata_tls",
-            ),
-            (ConnectionRefusedError("refused"), "hitomi.metadata_connection_refused"),
-            (
-                HTTPError(
-                    "https://ltn.gold-usergeneratedcontent.net/galleries/42.js",
-                    404,
-                    "Not Found",
-                    {},
-                    None,
-                ),
-                "hitomi.metadata_not_found",
-            ),
-            (
-                HTTPError(
-                    "https://api.e-hentai.org/api.php",
-                    403,
-                    "Forbidden",
-                    {},
-                    None,
-                ),
-                "hitomi.metadata_authentication",
-            ),
-        )
-        for raised, expected_code in cases:
-            with self.subTest(expected_code=expected_code):
-                with self.assertRaises(HitomiReferenceError) as caught:
-                    fetch_hitomi_metadata(
-                        "42",
-                        opener=lambda *_args, raised=raised, **_kwargs: (_ for _ in ()).throw(raised),
-                        confirmed=True,
-                    )
-                self.assertEqual(caught.exception.code, expected_code)
-                self.assertNotIn("gold-usergeneratedcontent.net", str(caught.exception))
-
         class ForeignResponse:
             def __enter__(self):
                 return self
@@ -428,6 +387,82 @@ class HitomiReferenceTests(unittest.TestCase):
                 confirmed=True,
             )
         self.assertEqual(caught.exception.code, "hitomi.metadata_redirect_blocked")
+
+    def test_metadata_network_failures_have_stable_safe_error_codes(self) -> None:
+        cases = (
+            ("42", URLError(socket.gaierror(11001, "host lookup failed")), "hitomi.metadata_dns"),
+            ("42", URLError(TimeoutError("timed out")), "hitomi.metadata_timeout"),
+            (
+                "42",
+                URLError(ssl.SSLCertVerificationError("certificate verify failed")),
+                "hitomi.metadata_tls",
+            ),
+            ("42", URLError(ssl.SSLEOFError("unexpected EOF")), "hitomi.metadata_tls"),
+            ("42", ConnectionRefusedError("refused"), "hitomi.metadata_connection_refused"),
+            (
+                "42",
+                HTTPError(
+                    "https://ltn.gold-usergeneratedcontent.net/galleries/42.js",
+                    404,
+                    "Not Found",
+                    {},
+                    None,
+                ),
+                "hitomi.metadata_not_found",
+            ),
+            (
+                "https://exhentai.org/g/987654/abcdef1234/",
+                HTTPError(
+                    "https://api.e-hentai.org/api.php",
+                    403,
+                    "Forbidden",
+                    {},
+                    None,
+                ),
+                "hitomi.metadata_authentication",
+            ),
+            (
+                "42",
+                HTTPError(
+                    "https://ltn.gold-usergeneratedcontent.net/galleries/42.js",
+                    403,
+                    "Forbidden",
+                    {},
+                    None,
+                ),
+                "hitomi.metadata_access_denied",
+            ),
+        )
+        for reference, raised, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                with self.assertRaises(HitomiReferenceError) as caught:
+                    fetch_hitomi_metadata(
+                        reference,
+                        opener=lambda *_args, raised=raised, **_kwargs: (_ for _ in ()).throw(raised),
+                        confirmed=True,
+                    )
+                self.assertEqual(caught.exception.code, expected_code)
+                self.assertTrue(str(caught.exception).strip())
+                self.assertNotIn("gold-usergeneratedcontent.net", str(caught.exception))
+
+    def test_hitomi_cookie_cannot_cross_to_metadata_cdn(self) -> None:
+        called = False
+
+        def opener(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("도메인 검증 뒤에는 요청을 열면 안 됩니다.")
+
+        with self.assertRaises(HitomiReferenceError) as caught:
+            fetch_hitomi_metadata(
+                "42",
+                opener=opener,
+                cookie_header="session=secret",
+                confirmed=True,
+            )
+        self.assertEqual(caught.exception.code, "hitomi.cookie_host_mismatch")
+        self.assertFalse(called)
+        self.assertNotIn("secret", str(caught.exception))
 
     def test_filename_modes_are_windows_safe_deterministic_and_bounded(self) -> None:
         metadata = load_hitomi_metadata_fixture(

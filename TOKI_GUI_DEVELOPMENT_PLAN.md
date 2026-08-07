@@ -556,6 +556,15 @@ Hitomi 요청에서 일반 `URLError`만 보여 진단성이 부족한 점을 �
 현재 요청 주소를 표시하는지 `logs/hitomi-metadata-live-endpoint.png`에서 확인했다. Python
 266건, Node 16건, GUI 자체 점검 6/6과 필수 환경 진단 5/5를 통과했다.
 
+2026-08-07 Claude Opus CLI 최종 검토 반영: 읽기 전용 2회 검토에서 새 메타데이터 CDN으로
+임의 Cookie 헤더가 전달될 수 있는 공용 서비스 경로, `app-identity --via-gui`의 GUI 자동 시작
+누락, 일반 TLS 오류 분류, frozen 자산 포함 문서, 진단용 AppUserModelID 호출의 런타임 상태
+오염 가능성을 발견해 수정했다. Hitomi 쿠키는 자격 증명 저장소를 읽기 전에 다른 등록 도메인
+CDN 전송을 `hitomi.cookie_host_mismatch`로 거부하고, ExHentai 403과 Hitomi CDN 403은 각각
+인증·접근 거부로 구분한다. 같은 상수에서 SVG·PNG·ICO를 재생성하며 시험 onedir 명령에 assets
+포함을 명시했다. `logs/hitomi-metadata-cookie-boundary.png`에서 쿠키 안전 안내를 확인했고
+Python 267건, Node 16건, GUI 자체 점검 6/6과 필수 환경 진단 5/5를 통과했다.
+
 2026-08-07 Hitomi 이미지 파일명 정책: 설정 스키마 v18에 `original`, `number`,
 `number_original`을 추가하고 서비스가 공통 메타데이터에서 Windows 안전 이름을 계산하도록
 했다. 경로 구분자·금지 문자·예약 장치 이름을 제거하고 대소문자 중복도 카운터로 분리하며,

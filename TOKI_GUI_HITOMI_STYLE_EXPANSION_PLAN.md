@@ -620,6 +620,14 @@ Python 263건, Node 16건, GUI 자체 점검 6/6과 필수 환경 5/5를 통과�
 대비는 `logs/hitomi-metadata-live-endpoint.png`에서 확인했다. Python 266건, Node 16건,
 GUI 자체 점검 6/6과 필수 환경 진단 5/5를 통과했다.
 
+Claude Opus CLI 읽기 전용 최종 검토에서 새 CDN과 기존 로그인 쿠키의 등록 도메인이 다름을
+재감사했다. 공용 서비스·CLI·GUI 모두 자격 증명 저장소를 읽기 전에 Hitomi 쿠키 전송을
+`hitomi.cookie_host_mismatch`로 거부하고, ExHentai API의 403은 인증 오류, Hitomi CDN의 403은
+접근 거부로 분리했다. 인증서뿐 아니라 일반 TLS 핸드셰이크 오류도 안정 코드로 분류하며 오류
+문구 비어 있음과 비밀값 비노출을 회귀 테스트한다. 최신 쿠키 안전 안내 화면은
+`logs/hitomi-metadata-cookie-boundary.png`에 보존했고 Python 267건, Node 16건, GUI 자체 점검
+6/6과 필수 환경 진단 5/5를 통과했다.
+
 2026-08-07 이미지 파일명 정책 구현: 설정 스키마 v18에 원본, 최소 4자리 숫자, 숫자+원본
 세 방식을 추가하고 기본값을 `0001_원본.jpg`로 정했다. 공용 서비스는 Hitomi 공통
 메타데이터의 파일 목록을 최대 100,000장까지 한 번 순회하되 반환 샘플은 최대 1,000개로

@@ -1040,6 +1040,18 @@ class WorkSchedulerTests(unittest.TestCase):
             cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
         )
 
+        with (
+            patch("toki_gui.provider_cookie_request_header") as header,
+            patch("toki_gui.fetch_hitomi_metadata") as fetch,
+        ):
+            result = HitomiMetadataDialog._fetch_metadata_service(
+                "42", "auto", config, True
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["errorCode"], "hitomi.cookie_host_mismatch")
+        header.assert_not_called()
+        fetch.assert_not_called()
+
         required = {**config, "hitomiMetadataMode": "required"}
         with patch(
             "toki_gui.fetch_hitomi_metadata",

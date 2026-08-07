@@ -58,6 +58,10 @@ HITOMI_METADATA_ENDPOINT = (
     "https://ltn.gold-usergeneratedcontent.net/galleries/{gallery_id}.js"
 )
 EHENTAI_METADATA_ENDPOINT = "https://api.e-hentai.org/api.php"
+METADATA_COOKIE_HOST_SUFFIXES = {
+    "hitomi": ("hitomi.la",),
+    "exhentai": ("exhentai.org", "e-hentai.org"),
+}
 _GALLERY_ID = re.compile(r"^[0-9]{1,18}$")
 _HITOMI_GALLERY_PATH = re.compile(r"^/galleries/([0-9]+)\.html/?$", re.IGNORECASE)
 _HITOMI_READER_PATH = re.compile(r"^/reader/([0-9]+)\.html/?$", re.IGNORECASE)
@@ -100,6 +104,34 @@ def _http_origin(url: str) -> tuple[str, str, int]:
     return scheme, host, port
 
 
+def validate_hitomi_metadata_cookie_destination(
+    provider: str, request_url: str
+) -> dict[str, Any]:
+    normalized_provider = str(provider or "").strip().lower()
+    allowed_suffixes = METADATA_COOKIE_HOST_SUFFIXES.get(normalized_provider)
+    request_host = str(urlsplit(str(request_url or "")).hostname or "").lower()
+    allowed = bool(
+        allowed_suffixes
+        and request_host
+        and any(
+            request_host == suffix or request_host.endswith(f".{suffix}")
+            for suffix in allowed_suffixes
+        )
+    )
+    if not allowed:
+        raise HitomiReferenceError(
+            "hitomi.cookie_host_mismatch",
+            "공급자 로그인 쿠키를 메타데이터 CDN 주소로 보낼 수 없습니다.",
+        )
+    return {
+        "ok": True,
+        "provider": normalized_provider,
+        "requestHost": request_host,
+        "cookieDestinationAllowed": True,
+        "cookieValuesExposed": False,
+    }
+
+
 class _SameOriginMetadataRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if _http_origin(req.full_url) != _http_origin(newurl):
@@ -110,11 +142,19 @@ class _SameOriginMetadataRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _classify_metadata_request_error(error: Exception) -> HitomiReferenceError:
+def _classify_metadata_request_error(
+    error: Exception, *, provider: str = ""
+) -> HitomiReferenceError:
     if isinstance(error, HTTPError):
         status = int(error.code or 0)
-        if status in {401, 403}:
+        if status == 401:
             code = "hitomi.metadata_authentication"
+        elif status == 403:
+            code = (
+                "hitomi.metadata_authentication"
+                if str(provider or "").lower() == "exhentai"
+                else "hitomi.metadata_access_denied"
+            )
         elif status == 404:
             code = "hitomi.metadata_not_found"
         elif status == 429:
@@ -131,6 +171,11 @@ def _classify_metadata_request_error(error: Exception) -> HitomiReferenceError:
         return HitomiReferenceError(
             "hitomi.metadata_tls",
             "갤러리 메타데이터 서버 인증서를 확인하지 못했습니다.",
+        )
+    if isinstance(reason, ssl.SSLError):
+        return HitomiReferenceError(
+            "hitomi.metadata_tls",
+            "갤러리 메타데이터 서버와 보안 연결을 설정하지 못했습니다.",
         )
     if isinstance(reason, socket.gaierror) or getattr(reason, "winerror", None) in {
         11001,
@@ -1282,6 +1327,9 @@ def fetch_hitomi_metadata(
             "쿠키 헤더에 안전하지 않은 줄바꿈이 있습니다.",
         )
     if normalized_cookie_header:
+        validate_hitomi_metadata_cookie_destination(
+            str(plan["provider"]), str(request_plan["url"])
+        )
         headers["Cookie"] = normalized_cookie_header
     data = None
     if plan["provider"] == "exhentai":
@@ -1316,7 +1364,9 @@ def fetch_hitomi_metadata(
     except HitomiReferenceError:
         raise
     except Exception as error:
-        raise _classify_metadata_request_error(error) from error
+        raise _classify_metadata_request_error(
+            error, provider=str(plan["provider"])
+        ) from error
     if len(payload) > HITOMI_METADATA_MAX_BYTES:
         raise HitomiReferenceError(
             "hitomi.metadata_too_large",

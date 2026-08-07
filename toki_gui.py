@@ -119,6 +119,7 @@ from hitomi_provider import (
     plan_hitomi_metadata_files,
     plan_hitomi_image_sources,
     select_hitomi_display_title,
+    validate_hitomi_metadata_cookie_destination,
     write_hitomi_metadata_files,
 )
 from youtube_provider import (
@@ -2509,7 +2510,8 @@ class HitomiMetadataDialog(QDialog):
         policy = hitomi_metadata_policy_snapshot(owner.config)
         note = QLabel(
             f"현재 방식: {policy['mode']} · 응답 상한 8 MiB. 요청 계획과 로컬 픽스처는 "
-            "오프라인이며 실제 조회는 매번 외부 연결 확인을 받습니다. 저장 쿠키 사용은 기본 꺼짐입니다."
+            "오프라인이며 실제 조회는 매번 외부 연결 확인을 받습니다. 저장 쿠키는 인증이 필요한 "
+            "ExHentai/E-Hentai 요청에만 사용할 수 있습니다."
         )
         note.setObjectName("mutedLabel")
         note.setWordWrap(True)
@@ -2532,7 +2534,8 @@ class HitomiMetadataDialog(QDialog):
         self.use_cookies_checkbox = QCheckBox("OS 보안 저장소의 선택 공급자 쿠키 사용")
         self.use_cookies_checkbox.setChecked(False)
         self.use_cookies_checkbox.setToolTip(
-            "CLI: hitomi metadata fetch --input URL --use-cookies --yes --json"
+            "ExHentai/E-Hentai 전용 · CLI: hitomi metadata fetch --input URL "
+            "--use-cookies --yes --json"
         )
         form.addRow("로그인 쿠키", self.use_cookies_checkbox)
         layout.addLayout(form)
@@ -2834,19 +2837,22 @@ class HitomiMetadataDialog(QDialog):
         config: dict[str, Any],
         use_cookies: bool,
     ) -> dict[str, Any]:
-        fetch_options: dict[str, Any] = {}
-        if use_cookies:
-            plan = hitomi_metadata_request_plan(
-                reference,
-                provider_hint=provider,
-                config=config,
-            )
-            request = plan.get("request") or {}
-            fetch_options["cookie_header"] = provider_cookie_request_header(
-                str(plan["provider"]),
-                str(request.get("url") or ""),
-            )
         try:
+            fetch_options: dict[str, Any] = {}
+            if use_cookies:
+                plan = hitomi_metadata_request_plan(
+                    reference,
+                    provider_hint=provider,
+                    config=config,
+                )
+                request = plan.get("request") or {}
+                validate_hitomi_metadata_cookie_destination(
+                    str(plan["provider"]), str(request.get("url") or "")
+                )
+                fetch_options["cookie_header"] = provider_cookie_request_header(
+                    str(plan["provider"]),
+                    str(request.get("url") or ""),
+                )
             return fetch_hitomi_metadata(
                 reference,
                 provider_hint=provider,

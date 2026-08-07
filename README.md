@@ -375,8 +375,8 @@ Windows에서는 `EtaSwCwj.tokiDownloader.GUI.1` AppUserModelID와 전용 PNG/IC
 창 생성 전에 적용합니다. 따라서 같은 Python 3.13 또는 `pythonw.exe`로 실행되는 다른 PyQt
 프로그램과 작업 표시줄 아이콘·그룹이 분리됩니다. `app-identity --json`은 저장된 앱 이름,
 아이콘 파일과 배포 EXE 계획을 검사하고, GUI 실행 뒤 `app-identity --via-gui --json`은 Windows
-API 적용 성공 여부까지 확인합니다. 아이콘 원본은 `assets\toki-downloader.svg`, 런타임 PNG와
-배포용 ICO는 `scripts\generate_app_icons.py`로 동일하게 재생성할 수 있습니다. 도움말의
+API 적용 성공 여부까지 확인합니다. `scripts\generate_app_icons.py`는 같은 색상·도형 정의로
+`assets\toki-downloader.svg`, 런타임 PNG와 배포용 ICO를 함께 재생성합니다. 도움말의
 `tokiDownloader 앱 정보...` 또는 `app-identity --show-gui`는 실제 아이콘·AppUserModelID·
 배포 EXE 계획을 같은 대화상자에서 보여주며 모든 버튼은 대응 CLI를 갖습니다.
 
@@ -814,8 +814,10 @@ ExHentai/E-Hentai는 [공식 gdata API 형식](https://ehwiki.org/wiki/API)의 J
 않습니다. `parse --fixture PATH`는 사이트 변경 회귀 검사용 로컬 JS/JSON을 읽으며 한글·공백
 Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실행하고 기본값은 저장 쿠키를
 읽지 않습니다. 인증이 필요한 사용자 소유 세션을 명시적으로 쓰려면
-`fetch --use-cookies --yes`를 사용하거나 GUI의 `OS 보안 저장소의 선택 공급자 쿠키 사용`을
-체크한 뒤 목적지와 쿠키 읽기를 다시 확인합니다. ExHentai 관련 쿠키는 E-Hentai/ExHentai
+ExHentai/E-Hentai URL에서 `fetch --use-cookies --yes`를 사용하거나 GUI의
+`OS 보안 저장소의 선택 공급자 쿠키 사용`을 체크한 뒤 목적지와 쿠키 읽기를 다시 확인합니다.
+공개 Hitomi 메타데이터 CDN은 `hitomi.la`와 다른 등록 도메인이므로 Hitomi 로그인 쿠키 사용을
+`hitomi.cookie_host_mismatch`로 거부하고 보안 저장소도 읽지 않습니다. ExHentai 관련 쿠키는 E-Hentai/ExHentai
 도메인만 보관하며 요청 호스트·경로·Secure·만료 조건에 맞는 값만 해당 요청의 `Cookie`
 헤더에 주입합니다. 쿠키 값은 결과 JSON·상태·설정·로그에 남기지 않고 접근 제한 우회는
 지원하지 않습니다. GUI 조회는 제한형 I/O 풀에서 동작합니다. 공용 서비스 함수도 확인값을
@@ -827,15 +829,17 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 `logs\hitomi-metadata-plan.png`,
 `logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`,
 `logs\hitomi-metadata-mode-final.png`, `logs\hitomi-metadata-required-failure.png`,
-`logs\hitomi-metadata-live-endpoint.png`에 있습니다.
+`logs\hitomi-metadata-live-endpoint.png`, `logs\hitomi-metadata-cookie-boundary.png`에 있습니다.
 실제 공급자 요청은 사용자 승인 전에는 실행하지 않습니다. 2026-08-07 승인 검증에서는 폐기된
 `ltn.hitomi.la` 대신 현재 공식 갤러리 페이지가 로드하는
 `ltn.gold-usergeneratedcontent.net/galleries/ID.js`를 사용하도록 교체했고, 공개 갤러리
 `1085987`의 26개 파일과 제목·작가·그룹·태그를 쿠키 없이 정상 파싱했습니다. 요청 ID와 응답
 ID가 다르면 계속 `hitomi.metadata_id_mismatch`로 거부합니다.
 
-연결 실패는 원문 예외를 그대로 노출하지 않고 DNS, TLS 인증서, 시간 초과, 연결 거부,
-HTTP 인증, 찾을 수 없음, 속도 제한으로 분류한 안정 오류 코드를 반환합니다. URL·쿠키·갤러리
+연결 실패는 원문 예외를 그대로 노출하지 않고 DNS, TLS 보안 연결, 시간 초과, 연결 거부,
+HTTP 인증, 접근 거부, 찾을 수 없음, 속도 제한으로 분류한 안정 오류 코드를 반환합니다.
+ExHentai의 403은 인증 만료 가능성이 있어 인증 오류로 유지하고 Hitomi CDN의 403은 접근 거부로
+구분합니다. URL·쿠키·갤러리
 토큰은 오류 문구에 포함하지 않습니다.
 
 설정 스키마 v18은 Hitomi 이미지 파일명을 `original`, `number`, `number_original` 중 하나로

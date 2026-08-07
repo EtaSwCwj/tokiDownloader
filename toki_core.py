@@ -197,11 +197,17 @@ def apply_windows_app_user_model_id(
     setter: Callable[[str], int] | None = None,
 ) -> dict[str, Any]:
     selected_platform = str(platform_name or os.name)
-    _APPLICATION_IDENTITY_RUNTIME.update(
-        {"attempted": selected_platform == "nt", "applied": False, "error": ""}
-    )
+    persist_runtime = platform_name is None and setter is None
+    attempted = selected_platform == "nt"
+    applied = False
+    error_text = ""
     if selected_platform != "nt":
-        return application_identity_snapshot()
+        return {
+            **application_identity_snapshot(),
+            "attempted": attempted,
+            "applied": applied,
+            "error": error_text,
+        }
     try:
         if setter is None:
             import ctypes
@@ -213,10 +219,19 @@ def apply_windows_app_user_model_id(
         result = int(setter(WINDOWS_APP_USER_MODEL_ID))
         if result != 0:
             raise OSError(f"HRESULT 0x{result & 0xFFFFFFFF:08X}")
-        _APPLICATION_IDENTITY_RUNTIME["applied"] = True
+        applied = True
     except Exception as error:
-        _APPLICATION_IDENTITY_RUNTIME["error"] = f"{type(error).__name__}: {error}"
-    return application_identity_snapshot()
+        error_text = f"{type(error).__name__}: {error}"
+    if persist_runtime:
+        _APPLICATION_IDENTITY_RUNTIME.update(
+            {"attempted": attempted, "applied": applied, "error": error_text}
+        )
+    return {
+        **application_identity_snapshot(),
+        "attempted": attempted,
+        "applied": applied,
+        "error": error_text,
+    }
 SETTING_KEYS = frozenset(
     {
         "outputDir",
