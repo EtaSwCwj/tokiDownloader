@@ -16,6 +16,101 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_notification_cli_reports_sets_and_previews_via_gui(self) -> None:
+        status_args = build_parser().parse_args(["notifications", "status", "--json"])
+        status_values = {
+            "notifyOnComplete": True,
+            "notifyOnError": True,
+            "sound": "none",
+            "messageBox": False,
+            "supportedSounds": ["none", "system"],
+        }
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch(
+                "toki_app.notification_settings_snapshot",
+                return_value=status_values,
+            ) as snapshot,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        snapshot.assert_called_once_with()
+
+        set_args = build_parser().parse_args(
+            [
+                "notifications", "set", "--complete", "on", "--error", "off",
+                "--sound", "system", "--message-box", "on", "--json",
+            ]
+        )
+        saved = default_config()
+        saved.update(
+            {
+                "notifyOnComplete": True,
+                "notifyOnError": False,
+                "notificationSound": "system",
+                "notificationMessageBox": True,
+            }
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=saved) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_settings",
+                "updates": {
+                    "notifyOnComplete": True,
+                    "notifyOnError": False,
+                    "notificationMessageBox": True,
+                    "notificationSound": "system",
+                },
+                "reset": False,
+            }
+        )
+
+        empty_set = build_parser().parse_args(["notifications", "set"])
+        with self.assertRaisesRegex(toki_app.ControlError, "하나 이상"):
+            run_cli(empty_set)
+
+        preview_args = build_parser().parse_args(
+            [
+                "notifications", "preview", "--kind", "error",
+                "--title", "실패 작품", "--detail", "네트워크 오류", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running") as ensure_gui,
+            patch(
+                "toki_app.control_request", return_value={"executed": True}
+            ) as preview_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(preview_args), 0)
+        ensure_gui.assert_called_once_with()
+        preview_request.assert_called_once_with(
+            {
+                "action": "preview_notification",
+                "kind": "error",
+                "title": "실패 작품",
+                "detail": "네트워크 오류",
+            }
+        )
+
+        close_args = build_parser().parse_args(
+            ["notifications", "close", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request", return_value={"closed": 1}
+            ) as close_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_args), 0)
+        close_request.assert_called_once_with({"action": "close_notifications"})
+
     def test_embedded_browser_cli_plans_offline_and_guards_navigation(self) -> None:
         plan = build_parser().parse_args(
             [

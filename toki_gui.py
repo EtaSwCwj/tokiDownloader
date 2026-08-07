@@ -186,6 +186,8 @@ from toki_core import (
     normalize_retry_count,
     normalize_scan_request,
     normalize_work_concurrency,
+    notification_event_plan,
+    notification_settings_snapshot,
     open_in_explorer,
     plan_job_folder_move,
     plan_metadata_rebuild,
@@ -2456,7 +2458,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2681,8 +2683,27 @@ class SettingsDialog(QDialog):
         self.log_backups_spin.setRange(1, 10)
         self.log_backups_spin.setSuffix("개")
         advanced_form.addRow("이전 로그 보존", self.log_backups_spin)
+        self.notification_sound_check = QCheckBox(
+            "완료·오류 알림에 Windows 시스템 알림음 재생"
+        )
+        advanced_form.addRow("알림음", self.notification_sound_check)
+        self.notification_message_box_check = QCheckBox(
+            "트레이 사용 여부와 관계없이 비차단 메시지 상자 표시"
+        )
+        advanced_form.addRow("메시지 상자", self.notification_message_box_check)
+        notification_preview_button = QPushButton("완료 알림 미리보기")
+        notification_preview_button.setToolTip(
+            "CLI: notifications preview --kind complete --json"
+        )
+        notification_preview_button.clicked.connect(
+            lambda: owner.preview_notification(
+                "complete", "알림 미리보기 작품", ""
+            )
+        )
+        advanced_form.addRow("알림 확인", notification_preview_button)
         advanced_note = QLabel(
-            "현재 로그가 최대 크기를 넘으면 gui.log.1부터 순환 보존합니다. 다운로드 파일에는 영향을 주지 않습니다."
+            "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
+            "사용하며 메시지 상자는 작업을 막지 않습니다. 알림음과 메시지 상자의 기본값은 꺼짐입니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -2832,6 +2853,12 @@ class SettingsDialog(QDialog):
         self._load_current_provider_policy()
         self.log_max_spin.setValue(int(values["logMaxMiB"]))
         self.log_backups_spin.setValue(int(values["logBackupCount"]))
+        self.notification_sound_check.setChecked(
+            str(values["notificationSound"]) == "system"
+        )
+        self.notification_message_box_check.setChecked(
+            bool(values["notificationMessageBox"])
+        )
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -2975,6 +3002,10 @@ class SettingsDialog(QDialog):
             },
             "logMaxMiB": self.log_max_spin.value(),
             "logBackupCount": self.log_backups_spin.value(),
+            "notificationSound": (
+                "system" if self.notification_sound_check.isChecked() else "none"
+            ),
+            "notificationMessageBox": self.notification_message_box_check.isChecked(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -3350,6 +3381,8 @@ class MainWindow(QMainWindow):
         self.active_completion_dialog: CompletionCountdownDialog | None = None
         self.completion_action_armed = False
         self.last_completion_action: dict[str, Any] = {}
+        self.notification_message_boxes: list[QMessageBox] = []
+        self.last_notification: dict[str, Any] = {}
         self.last_clipboard_text = ""
         self.last_clipboard_inspection: dict[str, Any] = {}
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
@@ -6105,6 +6138,101 @@ class MainWindow(QMainWindow):
         )
         return True
 
+    def show_in_app_notification_message(self, message: str) -> bool:
+        self.statusBar().showMessage(message, 5000)
+        return True
+
+    def play_notification_sound(self) -> bool:
+        QApplication.beep()
+        return True
+
+    def show_notification_message_box(self, plan: dict[str, Any]) -> bool:
+        box = QMessageBox(self)
+        box.setWindowTitle(
+            "tokiDownloader - 작업 완료"
+            if plan.get("kind") == "complete"
+            else "tokiDownloader - 작업 오류"
+        )
+        box.setText(str(plan.get("message") or ""))
+        box.setIcon(
+            QMessageBox.Icon.Information
+            if plan.get("kind") == "complete"
+            else QMessageBox.Icon.Warning
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.setModal(False)
+        self.notification_message_boxes.append(box)
+        box.finished.connect(
+            lambda _result, selected=box: self._notification_box_finished(selected)
+        )
+        box.show()
+        return True
+
+    def _notification_box_finished(self, box: QMessageBox) -> None:
+        if box in self.notification_message_boxes:
+            self.notification_message_boxes.remove(box)
+        box.deleteLater()
+
+    def deliver_notification(self, plan: dict[str, Any]) -> dict[str, Any]:
+        if not plan.get("enabled"):
+            result = {
+                **plan,
+                "executed": False,
+                "inAppMessageShown": False,
+                "trayShown": False,
+                "messageBoxShown": False,
+                "soundPlayed": False,
+            }
+            self.last_notification = result
+            return result
+        message = str(plan.get("message") or "")
+        in_app_shown = self.show_in_app_notification_message(message)
+        tray_shown = bool(
+            plan.get("trayRequested") and self.show_tray_notification(message)
+        )
+        message_box_shown = bool(
+            plan.get("messageBoxRequested")
+            and self.show_notification_message_box(plan)
+        )
+        sound_played = bool(
+            plan.get("soundRequested") and self.play_notification_sound()
+        )
+        result = {
+            **plan,
+            "executed": True,
+            "inAppMessageShown": in_app_shown,
+            "trayShown": tray_shown,
+            "messageBoxShown": message_box_shown,
+            "soundPlayed": sound_played,
+        }
+        self.last_notification = result
+        return result
+
+    def notification_status_snapshot(self) -> dict[str, Any]:
+        return {
+            **notification_settings_snapshot(self.config),
+            "openMessageBoxes": len(self.notification_message_boxes),
+            "last": dict(self.last_notification),
+        }
+
+    def close_notification_messages(self) -> int:
+        boxes = list(self.notification_message_boxes)
+        for box in boxes:
+            box.close()
+        return len(boxes)
+
+    def preview_notification(
+        self, kind: str, title: str, detail: str = ""
+    ) -> dict[str, Any]:
+        plan = notification_event_plan(
+            kind,
+            title=title,
+            detail=detail,
+            config=self.config,
+            preview=True,
+        )
+        return self.deliver_notification(plan)
+
     def handle_tray_command(self, command: str, message: str = "") -> dict[str, Any]:
         if command == "show":
             self.show_from_tray()
@@ -6117,14 +6245,20 @@ class MainWindow(QMainWindow):
             raise ValueError(f"지원하지 않는 트레이 명령입니다: {command}")
         return self.tray_snapshot()
 
-    def _notify_job_result(self, job: DownloadJob) -> None:
-        if job.state == "완료" and self.config.get("notifyOnComplete", True):
-            self.show_tray_notification(f"다운로드 완료: {job.title}")
-        elif job.state in {"오류", "인증 필요"} and self.config.get(
-            "notifyOnError", True
-        ):
-            detail = job.error or job.state
-            self.show_tray_notification(f"{job.title}: {detail}")
+    def _notify_job_result(self, job: DownloadJob) -> dict[str, Any] | None:
+        if job.state == "완료":
+            kind = "complete"
+        elif job.state in {"오류", "인증 필요"}:
+            kind = "error"
+        else:
+            return None
+        plan = notification_event_plan(
+            kind,
+            title=job.title,
+            detail=job.error or job.state,
+            config=self.config,
+        )
+        return self.deliver_notification(plan)
 
     def request_exit(self) -> None:
         self.exit_requested = True
@@ -7267,7 +7401,17 @@ class MainWindow(QMainWindow):
             else LOG_PATH.parent / "gui-screenshot.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        if (
+        notification_box = next(
+            (
+                box
+                for box in reversed(self.notification_message_boxes)
+                if box.isVisible()
+            ),
+            None,
+        )
+        if notification_box:
+            screenshot = notification_box.grab()
+        elif (
             self.active_shortcut_help_dialog
             and self.active_shortcut_help_dialog.isVisible()
         ):
@@ -7746,6 +7890,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced|provider --search TEXT|--close]\n"
             "toki-cli.cmd completion-action status|set|preview|cancel [options]\n"
+            "toki-cli.cmd notifications status|set|preview|close [options]\n"
             "toki-cli.cmd clipboard inspect|monitor [options]\n"
             "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
             "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
@@ -7924,6 +8069,7 @@ class MainWindow(QMainWindow):
                 "batchSize": 100,
             },
             "completionAction": self.completion_action_snapshot(),
+            "notifications": self.notification_status_snapshot(),
             "clipboard": {
                 "monitorEnabled": bool(self.config.get("clipboardMonitor", False)),
                 "lastInspection": self.last_clipboard_inspection,
@@ -8353,6 +8499,16 @@ class MainWindow(QMainWindow):
             )
         if action == "cancel_completion_action":
             return {"cancelled": self.cancel_completion_action()}
+        if action == "notification_status":
+            return self.notification_status_snapshot()
+        if action == "preview_notification":
+            return self.preview_notification(
+                str(request.get("kind") or "complete"),
+                str(request.get("title") or "알림 미리보기 작품"),
+                str(request.get("detail") or ""),
+            )
+        if action == "close_notifications":
+            return {"closed": self.close_notification_messages()}
         if action == "inspect_clipboard":
             return self.inspect_clipboard_text(
                 str(request.get("text") or ""), prompt=bool(request.get("prompt"))

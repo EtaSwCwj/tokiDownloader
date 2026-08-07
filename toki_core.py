@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 6
+CONFIG_SCHEMA_VERSION = 7
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -110,6 +110,8 @@ SETTING_KEYS = frozenset(
         "minimizeToTray",
         "notifyOnComplete",
         "notifyOnError",
+        "notificationSound",
+        "notificationMessageBox",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -388,6 +390,8 @@ def default_config() -> dict[str, Any]:
         "minimizeToTray": False,
         "notifyOnComplete": True,
         "notifyOnError": True,
+        "notificationSound": "none",
+        "notificationMessageBox": False,
     }
 
 
@@ -1228,6 +1232,13 @@ def normalize_completion_countdown(value: int | None) -> int:
     return normalized
 
 
+def normalize_notification_sound(value: str | None) -> str:
+    normalized = str(value or "none").strip().lower()
+    if normalized not in {"none", "system"}:
+        raise ValueError("알림음은 none 또는 system이어야 합니다.")
+    return normalized
+
+
 def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
@@ -1295,6 +1306,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "minimizeToTray",
         "notifyOnComplete",
         "notifyOnError",
+        "notificationMessageBox",
         "thumbnailsVisible",
         "alwaysOnTop",
         "clipboardMonitor",
@@ -1375,6 +1387,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_completion_countdown,
         source.get("completionCountdownSeconds"),
         defaults["completionCountdownSeconds"],
+    )
+    normalized["notificationSound"] = _safe_normalize(
+        normalize_notification_sound,
+        source.get("notificationSound"),
+        defaults["notificationSound"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -1524,6 +1541,7 @@ def validate_app_setting_updates(
         "minimizeToTray",
         "notifyOnComplete",
         "notifyOnError",
+        "notificationMessageBox",
         "thumbnailsVisible",
         "alwaysOnTop",
         "clipboardMonitor",
@@ -1556,6 +1574,7 @@ def validate_app_setting_updates(
         "shortcutOverrides": normalize_shortcut_overrides,
         "completionAction": normalize_completion_action,
         "completionCountdownSeconds": normalize_completion_countdown,
+        "notificationSound": normalize_notification_sound,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -2361,6 +2380,60 @@ def completion_action_plan(
         "shouldTrigger": bool(armed and idle and normalized_action != "none"),
         "requiresCountdown": normalized_action in {"exit", "shutdown"},
         "destructive": normalized_action == "shutdown",
+    }
+
+
+def notification_settings_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    return {
+        "notifyOnComplete": bool(source["notifyOnComplete"]),
+        "notifyOnError": bool(source["notifyOnError"]),
+        "sound": str(source["notificationSound"]),
+        "messageBox": bool(source["notificationMessageBox"]),
+        "supportedSounds": ["none", "system"],
+    }
+
+
+def notification_event_plan(
+    kind: str,
+    *,
+    title: str = "",
+    detail: str = "",
+    config: dict[str, Any] | None = None,
+    preview: bool = False,
+) -> dict[str, Any]:
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind not in {"complete", "error"}:
+        raise ValueError("알림 종류는 complete 또는 error여야 합니다.")
+    settings = notification_settings_snapshot(config)
+    clean_title = str(title or "작품").strip()[:500] or "작품"
+    clean_detail = str(detail or "").strip()[:1000]
+    configured = bool(
+        settings[
+            "notifyOnComplete" if normalized_kind == "complete" else "notifyOnError"
+        ]
+    )
+    enabled = bool(preview or configured)
+    if normalized_kind == "complete":
+        message = f"다운로드 완료: {clean_title}"
+    else:
+        message = f"{clean_title}: {clean_detail or '오류'}"
+    sound = str(settings["sound"]) if enabled else "none"
+    return {
+        "kind": normalized_kind,
+        "title": clean_title,
+        "detail": clean_detail,
+        "message": message,
+        "configured": configured,
+        "enabled": enabled,
+        "preview": bool(preview),
+        "trayRequested": enabled,
+        "messageBoxRequested": bool(enabled and settings["messageBox"]),
+        "sound": sound,
+        "soundRequested": sound == "system",
+        "executed": False,
     }
 
 

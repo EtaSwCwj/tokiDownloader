@@ -74,6 +74,7 @@ from toki_core import (
     normalize_retry_count,
     normalize_error_category,
     normalize_embedded_browser_url,
+    normalize_notification_sound,
     normalize_folder_name_template,
     normalize_shortcut_overrides,
     normalize_background_image,
@@ -87,6 +88,8 @@ from toki_core import (
     normalize_work_concurrency,
     move_job_folder,
     network_policy_snapshot,
+    notification_event_plan,
+    notification_settings_snapshot,
     plan_job_folder_move,
     plan_image_conversion,
     plan_metadata_rebuild,
@@ -128,6 +131,49 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_notification_plans_separate_enablement_sound_and_message_box(self) -> None:
+        config = default_config()
+        default_status = notification_settings_snapshot(config)
+        self.assertEqual(default_status["sound"], "none")
+        self.assertFalse(default_status["messageBox"])
+
+        config.update(
+            {
+                "notificationSound": "system",
+                "notificationMessageBox": True,
+                "notifyOnComplete": True,
+                "notifyOnError": False,
+            }
+        )
+        complete = notification_event_plan(
+            "complete", title="완료 작품", config=config
+        )
+        self.assertTrue(complete["enabled"])
+        self.assertTrue(complete["trayRequested"])
+        self.assertTrue(complete["messageBoxRequested"])
+        self.assertTrue(complete["soundRequested"])
+        self.assertEqual(complete["message"], "다운로드 완료: 완료 작품")
+
+        disabled_error = notification_event_plan(
+            "error", title="실패 작품", detail="네트워크 오류", config=config
+        )
+        self.assertFalse(disabled_error["enabled"])
+        self.assertFalse(disabled_error["messageBoxRequested"])
+        self.assertFalse(disabled_error["soundRequested"])
+        preview = notification_event_plan(
+            "error",
+            title="실패 작품",
+            detail="네트워크 오류",
+            config=config,
+            preview=True,
+        )
+        self.assertTrue(preview["enabled"])
+        self.assertEqual(preview["message"], "실패 작품: 네트워크 오류")
+        with self.assertRaises(ValueError):
+            normalize_notification_sound("custom")
+        with self.assertRaises(ValueError):
+            notification_event_plan("unknown", config=config)
+
     def test_shortcut_overrides_validate_conflicts_disable_and_portable_export(self) -> None:
         config = default_config()
         config["shortcutOverrides"] = {

@@ -83,6 +83,8 @@ from toki_core import (
     load_runs_page,
     move_job_folder,
     network_policy_snapshot,
+    notification_event_plan,
+    notification_settings_snapshot,
     normalize_image_concurrency,
     normalize_embedded_browser_url,
     normalize_retry_backoff,
@@ -1180,6 +1182,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="트레이 상태 조회, 창 표시/숨김 또는 테스트 알림",
     )
     tray.add_argument("--message", default="tokiDownloader 테스트 알림", help="테스트 알림 내용")
+
+    notifications = subparsers.add_parser(
+        "notifications", help="작업 결과 알림음과 메시지 설정·미리보기"
+    )
+    notification_commands = notifications.add_subparsers(
+        dest="notification_command", required=True
+    )
+    notification_status = notification_commands.add_parser(
+        "status", help="현재 작업 결과 알림 설정"
+    )
+    notification_status.add_argument("--json", action="store_true")
+    notification_set = notification_commands.add_parser(
+        "set", help="완료·오류 알림, 소리와 메시지 상자 설정"
+    )
+    notification_set.add_argument("--complete", choices=("on", "off"))
+    notification_set.add_argument("--error", choices=("on", "off"))
+    notification_set.add_argument("--sound", choices=("none", "system"))
+    notification_set.add_argument("--message-box", choices=("on", "off"))
+    notification_set.add_argument("--json", action="store_true")
+    notification_preview = notification_commands.add_parser(
+        "preview", help="실행 중 GUI로 결과 알림 미리보기"
+    )
+    notification_preview.add_argument(
+        "--kind", choices=("complete", "error"), default="complete"
+    )
+    notification_preview.add_argument("--title", default="알림 미리보기 작품")
+    notification_preview.add_argument("--detail", default="테스트 오류")
+    notification_preview.add_argument("--json", action="store_true")
+    notification_close = notification_commands.add_parser(
+        "close", help="열린 알림 메시지 상자 닫기"
+    )
+    notification_close.add_argument("--json", action="store_true")
 
     open_folder = subparsers.add_parser("open-folder", help="저장 폴더 열기")
     open_folder.add_argument("--job", help="작업 ID")
@@ -3000,6 +3034,55 @@ def run_cli(args: argparse.Namespace) -> int:
         result = control_request(
             {"action": "tray", "command": args.action, "message": args.message}
         )
+        print_json(result)
+        return 0
+    if command == "notifications":
+        subcommand = args.notification_command
+        if subcommand == "status":
+            result = (
+                control_request({"action": "notification_status"})
+                if gui_is_running()
+                else notification_settings_snapshot()
+            )
+        elif subcommand == "set":
+            updates: dict[str, Any] = {}
+            for argument, key in (
+                (args.complete, "notifyOnComplete"),
+                (args.error, "notifyOnError"),
+                (args.message_box, "notificationMessageBox"),
+            ):
+                if argument is not None:
+                    updates[key] = argument == "on"
+            if args.sound is not None:
+                updates["notificationSound"] = args.sound
+            if not updates:
+                raise ControlError("변경할 알림 설정을 하나 이상 지정해주세요.")
+            if gui_is_running():
+                values = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                values = update_app_settings(updates)
+            result = {"saved": True, **notification_settings_snapshot(values)}
+        elif subcommand == "preview":
+            plan = notification_event_plan(
+                args.kind,
+                title=args.title,
+                detail=args.detail,
+                preview=True,
+            )
+            ensure_gui_running()
+            result = control_request(
+                {
+                    "action": "preview_notification",
+                    "kind": plan["kind"],
+                    "title": plan["title"],
+                    "detail": plan["detail"],
+                }
+            )
+        else:
+            ensure_gui_running()
+            result = control_request({"action": "close_notifications"})
         print_json(result)
         return 0
     if command == "set-output":

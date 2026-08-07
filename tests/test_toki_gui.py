@@ -744,10 +744,30 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(calls, ["focus", "select", "reset", "retry"])
 
     def test_job_result_notifications_follow_settings(self) -> None:
-        messages = []
+        in_app_messages = []
+        tray_messages = []
+        message_boxes = []
+        sounds = []
         harness = type("NotificationHarness", (), {})()
-        harness.config = {"notifyOnComplete": True, "notifyOnError": True}
-        harness.show_tray_notification = lambda message: messages.append(message) or True
+        harness.config = {
+            "notifyOnComplete": True,
+            "notifyOnError": True,
+            "notificationSound": "none",
+            "notificationMessageBox": False,
+        }
+        harness.show_in_app_notification_message = (
+            lambda message: in_app_messages.append(message) or True
+        )
+        harness.show_tray_notification = (
+            lambda message: tray_messages.append(message) or True
+        )
+        harness.show_notification_message_box = (
+            lambda plan: message_boxes.append(plan["message"]) or True
+        )
+        harness.play_notification_sound = lambda: sounds.append(True) or True
+        harness.deliver_notification = lambda plan: MainWindow.deliver_notification(
+            harness, plan
+        )
         completed = DownloadJob(
             job_id="done",
             url="https://newtoki1.org/manhwa/9901",
@@ -768,12 +788,54 @@ class WorkSchedulerTests(unittest.TestCase):
         MainWindow._notify_job_result(harness, failed)
 
         self.assertEqual(
-            messages,
+            in_app_messages,
             ["다운로드 완료: 완료 작품", "실패 작품: 네트워크 오류"],
         )
+        self.assertEqual(tray_messages, in_app_messages)
+        self.assertEqual(message_boxes, [])
+        self.assertEqual(sounds, [])
         harness.config["notifyOnError"] = False
         MainWindow._notify_job_result(harness, failed)
-        self.assertEqual(len(messages), 2)
+        self.assertEqual(len(in_app_messages), 2)
+
+        harness.config["notificationSound"] = "system"
+        harness.config["notificationMessageBox"] = True
+        preview = MainWindow.preview_notification(
+            harness, "error", "미리보기 작품", "테스트 오류"
+        )
+        self.assertTrue(preview["messageBoxShown"])
+        self.assertTrue(preview["soundPlayed"])
+        self.assertEqual(message_boxes, ["미리보기 작품: 테스트 오류"])
+        self.assertEqual(sounds, [True])
+
+    def test_notification_ipc_status_and_preview_use_shared_runtime(self) -> None:
+        calls = []
+        harness = type("NotificationIpcHarness", (), {})()
+        harness.notification_status_snapshot = lambda: {"sound": "none"}
+        harness.preview_notification = (
+            lambda kind, title, detail: calls.append((kind, title, detail))
+            or {"executed": True}
+        )
+        harness.close_notification_messages = lambda: 2
+        status = MainWindow._handle_control_action(
+            harness, {"action": "notification_status"}
+        )
+        preview = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "preview_notification",
+                "kind": "complete",
+                "title": "완료 작품",
+                "detail": "",
+            },
+        )
+        self.assertEqual(status["sound"], "none")
+        self.assertTrue(preview["executed"])
+        self.assertEqual(calls, [("complete", "완료 작품", "")])
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_notifications"}
+        )
+        self.assertEqual(closed["closed"], 2)
 
     def test_windows_background_process_disables_console_window(self) -> None:
         options = hidden_process_options()

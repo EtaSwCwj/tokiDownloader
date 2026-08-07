@@ -409,7 +409,7 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 ### 단계 F. 고급 동작과 파일 후처리
 
 - [x] 단축키 편집·가져오기·내보내기
-- [ ] 작업 완료 알림음과 메시지
+- [x] 작업 완료 알림음과 메시지
 - [x] 이미지 형식 변환
 - [ ] 이미지 리사이즈와 파일 유형 제외
 - [ ] 압축 파일 연결 프로그램과 미리보기
@@ -438,6 +438,16 @@ GUI 중지 버튼과 `cancel-conversion --job ID`를 같은 IPC 동작으로 연
 비밀값이 없다. 실제 GUI IPC로 임시 키를 적용·조회하고 원래 빈 덮어쓰기로 복원했으며
 `logs/shortcut-editor-gui.png`에서 어두운 테마의 표·입력·버튼 대비를 확인했다. Python
 173건과 Node 16건을 통과했다.
+
+2026-08-07 작업 결과 알림음·메시지 구현: 설정 스키마 v7에 `notificationSound`와
+`notificationMessageBox`를 추가했으며 기존 완료·오류 알림 선택과 분리해 둘 다 기본 꺼짐으로
+두었다. 공용 서비스가 완료·오류 메시지, 대상 여부와 요청된 전달 방식을 먼저 계획하고 GUI는
+상태 표시줄, 선택적 트레이 풍선, 비차단 메시지 상자와 Windows 시스템 알림음을 실행한다.
+`notifications status|set|preview|close` CLI와 `status --json`으로 설정·미리보기 결과·열린
+메시지 상자를 제어하고 검증한다. 실제 소리는 사용자에게 갑자기 재생하지 않고 모의 콜백으로
+검증했으며, 메시지 상자만 임시 활성화해 실제 IPC 미리보기·캡처·CLI 닫기를 확인한 뒤
+`sound=none`, 메시지 상자 꺼짐으로 복원했다. 화면은 `logs/notification-settings-gui.png`,
+`logs/notification-message-preview.png`에 보존했고 Python 176건과 Node 16건을 통과했다.
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 

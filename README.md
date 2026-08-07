@@ -471,6 +471,24 @@ compact|comfortable`로 같은 선택을 즉시 적용할 수 있습니다.
 사용 가능 여부와 표시 상태를 반환합니다. 트레이 메뉴의 종료는 실행 중 작업이 있으면
 기존 중지 확인 창을 그대로 거칩니다.
 
+고급 설정의 `알림음`과 `메시지 상자`는 완료·오류 알림의 전달 방식을 보강합니다. 기본값은
+둘 다 꺼짐이며, 알림 대상 작업은 트레이 사용 여부와 관계없이 메인 상태 표시줄에 5초 동안
+메시지를 남깁니다. `시스템 알림음`을 켜면 Windows 기본 알림음을 재생하고 `메시지 상자`를
+켜면 다운로드를 멈추지 않는 별도 완료·오류 창을 표시합니다. 최종 재시도까지 끝난 작업만
+알리며 중지된 작업은 알리지 않습니다.
+
+```powershell
+.\toki-cli.cmd notifications status --json
+.\toki-cli.cmd notifications set --complete on --error on --sound system --message-box on --json
+.\toki-cli.cmd notifications preview --kind complete --title "알림 미리보기 작품" --json
+.\toki-cli.cmd notifications close --json
+```
+
+`preview`는 현재 저장 설정으로 상태 표시줄·트레이·메시지 상자·알림음을 실제 시험하고 각
+전달 성공 여부를 JSON으로 반환합니다. 열린 미리보기 창은 `close`로 정리할 수 있으며
+`status --json`의 `notifications`와 `notifications status --json`에서 마지막 결과와 열린
+메시지 상자 수를 확인할 수 있습니다.
+
 작품 목록은 작품당 한 줄만 유지하고, 다운로드·전체 재검사·범위 다운로드를 실행할
 때마다 별도의 실행 ID를 `runs` 이력에 누적합니다. `info`는 작품 메타데이터와 전체 실행
 수를, `runs`는 최대 1000건 범위에서 페이지 단위 이력을, `run-info`는 실행 1건의 요청
