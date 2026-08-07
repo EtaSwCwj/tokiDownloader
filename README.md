@@ -186,7 +186,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --progress-json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --show-gui
 .\toki-cli.cmd cancel-conversion --job 작업ID
+.\toki-cli.cmd copy-id --job 작업ID
 .\toki-cli.cmd copy-link --job 작업ID
+.\toki-cli.cmd copy-path --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
@@ -219,6 +221,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd clear-log
 .\toki-cli.cmd quit --force
 ```
+
+`copy-id`, `copy-link`, `copy-path`, `copy-title`은 GUI가 실행 중이면 선택 작품과 같은
+클립보드 경로를 사용하고, GUI가 꺼져 있어도 `--job`을 지정하면 Windows 네이티브
+클립보드에 직접 복사합니다. 별도 PowerShell·명령 프롬프트 창은 시작하지 않습니다.
 
 `list`는 제목, 폴더명에 포함된 작가·그룹, 작품 ID와 URL을 검색합니다. `--status`로
 상태를 거르고 `--sort updated|title|progress`로 정렬할 수 있습니다. `--apply-gui`를

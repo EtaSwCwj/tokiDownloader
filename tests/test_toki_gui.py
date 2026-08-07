@@ -107,6 +107,27 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_work_copy_ipc_routes_id_source_path_and_title(self) -> None:
+        calls = []
+        harness = type("WorkCopyHarness", (), {})()
+        harness.copy_job_id = lambda job_id: calls.append(("id", job_id)) or "j1"
+        harness.copy_job_link = lambda job_id: calls.append(("link", job_id)) or "url"
+        harness.copy_job_path = lambda job_id: calls.append(("path", job_id)) or "folder"
+        harness.copy_job_title = lambda job_id: calls.append(("title", job_id)) or "title"
+
+        results = [
+            MainWindow._handle_control_action(
+                harness, {"action": action, "jobId": "j1"}
+            )["copied"]
+            for action in ("copy_id", "copy_link", "copy_path", "copy_title")
+        ]
+
+        self.assertEqual(results, ["j1", "url", "folder", "title"])
+        self.assertEqual(
+            calls,
+            [("id", "j1"), ("link", "j1"), ("path", "j1"), ("title", "j1")],
+        )
+
     def test_duplicate_images_ipc_starts_algorithm_and_closes_report(self) -> None:
         calls = []
         harness = type("DuplicateImagesHarness", (), {})()

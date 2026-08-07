@@ -4556,3 +4556,59 @@ def open_in_explorer(target: str | os.PathLike[str]) -> None:
     if os.name != "nt":
         raise RuntimeError("현재는 Windows 탐색기 열기만 지원합니다.")
     os.startfile(resolved)  # type: ignore[attr-defined]
+
+
+def copy_text_to_clipboard(text: str) -> None:
+    """Copy Unicode text without starting a shell or visible helper process."""
+    if os.name != "nt":
+        raise RuntimeError("GUI 없는 클립보드 복사는 현재 Windows에서만 지원합니다.")
+
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.EmptyClipboard.restype = ctypes.c_int
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    user32.SetClipboardData.restype = ctypes.c_void_p
+    user32.CloseClipboard.restype = ctypes.c_int
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+
+    payload = (str(text) + "\0").encode("utf-16-le")
+    handle = kernel32.GlobalAlloc(0x0002, len(payload))  # GMEM_MOVEABLE
+    if not handle:
+        raise OSError("클립보드 메모리를 할당하지 못했습니다.")
+    pointer = kernel32.GlobalLock(handle)
+    if not pointer:
+        kernel32.GlobalFree(handle)
+        raise OSError("클립보드 메모리를 잠그지 못했습니다.")
+    ctypes.memmove(pointer, payload, len(payload))
+    kernel32.GlobalUnlock(handle)
+
+    opened = False
+    for _ in range(10):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        time.sleep(0.02)
+    if not opened:
+        kernel32.GlobalFree(handle)
+        raise OSError("다른 프로그램이 클립보드를 사용 중입니다.")
+
+    transferred = False
+    try:
+        if not user32.EmptyClipboard():
+            raise OSError("클립보드를 비우지 못했습니다.")
+        if not user32.SetClipboardData(13, handle):  # CF_UNICODETEXT
+            raise OSError("클립보드에 텍스트를 쓰지 못했습니다.")
+        transferred = True
+    finally:
+        user32.CloseClipboard()
+        if not transferred:
+            kernel32.GlobalFree(handle)

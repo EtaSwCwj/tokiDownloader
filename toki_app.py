@@ -39,6 +39,7 @@ from toki_core import (
     keyboard_shortcut_catalog,
     count_jobs,
     count_runs,
+    copy_text_to_clipboard,
     convert_job_images,
     delete_job_record,
     delete_job_records,
@@ -134,6 +135,27 @@ def gui_is_running() -> bool:
         return bool(result and result.get("pong"))
     except ControlError:
         return False
+
+
+def copy_job_field(job_id: str | None, field: str) -> dict[str, str]:
+    if gui_is_running():
+        return control_request({"action": f"copy_{field}", "jobId": job_id})
+    if not job_id:
+        raise ControlError("GUI가 꺼져 있을 때는 --job 작업ID가 필요합니다.")
+    job = load_job_by_id(job_id)
+    if not job:
+        raise ControlError(f"작업을 찾을 수 없습니다: {job_id}")
+    values = {
+        "id": job.job_id,
+        "link": job.url,
+        "path": job.output_path,
+        "title": job.title,
+    }
+    value = str(values[field] or "")
+    if not value:
+        raise ControlError("복사할 값이 아직 없습니다.")
+    copy_text_to_clipboard(value)
+    return {"copied": value, "field": field, "via": "cli"}
 
 
 def start_gui_background() -> None:
@@ -942,6 +964,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     copy_link = subparsers.add_parser("copy-link", help="작품 원본 링크 복사")
     copy_link.add_argument("--job", help="작업 ID")
+    copy_id = subparsers.add_parser("copy-id", help="작품 작업 ID 복사")
+    copy_id.add_argument("--job", help="작업 ID")
+    copy_path = subparsers.add_parser("copy-path", help="작품 저장 폴더 경로 복사")
+    copy_path.add_argument("--job", help="작업 ID")
     copy_title = subparsers.add_parser("copy-title", help="작품명 복사")
     copy_title.add_argument("--job", help="작업 ID")
     job_menu = subparsers.add_parser("job-menu", help="선택 작품의 우클릭 메뉴 표시")
@@ -2277,10 +2303,16 @@ def run_cli(args: argparse.Namespace) -> int:
             print(target)
         return 0
     if command == "copy-link":
-        print_json(control_request({"action": "copy_link", "jobId": args.job}))
+        print_json(copy_job_field(args.job, "link"))
+        return 0
+    if command == "copy-id":
+        print_json(copy_job_field(args.job, "id"))
+        return 0
+    if command == "copy-path":
+        print_json(copy_job_field(args.job, "path"))
         return 0
     if command == "copy-title":
-        print_json(control_request({"action": "copy_title", "jobId": args.job}))
+        print_json(copy_job_field(args.job, "title"))
         return 0
     if command == "job-menu":
         print_json(control_request({"action": "show_job_menu", "jobId": args.job}))

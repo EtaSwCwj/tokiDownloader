@@ -5248,7 +5248,15 @@ class MainWindow(QMainWindow):
             bool(job.output_path) and job.job_id not in self.duplicate_image_tasks
         )
         menu.addSeparator()
-        menu.addAction("원본 링크 복사", lambda: self.copy_job_link(job.job_id))
+        menu.addAction("작품 ID 복사", lambda: self.copy_job_id(job.job_id))
+        source_copy_action = menu.addAction(
+            "원본 URL 복사", lambda: self.copy_job_link(job.job_id)
+        )
+        source_copy_action.setEnabled(bool(job.url))
+        path_copy_action = menu.addAction(
+            "저장 폴더 경로 복사", lambda: self.copy_job_path(job.job_id)
+        )
+        path_copy_action.setEnabled(bool(job.output_path))
         menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
         menu.addSeparator()
         menu.addAction(
@@ -5370,6 +5378,24 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(job.url)
         self.statusBar().showMessage("원본 링크를 복사했습니다.", 2500)
         return job.url
+
+    def copy_job_id(self, job_id: str | None = None) -> str:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("ID를 복사할 작품을 선택해주세요.")
+        QApplication.clipboard().setText(job.job_id)
+        self.statusBar().showMessage("작품 ID를 복사했습니다.", 2500)
+        return job.job_id
+
+    def copy_job_path(self, job_id: str | None = None) -> str:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("저장 경로를 복사할 작품을 선택해주세요.")
+        if not job.output_path:
+            raise ValueError("이 작품에는 아직 저장 폴더가 없습니다.")
+        QApplication.clipboard().setText(job.output_path)
+        self.statusBar().showMessage("저장 폴더 경로를 복사했습니다.", 2500)
+        return job.output_path
 
     def copy_job_title(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
@@ -6036,7 +6062,9 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd rescan --job ID --mode new|full|range [--start N --last N]\n"
             "toki-cli.cmd set-output PATH\n"
             "toki-cli.cmd open-folder [--job ID]\n"
+            "toki-cli.cmd copy-id [--job ID]\n"
             "toki-cli.cmd copy-link [--job ID]\n"
+            "toki-cli.cmd copy-path [--job ID]\n"
             "toki-cli.cmd copy-title [--job ID]\n"
             "toki-cli.cmd job-menu [--job ID]\n"
             "toki-cli.cmd logs --tail 200\n"
@@ -6601,6 +6629,10 @@ class MainWindow(QMainWindow):
             return {"closed": self.close_run_log()}
         if action == "copy_link":
             return {"copied": self.copy_job_link(request.get("jobId"))}
+        if action == "copy_id":
+            return {"copied": self.copy_job_id(request.get("jobId"))}
+        if action == "copy_path":
+            return {"copied": self.copy_job_path(request.get("jobId"))}
         if action == "copy_title":
             return {"copied": self.copy_job_title(request.get("jobId"))}
         if action == "show_job_menu":

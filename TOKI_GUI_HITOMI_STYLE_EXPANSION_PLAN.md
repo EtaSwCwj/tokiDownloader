@@ -189,7 +189,7 @@ GUI가 실행 중이면 CLI 변경도 IPC를 통해 즉시 반영한다. `settin
 - [x] 로컬 압축 파일 검사 작업
 - [x] 제목·작가·그룹·ID 통합 검색
 - [x] 작품 중복 및 이미지 해시 중복 검사
-- [ ] 작품 ID/원본 URL/저장 폴더 경로 복사
+- [x] 작품 ID/원본 URL/저장 폴더 경로 복사
 - [ ] 메뉴 단축키와 비활성 조건
 
 CLI 예시:
@@ -242,6 +242,12 @@ ImageHash `phash`로 진단한다. SHA-256은 제한된 I/O 스레드 풀, pHash
 프로세스 풀을 사용하며 CLI·GUI·IPC가 같은 서비스를 호출한다. 실제 작품 169장을 스레드
 8개로 검사해 중복 0건·실패 0건을 확인했고 화면은
 `logs/duplicate-images-sha256-gui.png`로 보존했다. Python 140건과 Node 7건을 통과했다.
+
+작품 우클릭 메뉴에서 작업 ID·원본 URL·저장 폴더 경로·작품명을 각각 복사할 수 있고
+`copy-id/link/path/title --job ID`도 같은 값을 제공한다. GUI가 꺼진 경우 Windows 네이티브
+클립보드를 직접 사용해 별도 셸 창을 띄우지 않는다. 실제 작품의 세 값을 CLI와
+`Get-Clipboard`로 대조했고 메뉴 화면은 `logs/work-copy-context-menu.png`로 확인했다.
+Python 143건과 Node 7건을 통과했다.
 
 ### 단계 C. 보기·빠른 실행·트레이
 

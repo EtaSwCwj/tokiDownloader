@@ -14,6 +14,44 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_work_copy_commands_route_to_gui_ipc(self) -> None:
+        expected = {
+            "copy-id": "copy_id",
+            "copy-link": "copy_link",
+            "copy-path": "copy_path",
+            "copy-title": "copy_title",
+        }
+        for command, action in expected.items():
+            with self.subTest(command=command):
+                args = build_parser().parse_args([command, "--job", "j1"])
+                with (
+                    patch("toki_app.gui_is_running", return_value=True),
+                    patch(
+                        "toki_app.control_request", return_value={"copied": "value"}
+                    ) as request,
+                    redirect_stdout(StringIO()),
+                ):
+                    self.assertEqual(run_cli(args), 0)
+                request.assert_called_once_with({"action": action, "jobId": "j1"})
+
+    def test_work_copy_commands_work_without_running_gui(self) -> None:
+        job = toki_app.DownloadJob(
+            job_id="j1",
+            url="https://example.test/work/1",
+            output_dir="D:/Manga",
+            title="작품",
+            output_path="D:/Manga/작품",
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.load_job_by_id", return_value=job),
+            patch("toki_app.copy_text_to_clipboard") as clipboard,
+            redirect_stdout(StringIO()),
+        ):
+            args = build_parser().parse_args(["copy-path", "--job", "j1"])
+            self.assertEqual(run_cli(args), 0)
+        clipboard.assert_called_once_with("D:/Manga/작품")
+
     def test_duplicate_images_cli_supports_hash_gui_and_close(self) -> None:
         report = {
             "ok": True,
