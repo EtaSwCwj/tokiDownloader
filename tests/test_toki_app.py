@@ -2521,6 +2521,34 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertEqual((ranged.start, ranged.last), (12, 24))
 
+    def test_job_menu_cli_can_show_or_inspect_grouped_menu(self) -> None:
+        show = build_parser().parse_args(["job-menu", "--job", "work-1"])
+        inspect = build_parser().parse_args(
+            ["job-menu", "--job", "work-1", "--inspect"]
+        )
+        with (
+            patch(
+                "toki_app.control_request",
+                side_effect=[
+                    {"shown": True},
+                    {
+                        "jobId": "work-1",
+                        "rootItems": ["작품 정보 및 실행 이력", "복사"],
+                    },
+                ],
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show), 0)
+            self.assertEqual(run_cli(inspect), 0)
+        self.assertEqual(
+            [call.args[0] for call in request.call_args_list],
+            [
+                {"action": "show_job_menu", "jobId": "work-1"},
+                {"action": "inspect_job_menu", "jobId": "work-1"},
+            ],
+        )
+
     def test_rescan_cli_sends_exact_job_mode_and_range(self) -> None:
         args = build_parser().parse_args(
             [

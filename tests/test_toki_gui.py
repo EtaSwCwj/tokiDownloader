@@ -6,7 +6,12 @@ import sys
 import unittest
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt6.QtWidgets import QApplication, QMainWindow
 
 import toki_gui
 from toki_core import (
@@ -148,6 +153,26 @@ class _LocalApiServerStub:
         return self.secret
 
 
+class _JobContextMenuHarness(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active_contexts = {}
+        self.pending_jobs = deque()
+        self.file_verify_processes = {}
+        self.image_preview_processes = {}
+        self.duplicate_image_tasks = {}
+        self.image_conversion_processes = {}
+        self.pdf_generation_processes = {}
+        self.start_spin = _ValueStub(0)
+        self.last_spin = _ValueStub(0)
+
+    def show_group_manager(self) -> None:
+        pass
+
+    def show_recovery_dialog(self) -> None:
+        pass
+
+
 class _ProcessStub:
     instances = []
 
@@ -203,6 +228,36 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.qt_app = QApplication.instance() or QApplication(["toki-gui-tests"])
+
+    def _job_context_menu_snapshot(
+        self,
+        job: DownloadJob,
+        *,
+        active_context=None,
+        current_collection=None,
+        groups=None,
+    ) -> dict:
+        harness = _JobContextMenuHarness()
+        if active_context is not None:
+            harness.active_contexts[job.job_id] = active_context
+        with (
+            patch(
+                "toki_gui.work_collection_for_job",
+                return_value=current_collection,
+            ),
+            patch("toki_gui.list_work_collections", return_value=list(groups or [])),
+        ):
+            menu = MainWindow._build_job_context_menu(harness, job)
+            snapshot = MainWindow._menu_snapshot(menu)
+        menu.deleteLater()
+        harness.deleteLater()
+        self.qt_app.processEvents()
+        return snapshot
+
     def test_application_identity_ipc_reports_live_taskbar_configuration(self) -> None:
         expected = {
             "ok": True,
@@ -450,6 +505,143 @@ class WorkSchedulerTests(unittest.TestCase):
             calls,
             [("id", "j1"), ("link", "j1"), ("path", "j1"), ("title", "j1")],
         )
+
+    def test_job_context_menu_ipc_routes_show_and_inspect_requests(self) -> None:
+        calls = []
+        harness = type("JobMenuHarness", (), {})()
+        harness.show_job_context_menu_for_job = (
+            lambda job_id: calls.append(("show", job_id)) or True
+        )
+        harness.job_context_menu_snapshot = (
+            lambda job_id: calls.append(("inspect", job_id))
+            or {
+                "jobId": job_id,
+                "rootItems": ["작품 정보 및 실행 이력", "작품 재검사", "복사"],
+            }
+        )
+
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_job_menu", "jobId": "j1"}
+        )
+        inspected = MainWindow._handle_control_action(
+            harness, {"action": "inspect_job_menu", "jobId": "j1"}
+        )
+
+        self.assertEqual(shown, {"shown": True})
+        self.assertEqual(inspected["jobId"], "j1")
+        self.assertEqual(inspected["rootItems"][1], "작품 재검사")
+        self.assertEqual(calls, [("show", "j1"), ("inspect", "j1")])
+
+    def test_job_context_menu_snapshot_recurses_into_checked_organize_leaves(
+        self,
+    ) -> None:
+        job = DownloadJob(
+            job_id="organized-work",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\organized-work",
+            state="완료",
+            tag_color="blue",
+        )
+        snapshot = self._job_context_menu_snapshot(
+            job,
+            current_collection={"groupId": "favorites", "name": "즐겨찾기"},
+            groups=[{"groupId": "favorites", "name": "즐겨찾기"}],
+        )
+
+        self.assertIn("organize.collection.none", snapshot["actionIds"])
+        self.assertIn("organize.collection.favorites", snapshot["actionIds"])
+        self.assertIn("organize.tag.blue", snapshot["actionIds"])
+        self.assertEqual(
+            snapshot["submenus"]["작품 정리 > 정리 그룹"],
+            ["미분류", "즐겨찾기", "그룹 관리..."],
+        )
+        self.assertIn("파랑", snapshot["submenus"]["작품 정리 > 색상 태그"])
+        self.assertFalse(snapshot["checked"]["organize.collection.none"])
+        self.assertTrue(snapshot["checked"]["organize.collection.favorites"])
+        self.assertTrue(snapshot["checked"]["organize.tag.blue"])
+        self.assertFalse(snapshot["checked"]["organize.tag.none"])
+
+    def test_job_context_menu_retry_wait_has_stop_without_pause(self) -> None:
+        job = DownloadJob(
+            job_id="retry-wait",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            state="재시도 대기",
+        )
+        snapshot = self._job_context_menu_snapshot(
+            job,
+            active_context=SimpleNamespace(paused=False, process=None),
+        )
+
+        self.assertEqual(snapshot["submenus"]["작업 제어"], ["현재 작업 중지"])
+        self.assertIn("job.stop", snapshot["actionIds"])
+        self.assertNotIn("job.pause", snapshot["actionIds"])
+        self.assertNotIn("job.resume", snapshot["actionIds"])
+
+    def test_job_context_menu_stale_active_record_offers_only_recovery(self) -> None:
+        job = DownloadJob(
+            job_id="stale-running",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            state="실행 중",
+        )
+        snapshot = self._job_context_menu_snapshot(job)
+
+        self.assertIn("recovery.inspect", snapshot["actionIds"])
+        self.assertNotIn("section.rescan", snapshot["actionIds"])
+        self.assertNotIn("job.rescan_new", snapshot["actionIds"])
+        self.assertNotIn("job.rescan_full", snapshot["actionIds"])
+        self.assertFalse(snapshot["enabled"]["record.remove"])
+
+    def test_job_context_menu_branches_for_idle_manga_and_youtube(self) -> None:
+        manga = DownloadJob(
+            job_id="idle-manga",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\Manga",
+            output_path=r"C:\Manga\idle-manga",
+            state="완료",
+        )
+        youtube = DownloadJob(
+            job_id="idle-youtube",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            output_dir=r"C:\Videos",
+            output_path=r"C:\Videos",
+            provider="youtube",
+            state="완료",
+        )
+
+        manga_snapshot = self._job_context_menu_snapshot(manga)
+        youtube_snapshot = self._job_context_menu_snapshot(youtube)
+
+        self.assertIn("section.rescan", manga_snapshot["actionIds"])
+        self.assertIn("section.files", manga_snapshot["actionIds"])
+        self.assertIn("section.data", manga_snapshot["actionIds"])
+        self.assertNotIn("job.retry", manga_snapshot["actionIds"])
+        self.assertIn("job.retry", youtube_snapshot["actionIds"])
+        self.assertNotIn("section.rescan", youtube_snapshot["actionIds"])
+        self.assertNotIn("section.files", youtube_snapshot["actionIds"])
+        self.assertNotIn("section.data", youtube_snapshot["actionIds"])
+
+    def test_open_output_folder_uses_job_output_dir_before_global_default(self) -> None:
+        job = DownloadJob(
+            job_id="old-work",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir=r"C:\OldLibrary",
+            output_path="",
+            state="오류",
+        )
+        harness = SimpleNamespace(
+            selected_job=lambda _job_id: job,
+            output_edit=SimpleNamespace(text=lambda: r"C:\CurrentLibrary"),
+            log=lambda *_args, **_kwargs: None,
+        )
+
+        with patch("toki_gui.open_in_explorer") as open_folder:
+            target = MainWindow.open_output_folder(harness, job.job_id)
+
+        self.assertEqual(target, r"C:\OldLibrary")
+        open_folder.assert_called_once_with(r"C:\OldLibrary")
 
     def test_duplicate_images_ipc_starts_algorithm_and_closes_report(self) -> None:
         calls = []
@@ -1560,7 +1752,7 @@ class WorkSchedulerTests(unittest.TestCase):
         else:
             self.assertEqual(options, {})
 
-    def test_apply_settings_updates_all_live_controls_without_signal_writes(self) -> None:
+    def test_apply_settings_updates_config_backed_download_controls(self) -> None:
         result = {
             "outputDir": r"C:\Manga",
             "showBrowser": True,
@@ -1583,11 +1775,10 @@ class WorkSchedulerTests(unittest.TestCase):
         harness = type("SettingsHarness", (), {})()
         harness.config = {}
         harness.output_edit = _SettingWidgetStub()
-        harness.show_browser_check = _SettingWidgetStub()
-        harness.work_concurrency_spin = _SettingWidgetStub()
-        harness.image_concurrency_spin = _SettingWidgetStub()
-        harness.retry_count_spin = _SettingWidgetStub()
-        harness.retry_backoff_spin = _SettingWidgetStub()
+        harness.download_settings_summary = _SettingWidgetStub()
+        harness._update_download_settings_summary = (
+            lambda: MainWindow._update_download_settings_summary(harness)
+        )
         harness.log_box = _SettingWidgetStub()
         harness.task_list = type(
             "TaskListHarness",
@@ -1623,23 +1814,55 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         self.assertEqual(applied, result)
         self.assertEqual(harness.output_edit.value, r"C:\Manga")
-        self.assertEqual(harness.work_concurrency_spin.value, 3)
+        self.assertEqual(harness.config["workConcurrency"], 3)
+        self.assertEqual(harness.config["imageConcurrency"], 11)
+        self.assertEqual(
+            harness.download_settings_summary.value,
+            "작품 3 · 이미지 11 · 재시도 4회 · 브라우저 표시",
+        )
         self.assertFalse(harness.log_box.value)
         self.assertEqual(display_updates, [result])
         self.assertEqual(harness.persist_timer.interval, 7000)
         self.assertEqual(harness.persist_timer.started, 1)
         self.assertEqual(harness.persist_timer.stopped, 1)
-        self.assertTrue(
-            all(
-                not widget.blocked
-                for widget in (
-                    harness.work_concurrency_spin,
-                    harness.image_concurrency_spin,
-                    harness.retry_count_spin,
-                    harness.retry_backoff_spin,
-                )
-            )
+
+    def test_download_settings_setters_use_config_as_single_runtime_source(self) -> None:
+        harness = type("DownloadSettingsHarness", (), {})()
+        harness.config = default_config()
+        harness.download_settings_summary = _SettingWidgetStub()
+        harness.logs = []
+        harness.log = lambda message, *_args, **_kwargs: harness.logs.append(message)
+        harness._start_next_job = lambda: None
+        harness._update_download_settings_summary = (
+            lambda: MainWindow._update_download_settings_summary(harness)
         )
+
+        with (
+            patch("toki_gui.save_config") as save,
+            patch("toki_gui.QTimer.singleShot") as single_shot,
+        ):
+            work = MainWindow.set_work_concurrency(harness, 3)
+            image = MainWindow.set_image_concurrency(harness, 9)
+            retry = MainWindow.set_retry_policy(
+                harness, retry_count=4, backoff_seconds=7
+            )
+
+        self.assertEqual(work, {"workConcurrency": 3})
+        self.assertEqual(image, {"imageConcurrency": 9})
+        self.assertEqual(
+            retry,
+            {"retryCount": 4, "retryBackoffSeconds": 7},
+        )
+        self.assertEqual(harness.config["workConcurrency"], 3)
+        self.assertEqual(harness.config["imageConcurrency"], 9)
+        self.assertEqual(harness.config["retryCount"], 4)
+        self.assertEqual(harness.config["retryBackoffSeconds"], 7)
+        self.assertEqual(
+            harness.download_settings_summary.value,
+            "작품 3 · 이미지 9 · 재시도 4회 · 브라우저 숨김",
+        )
+        self.assertEqual(save.call_count, 3)
+        single_shot.assert_called_once()
 
     def test_shortcut_override_ipc_applies_validated_live_settings(self) -> None:
         calls = []
@@ -1947,7 +2170,7 @@ class WorkSchedulerTests(unittest.TestCase):
             for index in range(3)
         ]
         harness = type("SchedulerHarness", (), {})()
-        harness.work_concurrency_spin = _ValueStub(2)
+        harness.config = {"workConcurrency": 2}
         harness.pending_jobs = deque(jobs)
         harness.active_contexts = {}
         harness._update_job_card = lambda _job: None

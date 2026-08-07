@@ -2167,6 +2167,11 @@ def build_parser() -> argparse.ArgumentParser:
     copy_title.add_argument("--job", help="작업 ID")
     job_menu = subparsers.add_parser("job-menu", help="선택 작품의 우클릭 메뉴 표시")
     job_menu.add_argument("--job", help="작업 ID")
+    job_menu.add_argument(
+        "--inspect",
+        action="store_true",
+        help="메뉴를 띄우지 않고 현재 항목·순서·활성 상태를 JSON으로 확인",
+    )
 
     screenshot = subparsers.add_parser("screenshot", help="실행 중인 GUI 화면을 PNG로 저장")
     screenshot.add_argument("--output", help="PNG 저장 경로")
@@ -4978,7 +4983,16 @@ def run_cli(args: argparse.Namespace) -> int:
         print_json(copy_job_field(args.job, "title"))
         return 0
     if command == "job-menu":
-        print_json(control_request({"action": "show_job_menu", "jobId": args.job}))
+        print_json(
+            control_request(
+                {
+                    "action": (
+                        "inspect_job_menu" if args.inspect else "show_job_menu"
+                    ),
+                    "jobId": args.job,
+                }
+            )
+        )
         return 0
     if command == "screenshot":
         ensure_gui_running()

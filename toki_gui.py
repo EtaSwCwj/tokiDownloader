@@ -3597,10 +3597,6 @@ class SettingsDialog(QDialog):
         self.folder_template_preview.setObjectName("mutedLabel")
         self.folder_template_preview.setWordWrap(True)
         general_form.addRow(self.strings["settings.preview"], self.folder_template_preview)
-        self.show_browser_check = QCheckBox(
-            "사이트 진단이 필요할 때 자동화 브라우저 창 표시"
-        )
-        general_form.addRow("브라우저", self.show_browser_check)
         self.log_visible_check = QCheckBox("메인 화면에 실행 로그 패널 표시")
         general_form.addRow("로그 패널", self.log_visible_check)
         self.tray_enabled_check = QCheckBox("시스템 트레이 아이콘 사용")
@@ -3626,12 +3622,6 @@ class SettingsDialog(QDialog):
             "클립보드의 지원 작품 URL을 감지하고 추가 전 확인"
         )
         general_form.addRow("클립보드 감지", self.clipboard_monitor_check)
-        general_note = QLabel(
-            "브라우저 표시는 기본적으로 끄는 것을 권장합니다. 개인 Chrome 프로필은 사용하지 않습니다."
-        )
-        general_note.setObjectName("mutedLabel")
-        general_note.setWordWrap(True)
-        general_form.addRow("", general_note)
         self.tabs.addTab(general_page, self.strings["settings.tab.general"])
 
         network_page = QWidget()
@@ -3650,6 +3640,10 @@ class SettingsDialog(QDialog):
         self.retry_backoff_spin.setRange(1, 60)
         self.retry_backoff_spin.setSuffix("초")
         network_form.addRow("기본 재시도 대기", self.retry_backoff_spin)
+        self.show_browser_check = QCheckBox(
+            "사이트 진단이 필요할 때 자동화 브라우저 창 표시"
+        )
+        network_form.addRow("브라우저", self.show_browser_check)
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setPlaceholderText("사용 안 함 · 예: http://127.0.0.1:8080")
         network_form.addRow("프록시", self.proxy_edit)
@@ -3688,7 +3682,9 @@ class SettingsDialog(QDialog):
         public_ip_button.clicked.connect(owner.confirm_public_ip_check)
         network_form.addRow("외부 연결 확인", public_ip_button)
         network_note = QLabel(
-            "동시성 상한은 사이트와 PC 부하를 고려한 안전 범위입니다. 재시도 대기는 실패마다 지수 증가합니다."
+            "동시성 상한은 사이트와 PC 부하를 고려한 안전 범위입니다. 재시도 대기는 "
+            "실패마다 지수 증가합니다. 브라우저 표시는 기본적으로 끄는 것을 권장하며 "
+            "개인 Chrome 프로필은 사용하지 않습니다."
         )
         network_note.setObjectName("mutedLabel")
         network_note.setWordWrap(True)
@@ -5944,12 +5940,6 @@ class MainWindow(QMainWindow):
         self.last_spin.setSpecialValueText("마지막")
         self.last_spin.setToolTip("0이면 마지막 회차까지")
 
-        self.show_browser_check = QCheckBox("브라우저 표시")
-        self.show_browser_check.setChecked(bool(self.config.get("showBrowser", False)))
-        self.show_browser_check.setToolTip(
-            "기본은 백그라운드 실행입니다. 사이트 인증 문제를 확인할 때만 켜세요."
-        )
-
         self.scan_mode_combo = QComboBox()
         self.scan_mode_combo.addItem("신규 회차만", "new")
         self.scan_mode_combo.addItem("전체 재검사", "full")
@@ -5971,77 +5961,60 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("다운로드")
         self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(self.start_from_form)
-        self.stop_button = QPushButton("중지")
-        self.stop_button.clicked.connect(self.stop_active_job)
-        self.retry_button = QPushButton("전체 재검사")
-        self.retry_button.setToolTip(
-            "작품의 전체 회차를 다시 확인하고 기존 파일은 건너뜁니다."
-        )
-        self.retry_button.clicked.connect(self.retry_selected_job)
 
-        self.image_concurrency_spin = QSpinBox()
-        self.image_concurrency_spin.setRange(1, 16)
-        self.image_concurrency_spin.setValue(
-            normalize_image_concurrency(self.config.get("imageConcurrency"))
+        self.download_options_button = QPushButton("검사 옵션 ▸")
+        self.download_options_button.setCheckable(True)
+        self.download_options_button.setToolTip(
+            "이번 작업의 검사 방식과 지정 회차 범위를 표시합니다."
         )
-        self.image_concurrency_spin.setToolTip(
-            "한 회차 안에서 동시에 받을 이미지 수입니다. 권장값은 5입니다."
+        self.download_options_button.toggled.connect(self._toggle_download_options)
+        self.download_options_frame = QFrame(input_box)
+        options_layout = QHBoxLayout(self.download_options_frame)
+        options_layout.setContentsMargins(0, 2, 0, 0)
+        options_layout.addWidget(QLabel("검사 방식"))
+        options_layout.addWidget(self.scan_mode_combo, 1)
+        options_layout.addSpacing(8)
+        options_layout.addWidget(QLabel("회차 범위"))
+        options_layout.addWidget(self.start_spin)
+        options_layout.addWidget(QLabel("~"))
+        options_layout.addWidget(self.last_spin)
+        self.download_options_frame.setVisible(False)
+
+        self.quick_action_button = QPushButton("빠른 실행")
+        self.quick_action_menu = QMenu(self.quick_action_button)
+        self.quick_action_button.setMenu(self.quick_action_menu)
+        self.quick_action_buttons: dict[str, QAction] = {}
+        self._rebuild_quick_action_bar(self.config.get("quickActions") or [])
+
+        self.download_settings_summary = QLabel()
+        self.download_settings_summary.setObjectName("mutedLabel")
+        self.download_settings_summary.setToolTip(
+            "작품·이미지 동시성, 자동 재시도와 브라우저 표시 여부입니다."
         )
-        self.work_concurrency_spin = QSpinBox()
-        self.work_concurrency_spin.setRange(1, 4)
-        self.work_concurrency_spin.setValue(
-            normalize_work_concurrency(self.config.get("workConcurrency"))
+        self.download_settings_summary.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        self.work_concurrency_spin.setToolTip(
-            "동시에 실행할 작품 수입니다. 기본값은 1, 안전 상한은 4입니다."
+        self.download_settings_button = QPushButton("다운로드 설정...")
+        self.download_settings_button.setToolTip(
+            "설정 창의 네트워크 탭에서 병렬 수와 재시도 정책을 변경합니다."
         )
-        self.work_concurrency_spin.valueChanged.connect(self._work_concurrency_changed)
-        self.retry_count_spin = QSpinBox()
-        self.retry_count_spin.setRange(0, 5)
-        self.retry_count_spin.setValue(
-            normalize_retry_count(self.config.get("retryCount"))
+        self.download_settings_button.clicked.connect(
+            lambda: self.show_settings_dialog("network")
         )
-        self.retry_count_spin.setToolTip("0이면 자동 재시도하지 않습니다.")
-        self.retry_backoff_spin = QSpinBox()
-        self.retry_backoff_spin.setRange(1, 60)
-        self.retry_backoff_spin.setSuffix("초")
-        self.retry_backoff_spin.setValue(
-            normalize_retry_backoff(self.config.get("retryBackoffSeconds"))
-        )
-        self.retry_backoff_spin.setToolTip(
-            "재시도 대기는 이 값에서 시작해 2배씩 늘어납니다."
-        )
-        self.retry_count_spin.valueChanged.connect(self._retry_policy_changed)
-        self.retry_backoff_spin.valueChanged.connect(self._retry_policy_changed)
+        self._update_download_settings_summary()
 
         input_layout.addWidget(QLabel("URL"), 0, 0)
         input_layout.addWidget(self.url_edit, 0, 1, 1, 5)
         input_layout.addWidget(self.start_button, 0, 6)
-        input_layout.addWidget(QLabel("회차"), 1, 0)
-        input_layout.addWidget(self.start_spin, 1, 1)
-        input_layout.addWidget(QLabel("~"), 1, 2)
-        input_layout.addWidget(self.last_spin, 1, 3)
-        input_layout.addWidget(self.stop_button, 1, 5)
-        input_layout.addWidget(self.retry_button, 1, 6)
-        input_layout.addWidget(QLabel("저장"), 2, 0)
-        input_layout.addWidget(self.output_edit, 2, 1, 1, 3)
-        input_layout.addWidget(self.choose_output_button, 2, 4)
-        input_layout.addWidget(self.open_output_button, 2, 5, 1, 2)
-        input_layout.addWidget(QLabel("이미지 병렬"), 3, 0)
-        input_layout.addWidget(self.image_concurrency_spin, 3, 1)
-        input_layout.addWidget(QLabel("1~16 (권장 5)"), 3, 2, 1, 2)
-        input_layout.addWidget(QLabel("작품 병렬"), 3, 4)
-        input_layout.addWidget(self.work_concurrency_spin, 3, 5)
-        input_layout.addWidget(QLabel("1~4"), 3, 6)
-        input_layout.addWidget(QLabel("검사 방식"), 4, 0)
-        input_layout.addWidget(self.scan_mode_combo, 4, 1, 1, 3)
-        input_layout.addWidget(self.show_browser_check, 4, 4, 1, 3)
-        input_layout.addWidget(QLabel("자동 재시도"), 5, 0)
-        input_layout.addWidget(self.retry_count_spin, 5, 1)
-        input_layout.addWidget(QLabel("회 (0~5)"), 5, 2)
-        input_layout.addWidget(QLabel("기본 대기"), 5, 4)
-        input_layout.addWidget(self.retry_backoff_spin, 5, 5)
-        input_layout.addWidget(QLabel("지수 백오프"), 5, 6)
+        input_layout.addWidget(QLabel("저장"), 1, 0)
+        input_layout.addWidget(self.output_edit, 1, 1, 1, 3)
+        input_layout.addWidget(self.choose_output_button, 1, 4)
+        input_layout.addWidget(self.open_output_button, 1, 5, 1, 2)
+        input_layout.addWidget(self.download_options_button, 2, 0, 1, 2)
+        input_layout.addWidget(self.quick_action_button, 2, 2)
+        input_layout.addWidget(self.download_settings_summary, 2, 3, 1, 3)
+        input_layout.addWidget(self.download_settings_button, 2, 6)
+        input_layout.addWidget(self.download_options_frame, 3, 0, 1, 7)
         input_layout.setColumnStretch(1, 1)
         self._scan_mode_changed()
 
@@ -6192,15 +6165,7 @@ class MainWindow(QMainWindow):
         log_layout.addLayout(log_actions)
         log_layout.addWidget(self.log_edit)
 
-        self.quick_action_frame = QFrame()
-        self.quick_action_frame.setObjectName("inputBox")
-        self.quick_action_layout = QHBoxLayout(self.quick_action_frame)
-        self.quick_action_layout.setContentsMargins(8, 5, 8, 5)
-        self.quick_action_buttons: dict[str, QPushButton] = {}
-        self._rebuild_quick_action_bar(self.config.get("quickActions") or [])
-
         root.addWidget(input_box)
-        root.addWidget(self.quick_action_frame)
         root.addLayout(queue_header)
         root.addLayout(filter_bar)
         root.addWidget(self.list_stack, 1)
@@ -6327,6 +6292,25 @@ class MainWindow(QMainWindow):
         self.start_spin.setEnabled(is_range)
         self.last_spin.setEnabled(is_range)
 
+    def _toggle_download_options(self, expanded: bool) -> None:
+        self.download_options_frame.setVisible(bool(expanded))
+        self.download_options_button.setText(
+            "검사 옵션 ▾" if expanded else "검사 옵션 ▸"
+        )
+
+    def _update_download_settings_summary(self) -> str:
+        work_count = normalize_work_concurrency(self.config.get("workConcurrency"))
+        image_count = normalize_image_concurrency(self.config.get("imageConcurrency"))
+        retry_count = normalize_retry_count(self.config.get("retryCount"))
+        browser = "표시" if bool(self.config.get("showBrowser", False)) else "숨김"
+        text = (
+            f"작품 {work_count} · 이미지 {image_count} · "
+            f"재시도 {retry_count}회 · 브라우저 {browser}"
+        )
+        if hasattr(self, "download_settings_summary"):
+            self.download_settings_summary.setText(text)
+        return text
+
     def start_from_form(self) -> None:
         try:
             scan_mode = str(self.scan_mode_combo.currentData() or "new")
@@ -6363,7 +6347,7 @@ class MainWindow(QMainWindow):
                 self.start_spin.value() or None if scan_mode == "range" else None,
                 self.last_spin.value() or None if scan_mode == "range" else None,
                 self.output_edit.text(),
-                self.show_browser_check.isChecked(),
+                bool(self.config.get("showBrowser", False)),
                 scan_mode=scan_mode,
                 external_request_confirmed=external_request_confirmed,
             )
@@ -6448,17 +6432,17 @@ class MainWindow(QMainWindow):
             image_concurrency=normalize_image_concurrency(
                 image_concurrency
                 if image_concurrency is not None
-                else self.image_concurrency_spin.value()
+                else self.config.get("imageConcurrency")
             ),
             retry_limit=normalize_retry_count(
                 retry_count
                 if retry_count is not None
-                else self.retry_count_spin.value()
+                else self.config.get("retryCount")
             ),
             retry_backoff_seconds=normalize_retry_backoff(
                 retry_backoff
                 if retry_backoff is not None
-                else self.retry_backoff_spin.value()
+                else self.config.get("retryBackoffSeconds")
             ),
             simulation=bool(simulation),
             external_request_confirmed=bool(external_request_confirmed),
@@ -7230,7 +7214,7 @@ class MainWindow(QMainWindow):
         return self.local_api_status_snapshot()
 
     def _start_next_job(self) -> None:
-        concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
+        concurrency = normalize_work_concurrency(self.config.get("workConcurrency"))
         while self.pending_jobs and available_work_slots(
             len(self.active_contexts), concurrency
         ):
@@ -7839,12 +7823,14 @@ class MainWindow(QMainWindow):
         parameters = rescan_job_parameters(source, mode, start, last)
         return self.enqueue_download(**parameters)
 
-    def retry_selected_job(self) -> None:
+    def retry_selected_job(
+        self, _checked: bool = False, *, job_id: str | None = None
+    ) -> None:
         try:
-            self.retry_job()
+            self.retry_job(job_id)
         except (ValueError, OSError, RuntimeError) as error:
             QMessageBox.warning(self, "작업을 재시도할 수 없음", str(error))
-            self.log(str(error), "ERROR")
+            self.log(str(error), "ERROR", job_id)
 
     def rescan_selected_job(self, mode: str, job_id: str | None = None) -> None:
         try:
@@ -8662,23 +8648,7 @@ class MainWindow(QMainWindow):
         self.strings = load_ui_strings(result.get("uiLanguage"))
         MainWindow._apply_language_strings(self)
         self.output_edit.setText(str(result["outputDir"]))
-        self.show_browser_check.setChecked(bool(result["showBrowser"]))
-        widgets = (
-            self.work_concurrency_spin,
-            self.image_concurrency_spin,
-            self.retry_count_spin,
-            self.retry_backoff_spin,
-        )
-        for widget in widgets:
-            widget.blockSignals(True)
-        try:
-            self.work_concurrency_spin.setValue(int(result["workConcurrency"]))
-            self.image_concurrency_spin.setValue(int(result["imageConcurrency"]))
-            self.retry_count_spin.setValue(int(result["retryCount"]))
-            self.retry_backoff_spin.setValue(int(result["retryBackoffSeconds"]))
-        finally:
-            for widget in widgets:
-                widget.blockSignals(False)
+        self._update_download_settings_summary()
         self.log_box.setVisible(bool(result["logVisible"]))
         self.theme_mode = str(result["theme"])
         self.resolved_theme = self._resolve_theme(self.theme_mode)
@@ -8873,17 +8843,10 @@ class MainWindow(QMainWindow):
         )
 
     def _rebuild_quick_action_bar(self, action_ids: list[str]) -> None:
-        if not hasattr(self, "quick_action_layout"):
+        if not hasattr(self, "quick_action_menu"):
             return
-        while self.quick_action_layout.count():
-            item = self.quick_action_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
+        self.quick_action_menu.clear()
         self.quick_action_buttons = {}
-        label = QLabel("빠른 실행")
-        label.setObjectName("mutedLabel")
-        self.quick_action_layout.addWidget(label)
         action_map = {
             "download.start": self.start_action,
             "job.stop": self.stop_action,
@@ -8899,12 +8862,13 @@ class MainWindow(QMainWindow):
             action = action_map.get(action_id)
             if not action:
                 continue
-            button = QPushButton(labels.get(action_id, action.text()))
-            button.setEnabled(action.isEnabled())
-            button.clicked.connect(action.trigger)
-            self.quick_action_layout.addWidget(button)
-            self.quick_action_buttons[action_id] = button
-        self.quick_action_layout.addStretch(1)
+            menu_action = self.quick_action_menu.addAction(
+                labels.get(action_id, action.text())
+            )
+            menu_action.setEnabled(action.isEnabled())
+            menu_action.triggered.connect(action.trigger)
+            self.quick_action_buttons[action_id] = menu_action
+        self.quick_action_button.setEnabled(bool(self.quick_action_buttons))
 
     def _configure_tray(self) -> None:
         enabled = bool(self.config.get("trayEnabled", False))
@@ -9120,25 +9084,19 @@ class MainWindow(QMainWindow):
 
     def set_image_concurrency(self, value: int) -> dict[str, Any]:
         concurrency = normalize_image_concurrency(value)
-        self.image_concurrency_spin.setValue(concurrency)
         self.config["imageConcurrency"] = concurrency
         save_config(self.config)
+        self._update_download_settings_summary()
         self.log(f"이미지 동시 다운로드 수 변경: {concurrency}")
         return {"imageConcurrency": concurrency}
 
-    def _work_concurrency_changed(self, value: int) -> None:
+    def set_work_concurrency(self, value: int) -> dict[str, Any]:
         concurrency = normalize_work_concurrency(value)
         self.config["workConcurrency"] = concurrency
         save_config(self.config)
+        self._update_download_settings_summary()
         self.log(f"작품 동시 다운로드 수 변경: {concurrency}")
         QTimer.singleShot(0, self._start_next_job)
-
-    def set_work_concurrency(self, value: int) -> dict[str, Any]:
-        concurrency = normalize_work_concurrency(value)
-        if self.work_concurrency_spin.value() != concurrency:
-            self.work_concurrency_spin.setValue(concurrency)
-        else:
-            self._work_concurrency_changed(concurrency)
         return {"workConcurrency": concurrency}
 
     def set_concurrency(
@@ -9154,17 +9112,13 @@ class MainWindow(QMainWindow):
         if images is not None:
             self.set_image_concurrency(images)
         return {
-            "workConcurrency": self.work_concurrency_spin.value(),
-            "imageConcurrency": self.image_concurrency_spin.value(),
+            "workConcurrency": normalize_work_concurrency(
+                self.config.get("workConcurrency")
+            ),
+            "imageConcurrency": normalize_image_concurrency(
+                self.config.get("imageConcurrency")
+            ),
         }
-
-    def _retry_policy_changed(self, _value: int | None = None) -> None:
-        retry_count = normalize_retry_count(self.retry_count_spin.value())
-        backoff = normalize_retry_backoff(self.retry_backoff_spin.value())
-        self.config["retryCount"] = retry_count
-        self.config["retryBackoffSeconds"] = backoff
-        save_config(self.config)
-        self.log(f"자동 재시도 정책 변경: {retry_count}회, 기본 {backoff}초")
 
     def set_retry_policy(
         self,
@@ -9174,22 +9128,24 @@ class MainWindow(QMainWindow):
     ) -> dict[str, Any]:
         if retry_count is None and backoff_seconds is None:
             raise ValueError("변경할 재시도 횟수 또는 대기 시간을 지정해주세요.")
-        self.retry_count_spin.blockSignals(True)
-        self.retry_backoff_spin.blockSignals(True)
-        try:
-            if retry_count is not None:
-                self.retry_count_spin.setValue(normalize_retry_count(retry_count))
-            if backoff_seconds is not None:
-                self.retry_backoff_spin.setValue(
-                    normalize_retry_backoff(backoff_seconds)
-                )
-        finally:
-            self.retry_count_spin.blockSignals(False)
-            self.retry_backoff_spin.blockSignals(False)
-        self._retry_policy_changed()
+        selected_count = normalize_retry_count(
+            self.config.get("retryCount") if retry_count is None else retry_count
+        )
+        selected_backoff = normalize_retry_backoff(
+            self.config.get("retryBackoffSeconds")
+            if backoff_seconds is None
+            else backoff_seconds
+        )
+        self.config["retryCount"] = selected_count
+        self.config["retryBackoffSeconds"] = selected_backoff
+        save_config(self.config)
+        self._update_download_settings_summary()
+        self.log(
+            f"자동 재시도 정책 변경: {selected_count}회, 기본 {selected_backoff}초"
+        )
         return {
-            "retryCount": self.retry_count_spin.value(),
-            "retryBackoffSeconds": self.retry_backoff_spin.value(),
+            "retryCount": selected_count,
+            "retryBackoffSeconds": selected_backoff,
         }
 
     def confirm_public_ip_check(self) -> bool:
@@ -9228,7 +9184,11 @@ class MainWindow(QMainWindow):
 
     def open_output_folder(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
-        target = job.output_path if job and job.output_path else self.output_edit.text()
+        target = (
+            (job.output_path or job.output_dir)
+            if job and (job.output_path or job.output_dir)
+            else self.output_edit.text()
+        )
         open_in_explorer(target)
         self.log(f"폴더 열기: {target}")
         return target
@@ -10231,92 +10191,284 @@ class MainWindow(QMainWindow):
         return True
 
     def _popup_job_context_menu(self, job: DownloadJob, global_position: QPoint) -> None:
+        menu = self._build_job_context_menu(job)
+
+        def dispose_menu() -> None:
+            if self.active_context_menu is menu:
+                self.active_context_menu = None
+            menu.deleteLater()
+
+        menu.aboutToHide.connect(dispose_menu)
+        self.active_context_menu = menu
+        menu.popup(global_position)
+
+    def _build_job_context_menu(self, job: DownloadJob) -> QMenu:
         menu = QMenu(self)
-        menu.addAction("작품 정보 및 실행 이력", lambda: self.show_job_details(job.job_id))
-        menu.addAction("다운로드 폴더 열기", lambda: self.open_output_folder(job.job_id))
-        move_action = menu.addAction(
-            "작품 폴더 이동...",
-            lambda: self.confirm_move_job_folder(job.job_id),
+        menu.setObjectName("jobContextMenu")
+
+        def mark(action: QAction, action_id: str) -> QAction:
+            action.setData(action_id)
+            return action
+
+        mark(
+            menu.addAction(
+                "작품 정보 및 실행 이력",
+                lambda: self.show_job_details(job.job_id),
+            ),
+            "details.open",
         )
-        move_action.setEnabled(
-            job.state not in ACTIVE_JOB_STATES and bool(job.output_path)
+        folder_action = mark(
+            menu.addAction(
+                "다운로드 폴더 열기",
+                lambda: self.open_output_folder(job.job_id),
+            ),
+            "folder.open",
         )
-        menu.addAction("원본 페이지 열기", lambda: self.open_job_source(job.job_id))
-        menu.addAction("대표 이미지 원본 열기", lambda: self.open_job_cover(job.job_id))
-        menu.addAction(
-            "메타데이터 새로고침",
-            lambda: self.refresh_selected_metadata(job.job_id),
+        folder_action.setEnabled(bool(job.output_path or job.output_dir))
+        source_action = mark(
+            menu.addAction(
+                "원본 페이지 열기",
+                lambda: self.open_job_source(job.job_id),
+            ),
+            "source.open",
         )
-        rebuild_action = menu.addAction(
-            "로컬 메타데이터 재생성...",
-            lambda: self.confirm_rebuild_job_metadata(job.job_id),
-        )
-        rebuild_action.setEnabled(
-            job.state not in ACTIVE_JOB_STATES and bool(job.output_path)
-        )
-        verify_action = menu.addAction(
-            "보유 회차·파일 검사",
-            lambda: self.start_file_verification(job.job_id),
-        )
-        verify_action.setEnabled(
-            bool(job.output_path) and job.job_id not in self.file_verify_processes
-        )
-        preview_action = menu.addAction(
-            "회차 이미지 미리보기",
-            lambda: self.start_image_preview(job.job_id),
-        )
-        preview_action.setEnabled(
-            bool(job.output_path) and job.job_id not in self.image_preview_processes
-        )
-        convert_action = menu.addAction(
-            "이미지 형식 변환...",
-            lambda: self.start_image_conversion(job.job_id),
-        )
-        convert_action.setEnabled(
-            job.state not in ACTIVE_JOB_STATES
-            and bool(job.output_path)
-            and job.job_id not in self.image_conversion_processes
-        )
-        pdf_action = menu.addAction(
-            "회차별 PDF 생성...",
-            lambda: self.start_pdf_generation(job.job_id),
-        )
-        pdf_action.setEnabled(
-            job.state not in ACTIVE_JOB_STATES
-            and bool(job.output_path)
-            and job.job_id not in self.pdf_generation_processes
-        )
-        duplicate_images_menu = menu.addMenu("중복 이미지 검사")
-        duplicate_exact_action = duplicate_images_menu.addAction("정확히 같은 파일 (SHA-256)")
-        duplicate_exact_action.triggered.connect(
-            lambda: self.start_duplicate_images(job.job_id, "sha256")
-        )
-        duplicate_phash_action = duplicate_images_menu.addAction("시각적으로 유사 (pHash)")
-        duplicate_phash_action.triggered.connect(
-            lambda: self.start_duplicate_images(job.job_id, "phash")
-        )
-        duplicate_images_menu.setEnabled(
-            bool(job.output_path) and job.job_id not in self.duplicate_image_tasks
-        )
+        source_action.setEnabled(bool(job.url))
         menu.addSeparator()
-        menu.addAction("작품 ID 복사", lambda: self.copy_job_id(job.job_id))
-        source_copy_action = menu.addAction(
-            "원본 URL 복사", lambda: self.copy_job_link(job.job_id)
+
+        active_context = self.active_contexts.get(job.job_id)
+        is_pending = any(item.job_id == job.job_id for item in self.pending_jobs)
+        stale_active_record = bool(
+            not active_context and not is_pending and job.state in ACTIVE_JOB_STATES
         )
-        source_copy_action.setEnabled(bool(job.url))
-        path_copy_action = menu.addAction(
-            "저장 폴더 경로 복사", lambda: self.copy_job_path(job.job_id)
+        is_busy = bool(active_context or is_pending or stale_active_record)
+        is_youtube = job.provider == "youtube"
+
+        if active_context or is_pending:
+            control_menu = menu.addMenu("작업 제어")
+            mark(control_menu.menuAction(), "section.controls")
+            if active_context:
+                if (
+                    active_context.paused
+                    and active_context.process
+                    and job.state == "일시정지"
+                ):
+                    mark(
+                        control_menu.addAction(
+                            "일시정지 작업 계속",
+                            lambda: self.resume_selected_active_job(job.job_id),
+                        ),
+                        "job.resume",
+                    )
+                elif (
+                    not active_context.paused
+                    and active_context.process
+                    and job.state == "실행 중"
+                ):
+                    mark(
+                        control_menu.addAction(
+                            "현재 작업 일시정지",
+                            lambda: self.pause_selected_active_job(job.job_id),
+                        ),
+                        "job.pause",
+                    )
+                mark(
+                    control_menu.addAction(
+                        "현재 작업 중지",
+                        lambda: self.stop_active_job(job.job_id),
+                    ),
+                    "job.stop",
+                )
+            if is_pending:
+                if active_context:
+                    control_menu.addSeparator()
+                mark(
+                    control_menu.addAction(
+                        "대기 작업 취소",
+                        lambda: self.cancel_selected_queued_job(job.job_id),
+                    ),
+                    "queue.cancel",
+                )
+                if len(self.pending_jobs) > 1:
+                    control_menu.addSeparator()
+                    mark(
+                        control_menu.addAction(
+                            "대기열 맨 앞으로",
+                            lambda: self.move_queued_job(job.job_id, position="first"),
+                        ),
+                        "queue.first",
+                    )
+                    mark(
+                        control_menu.addAction(
+                            "대기열 맨 뒤로",
+                            lambda: self.move_queued_job(job.job_id, position="last"),
+                        ),
+                        "queue.last",
+                    )
+        elif stale_active_record:
+            mark(
+                menu.addAction(
+                    "불완전 작업 복구...",
+                    self.show_recovery_dialog,
+                ),
+                "recovery.inspect",
+            )
+        elif is_youtube:
+            mark(
+                menu.addAction(
+                    "작업 다시 시도",
+                    lambda: self.retry_selected_job(job_id=job.job_id),
+                ),
+                "job.retry",
+            )
+        else:
+            rescan_menu = menu.addMenu("작품 재검사")
+            mark(rescan_menu.menuAction(), "section.rescan")
+            mark(
+                rescan_menu.addAction(
+                    "신규 회차만",
+                    lambda: self.rescan_selected_job("new", job.job_id),
+                ),
+                "job.rescan_new",
+            )
+            mark(
+                rescan_menu.addAction(
+                    "전체 회차",
+                    lambda: self.rescan_selected_job("full", job.job_id),
+                ),
+                "job.rescan_full",
+            )
+            range_action = mark(
+                rescan_menu.addAction(
+                    "현재 입력 범위",
+                    lambda: self.rescan_selected_job("range", job.job_id),
+                ),
+                "job.rescan_range",
+            )
+            range_action.setEnabled(
+                bool(self.start_spin.value() or self.last_spin.value())
+            )
+
+        if not is_youtube and not is_busy:
+            file_menu = menu.addMenu("파일 및 회차 도구")
+            mark(file_menu.menuAction(), "section.files")
+            move_action = mark(
+                file_menu.addAction(
+                    "작품 폴더 이동...",
+                    lambda: self.confirm_move_job_folder(job.job_id),
+                ),
+                "folder.move",
+            )
+            move_action.setEnabled(bool(job.output_path))
+            verify_action = mark(
+                file_menu.addAction(
+                    "보유 회차·파일 검사",
+                    lambda: self.start_file_verification(job.job_id),
+                ),
+                "files.verify",
+            )
+            verify_action.setEnabled(
+                bool(job.output_path) and job.job_id not in self.file_verify_processes
+            )
+            preview_action = mark(
+                file_menu.addAction(
+                    "회차 이미지 미리보기",
+                    lambda: self.start_image_preview(job.job_id),
+                ),
+                "images.preview",
+            )
+            preview_action.setEnabled(
+                bool(job.output_path) and job.job_id not in self.image_preview_processes
+            )
+            file_menu.addSeparator()
+            duplicate_exact_action = mark(
+                file_menu.addAction("정확히 같은 이미지 검사 (SHA-256)"),
+                "images.duplicate_sha256",
+            )
+            duplicate_exact_action.triggered.connect(
+                lambda: self.start_duplicate_images(job.job_id, "sha256")
+            )
+            duplicate_phash_action = mark(
+                file_menu.addAction("시각적으로 유사한 이미지 검사 (pHash)"),
+                "images.duplicate_phash",
+            )
+            duplicate_phash_action.triggered.connect(
+                lambda: self.start_duplicate_images(job.job_id, "phash")
+            )
+            duplicate_enabled = bool(
+                job.output_path and job.job_id not in self.duplicate_image_tasks
+            )
+            duplicate_exact_action.setEnabled(duplicate_enabled)
+            duplicate_phash_action.setEnabled(duplicate_enabled)
+            file_menu.addSeparator()
+            convert_action = mark(
+                file_menu.addAction(
+                    "이미지 형식 변환...",
+                    lambda: self.start_image_conversion(job.job_id),
+                ),
+                "images.convert",
+            )
+            convert_action.setEnabled(
+                bool(job.output_path)
+                and job.job_id not in self.image_conversion_processes
+            )
+            pdf_action = mark(
+                file_menu.addAction(
+                    "회차별 PDF 생성...",
+                    lambda: self.start_pdf_generation(job.job_id),
+                ),
+                "pdf.generate",
+            )
+            pdf_action.setEnabled(
+                bool(job.output_path) and job.job_id not in self.pdf_generation_processes
+            )
+
+            data_menu = menu.addMenu("작품 데이터")
+            mark(data_menu.menuAction(), "section.data")
+            cover_action = mark(
+                data_menu.addAction(
+                    "대표 이미지 원본 열기",
+                    lambda: self.open_job_cover(job.job_id),
+                ),
+                "cover.open",
+            )
+            cover_action.setEnabled(
+                bool(
+                    job.cover_path
+                    and Path(job.cover_path).expanduser().is_file()
+                )
+            )
+            mark(
+                data_menu.addAction(
+                    "메타데이터 새로고침",
+                    lambda: self.refresh_selected_metadata(job.job_id),
+                ),
+                "metadata.refresh",
+            )
+            rebuild_action = mark(
+                data_menu.addAction(
+                    "로컬 메타데이터 재생성...",
+                    lambda: self.confirm_rebuild_job_metadata(job.job_id),
+                ),
+                "metadata.rebuild",
+            )
+            rebuild_action.setEnabled(bool(job.output_path))
+
+        organize_menu = menu.addMenu("작품 정리")
+        mark(organize_menu.menuAction(), "section.organize")
+        mark(
+            organize_menu.addAction(
+                "고정 해제" if job.pinned else "목록 상단에 고정",
+                lambda: self.set_job_pin(job.job_id, not job.pinned),
+            ),
+            "organize.pin",
         )
-        path_copy_action.setEnabled(bool(job.output_path))
-        menu.addAction("작품명 복사", lambda: self.copy_job_title(job.job_id))
-        menu.addSeparator()
-        menu.addAction(
-            "고정 해제" if job.pinned else "목록 상단에 고정",
-            lambda: self.set_job_pin(job.job_id, not job.pinned),
-        )
-        collection_menu = menu.addMenu("작품 정리 그룹")
+        collection_menu = organize_menu.addMenu("정리 그룹")
+        mark(collection_menu.menuAction(), "organize.collection")
         current_collection = work_collection_for_job(job.job_id)
-        unassigned_action = collection_menu.addAction("미분류")
+        unassigned_action = mark(
+            collection_menu.addAction("미분류"),
+            "organize.collection.none",
+        )
         unassigned_action.setCheckable(True)
         unassigned_action.setChecked(current_collection is None)
         unassigned_action.triggered.connect(
@@ -10326,7 +10478,10 @@ class MainWindow(QMainWindow):
         if groups:
             collection_menu.addSeparator()
         for group in groups:
-            action = collection_menu.addAction(str(group["name"]))
+            action = mark(
+                collection_menu.addAction(str(group["name"])),
+                f"organize.collection.{group['groupId']}",
+            )
             action.setCheckable(True)
             action.setChecked(
                 bool(current_collection)
@@ -10338,8 +10493,12 @@ class MainWindow(QMainWindow):
                 )
             )
         collection_menu.addSeparator()
-        collection_menu.addAction("그룹 관리...", self.show_group_manager)
-        tag_menu = menu.addMenu("색상 태그")
+        mark(
+            collection_menu.addAction("그룹 관리...", self.show_group_manager),
+            "organize.collection.manage",
+        )
+        tag_menu = organize_menu.addMenu("색상 태그")
+        mark(tag_menu.menuAction(), "organize.tag")
         for label, color in (
             ("없음", "none"),
             ("빨강", "red"),
@@ -10350,77 +10509,109 @@ class MainWindow(QMainWindow):
             ("보라", "purple"),
             ("회색", "gray"),
         ):
-            action = tag_menu.addAction(label)
+            action = mark(tag_menu.addAction(label), f"organize.tag.{color}")
             action.setCheckable(True)
             action.setChecked((job.tag_color or "none") == color)
             action.triggered.connect(
-                lambda _checked=False, selected=color: self.set_job_tag(job.job_id, selected)
+                lambda _checked=False, selected=color: self.set_job_tag(
+                    job.job_id, selected
+                )
             )
+
+        copy_menu = menu.addMenu("복사")
+        mark(copy_menu.menuAction(), "section.copy")
+        mark(
+            copy_menu.addAction(
+                "작품명 복사",
+                lambda: self.copy_job_title(job.job_id),
+            ),
+            "copy.title",
+        )
+        source_copy_action = mark(
+            copy_menu.addAction(
+                "원본 URL 복사",
+                lambda: self.copy_job_link(job.job_id),
+            ),
+            "copy.url",
+        )
+        source_copy_action.setEnabled(bool(job.url))
+        path_copy_action = mark(
+            copy_menu.addAction(
+                "저장 폴더 경로 복사",
+                lambda: self.copy_job_path(job.job_id),
+            ),
+            "copy.path",
+        )
+        path_copy_action.setEnabled(bool(job.output_path))
+        mark(
+            copy_menu.addAction(
+                "작품 ID 복사",
+                lambda: self.copy_job_id(job.job_id),
+            ),
+            "copy.id",
+        )
+
         menu.addSeparator()
-        remove_action = menu.addAction(
-            "목록 기록 제거...",
-            lambda: self.confirm_remove_job_record(job.job_id),
+        remove_action = mark(
+            menu.addAction(
+                "목록 기록 제거...",
+                lambda: self.confirm_remove_job_record(job.job_id),
+            ),
+            "record.remove",
         )
-        remove_action.setEnabled(job.state not in ACTIVE_JOB_STATES)
-        menu.addSeparator()
-        rescan_menu = menu.addMenu("작품 재검사")
-        new_action = rescan_menu.addAction(
-            "신규 회차만",
-            lambda: self.rescan_selected_job("new", job.job_id),
-        )
-        full_action = rescan_menu.addAction(
-            "전체 회차",
-            lambda: self.rescan_selected_job("full", job.job_id),
-        )
-        range_action = rescan_menu.addAction(
-            "현재 입력 범위",
-            lambda: self.rescan_selected_job("range", job.job_id),
-        )
-        can_rescan = job.state not in ACTIVE_JOB_STATES
-        new_action.setEnabled(can_rescan)
-        full_action.setEnabled(can_rescan)
-        range_action.setEnabled(
-            can_rescan and bool(self.start_spin.value() or self.last_spin.value())
-        )
-        stop_action = menu.addAction("현재 작업 중지", self.stop_active_job)
-        active_context = self.active_contexts.get(job.job_id)
-        stop_action.setEnabled(active_context is not None)
-        pause_action = menu.addAction(
-            "현재 작업 일시정지",
-            lambda: self.pause_selected_active_job(job.job_id),
-        )
-        pause_action.setEnabled(
-            bool(
-                active_context
-                and not active_context.paused
-            )
-        )
-        resume_action = menu.addAction(
-            "일시정지 작업 계속",
-            lambda: self.resume_selected_active_job(job.job_id),
-        )
-        resume_action.setEnabled(bool(active_context and active_context.paused))
-        cancel_action = menu.addAction(
-            "대기 작업 취소",
-            lambda: self.cancel_selected_queued_job(job.job_id),
-        )
-        cancel_action.setEnabled(any(item.job_id == job.job_id for item in self.pending_jobs))
-        queue_menu = menu.addMenu("대기열 우선순위")
-        first_action = queue_menu.addAction(
-            "맨 앞으로",
-            lambda: self.move_queued_job(job.job_id, position="first"),
-        )
-        last_action = queue_menu.addAction(
-            "맨 뒤로",
-            lambda: self.move_queued_job(job.job_id, position="last"),
-        )
-        is_pending = any(item.job_id == job.job_id for item in self.pending_jobs)
-        queue_menu.setEnabled(is_pending)
-        first_action.setEnabled(is_pending and len(self.pending_jobs) > 1)
-        last_action.setEnabled(is_pending and len(self.pending_jobs) > 1)
-        menu.aboutToHide.connect(lambda: setattr(self, "active_context_menu", None))
-        self.active_context_menu = menu
-        menu.popup(global_position)
+        remove_action.setEnabled(not is_busy)
+        return menu
+
+    @staticmethod
+    def _menu_snapshot(menu: QMenu) -> dict[str, Any]:
+        root_items: list[str] = []
+        submenus: dict[str, list[str]] = {}
+        action_ids: list[str] = []
+        enabled: dict[str, bool] = {}
+        checked: dict[str, bool] = {}
+
+        def walk(current: QMenu, path: tuple[str, ...] = ()) -> None:
+            visible_actions = [
+                action for action in current.actions() if not action.isSeparator()
+            ]
+            if not path:
+                root_items.extend(action.text() for action in visible_actions)
+            else:
+                submenus[" > ".join(path)] = [
+                    action.text() for action in visible_actions
+                ]
+            for action in visible_actions:
+                action_id = str(action.data() or "")
+                if action_id:
+                    action_ids.append(action_id)
+                    enabled[action_id] = action.isEnabled()
+                    if action.isCheckable():
+                        checked[action_id] = action.isChecked()
+                submenu = action.menu()
+                if submenu is not None:
+                    walk(submenu, (*path, action.text()))
+
+        walk(menu)
+        return {
+            "rootItems": root_items,
+            "submenus": submenus,
+            "actionIds": action_ids,
+            "enabled": enabled,
+            "checked": checked,
+        }
+
+    def job_context_menu_snapshot(self, job_id: str | None = None) -> dict[str, Any]:
+        job = self.selected_job(job_id)
+        if not job:
+            raise ValueError("우클릭 메뉴를 검사할 작품을 선택해주세요.")
+        menu = self._build_job_context_menu(job)
+        snapshot = self._menu_snapshot(menu)
+        menu.deleteLater()
+        return {
+            "jobId": job.job_id,
+            "provider": job.provider or "toki",
+            **snapshot,
+        }
 
     def copy_job_link(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
@@ -11184,7 +11375,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd copy-link [--job ID]\n"
             "toki-cli.cmd copy-path [--job ID]\n"
             "toki-cli.cmd copy-title [--job ID]\n"
-            "toki-cli.cmd job-menu [--job ID]\n"
+            "toki-cli.cmd job-menu [--job ID] [--inspect]\n"
             "toki-cli.cmd logs --tail 200\n"
             "toki-cli.cmd copy-log [--tail 3000]\n"
             "toki-cli.cmd screenshot [--output PATH]\n"
@@ -11362,10 +11553,35 @@ class MainWindow(QMainWindow):
             "totalJobCount": self.history_all_total,
             "filteredJobCount": self.history_total,
             "outputDir": self.output_edit.text(),
-            "imageConcurrency": self.image_concurrency_spin.value(),
-            "workConcurrency": self.work_concurrency_spin.value(),
-            "retryCount": self.retry_count_spin.value(),
-            "retryBackoffSeconds": self.retry_backoff_spin.value(),
+            "imageConcurrency": normalize_image_concurrency(
+                self.config.get("imageConcurrency")
+            ),
+            "workConcurrency": normalize_work_concurrency(
+                self.config.get("workConcurrency")
+            ),
+            "retryCount": normalize_retry_count(self.config.get("retryCount")),
+            "retryBackoffSeconds": normalize_retry_backoff(
+                self.config.get("retryBackoffSeconds")
+            ),
+            "mainInputLayout": {
+                "alwaysVisible": [
+                    "url",
+                    "outputDir",
+                    "download",
+                    "quickActionsMenu",
+                    "settings",
+                ],
+                "collapsible": ["scanMode", "startEpisode", "lastEpisode"],
+                "optionsExpanded": bool(self.download_options_button.isChecked()),
+                "settingsOnly": [
+                    "showBrowser",
+                    "workConcurrency",
+                    "imageConcurrency",
+                    "retryCount",
+                    "retryBackoffSeconds",
+                ],
+                "settingsSummary": self._update_download_settings_summary(),
+            },
             "settings": settings_snapshot(self.config),
             "view": {
                 "mode": str(self.config.get("listViewMode") or "list"),
@@ -11726,8 +11942,6 @@ class MainWindow(QMainWindow):
         for action_id, action in action_map.items():
             action.setEnabled(states[action_id])
         self.start_button.setEnabled(states["download.start"])
-        self.stop_button.setEnabled(states["job.stop"])
-        self.retry_button.setEnabled(states["job.rescan_full"])
         for action_id, button in getattr(self, "quick_action_buttons", {}).items():
             if action_id in states:
                 button.setEnabled(states[action_id])
@@ -12058,6 +12272,8 @@ class MainWindow(QMainWindow):
             return {"copied": self.copy_job_title(request.get("jobId"))}
         if action == "show_job_menu":
             return {"shown": self.show_job_context_menu_for_job(request.get("jobId"))}
+        if action == "inspect_job_menu":
+            return self.job_context_menu_snapshot(request.get("jobId"))
         if action == "clear_log":
             self.clear_logs()
             return {"cleared": True}
@@ -12294,11 +12510,6 @@ class MainWindow(QMainWindow):
         window_config["qtGeometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self.config["window"] = window_config
         self.config["outputDir"] = self.output_edit.text()
-        self.config["showBrowser"] = self.show_browser_check.isChecked()
-        self.config["imageConcurrency"] = self.image_concurrency_spin.value()
-        self.config["workConcurrency"] = self.work_concurrency_spin.value()
-        self.config["retryCount"] = self.retry_count_spin.value()
-        self.config["retryBackoffSeconds"] = self.retry_backoff_spin.value()
         save_config(self.config)
         self.job_ui_update_timer.stop()
         self._flush_job_card_updates()

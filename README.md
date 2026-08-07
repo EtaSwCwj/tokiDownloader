@@ -328,6 +328,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd cookies clear --provider manatoki --yes --json
 .\toki-cli.cmd cookies manage --provider manatoki --show-gui --json
 .\toki-cli.cmd job-menu --job 작업ID
+.\toki-cli.cmd job-menu --job 작업ID --inspect
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
 .\toki-cli.cmd window --safe
@@ -363,6 +364,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 클립보드 경로를 사용하고, GUI가 꺼져 있어도 `--job`을 지정하면 Windows 네이티브
 클립보드에 직접 복사합니다. 별도 PowerShell·명령 프롬프트 창은 시작하지 않습니다.
 
+`job-menu --inspect`는 선택 작품의 현재 상태와 공급자에 맞춰 정리된 최상위·중첩 메뉴,
+동작 ID, 활성 여부와 그룹·색상 태그의 체크 상태를 JSON으로 반환합니다. 메뉴를 직접
+누르지 않고도 우클릭 기능의 노출 순서와 상태를 자동 검사할 때 사용합니다.
+
 `list`는 제목, 폴더명에 포함된 작가·그룹, 작품 ID와 URL을 검색합니다. `--status`로
 상태를 거르고 `--sort updated|title|progress`로 정렬할 수 있습니다. `--apply-gui`를
 추가하면 같은 조건을 실행 중인 GUI 검색창과 목록에도 적용합니다. 빈 조건으로
@@ -395,10 +400,15 @@ JSON 리소스를 추가하는 방식입니다. 디스플레이 설정의 UI 배
 사용합니다. 배경은 밝은 이미지에서도 글자가 묻히지 않도록 현재 테마의 보호 오버레이를
 함께 그리며 `--clear-background`로 원본 파일을 건드리지 않고 연결만 해제합니다.
 
-메인 입력 영역 아래의 빠른 실행 막대는 디스플레이 설정에서 항목을 체크하고 드래그해
-순서를 바꿀 수 있습니다. CLI에서는 `set-settings --quick-actions
+메인 입력 영역은 URL, 저장 폴더와 다운로드만 항상 표시합니다. 검사 방식과 회차 범위는
+`검사 옵션`을 펼쳤을 때만 나타나고, 브라우저 표시·작품/이미지 동시성·자동 재시도는 설정
+창에서 관리합니다. 현재 값은 메인의 한 줄 요약과 `status --json`의 `mainInputLayout`에서
+확인할 수 있습니다.
+
+메인의 `빠른 실행` 드롭다운 항목은 디스플레이 설정에서 체크하고 드래그해 순서를 바꿀 수
+있습니다. CLI에서는 `set-settings --quick-actions
 download.start,job.stop,job.rescan_full,folder.open,settings.open`처럼 동작 ID 순서를
-지정합니다. 빠른 실행 버튼도 메뉴와 동일한 활성/비활성 판정과 대응 CLI를 사용합니다.
+지정합니다. 드롭다운 동작도 메뉴와 동일한 활성/비활성 판정과 대응 CLI를 사용합니다.
 
 일반 설정의 `모든 작업 완료 후`는 기본적으로 아무 동작도 하지 않습니다. 프로그램 종료나
 Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 끝난 뒤 5~300초 카운트다운을
