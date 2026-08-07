@@ -107,6 +107,31 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_completion_action_ipc_only_previews_or_cancels(self) -> None:
+        calls = []
+        harness = type("CompletionHarness", (), {})()
+        harness.preview_completion_action = (
+            lambda action, countdown: calls.append(("preview", action, countdown))
+            or {"shown": True, "executed": False}
+        )
+        harness.cancel_completion_action = lambda: calls.append(("cancel",)) or True
+
+        previewed = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "preview_completion_action",
+                "completionAction": "shutdown",
+                "countdownSeconds": 20,
+            },
+        )
+        cancelled = MainWindow._handle_control_action(
+            harness, {"action": "cancel_completion_action"}
+        )
+
+        self.assertFalse(previewed["executed"])
+        self.assertTrue(cancelled["cancelled"])
+        self.assertEqual(calls, [("preview", "shutdown", 20), ("cancel",)])
+
     def test_work_copy_ipc_routes_id_source_path_and_title(self) -> None:
         calls = []
         harness = type("WorkCopyHarness", (), {})()

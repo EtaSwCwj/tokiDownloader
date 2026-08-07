@@ -190,6 +190,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd copy-link --job 작업ID
 .\toki-cli.cmd copy-path --job 작업ID
 .\toki-cli.cmd copy-title --job 작업ID
+.\toki-cli.cmd completion-action status --json
+.\toki-cli.cmd completion-action set --action exit --countdown 15 --json
+.\toki-cli.cmd completion-action preview --action shutdown --countdown 15 --show-gui
+.\toki-cli.cmd completion-action cancel
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -246,6 +250,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 순서를 바꿀 수 있습니다. CLI에서는 `set-settings --quick-actions
 download.start,job.stop,job.rescan_full,folder.open,settings.open`처럼 동작 ID 순서를
 지정합니다. 빠른 실행 버튼도 메뉴와 동일한 활성/비활성 판정과 대응 CLI를 사용합니다.
+
+일반 설정의 `모든 작업 완료 후`는 기본적으로 아무 동작도 하지 않습니다. 프로그램 종료나
+Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 끝난 뒤 5~300초 카운트다운을
+표시하며 사용자가 취소할 수 있습니다. `completion-action status|set`으로 정책을 관리하고
+`preview --action shutdown --countdown 15 --show-gui`로 실제 종료 없이 화면과 취소 동작을
+점검합니다. 미리보기 명령은 시스템 종료를 실행하지 않습니다.
 
 `performance audit`은 작품 목록의 갱신일·제목·진행률 정렬과 상태 필터 조합 6가지를
 `EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,

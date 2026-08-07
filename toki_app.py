@@ -40,6 +40,7 @@ from toki_core import (
     count_jobs,
     count_runs,
     copy_text_to_clipboard,
+    completion_action_plan,
     convert_job_images,
     delete_job_record,
     delete_job_records,
@@ -886,6 +887,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_settings.add_argument("--defaults", action="store_true", help="일반 설정 기본값 복원")
     set_settings.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    completion_action = subparsers.add_parser(
+        "completion-action", help="모든 작업 완료 후 동작 조회·설정·미리보기"
+    )
+    completion_commands = completion_action.add_subparsers(
+        dest="completion_command", required=True
+    )
+    completion_status = completion_commands.add_parser("status", help="현재 정책 조회")
+    completion_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    completion_set = completion_commands.add_parser("set", help="완료 후 동작 저장")
+    completion_set.add_argument(
+        "--action", choices=("none", "exit", "shutdown"), required=True
+    )
+    completion_set.add_argument("--countdown", type=int, default=15)
+    completion_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    completion_preview = completion_commands.add_parser(
+        "preview", help="실제 종료 없이 카운트다운 정책 점검"
+    )
+    completion_preview.add_argument(
+        "--action", choices=("exit", "shutdown"), required=True
+    )
+    completion_preview.add_argument("--countdown", type=int, default=15)
+    completion_preview.add_argument("--show-gui", action="store_true")
+    completion_preview.add_argument("--json", action="store_true", help="JSON으로 출력")
+    completion_commands.add_parser("cancel", help="열린 카운트다운 취소")
 
     tray = subparsers.add_parser("tray", help="GUI 시스템 트레이 제어")
     tray.add_argument(
@@ -2304,6 +2330,55 @@ def run_cli(args: argparse.Namespace) -> int:
             print_json(result)
         else:
             print(f"설정 저장 완료: {result['outputDir']}")
+        return 0
+    if command == "completion-action":
+        subcommand = args.completion_command
+        if subcommand == "status":
+            values = settings_snapshot()
+            result = completion_action_plan(
+                str(values["completionAction"]),
+                int(values["completionCountdownSeconds"]),
+                armed=False,
+            )
+        elif subcommand == "set":
+            updates = {
+                "completionAction": args.action,
+                "completionCountdownSeconds": args.countdown,
+            }
+            if gui_is_running():
+                values = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                values = update_app_settings(updates)
+            result = {
+                "saved": True,
+                **completion_action_plan(
+                    str(values["completionAction"]),
+                    int(values["completionCountdownSeconds"]),
+                    armed=False,
+                ),
+            }
+        elif subcommand == "preview":
+            result = completion_action_plan(
+                args.action, args.countdown, armed=True
+            )
+            if args.show_gui:
+                ensure_gui_running()
+                result = control_request(
+                    {
+                        "action": "preview_completion_action",
+                        "completionAction": args.action,
+                        "countdownSeconds": args.countdown,
+                    }
+                )
+        else:
+            ensure_gui_running()
+            result = {"cancelled": bool(control_request({"action": "cancel_completion_action"})["cancelled"])}
+        if getattr(args, "json", False):
+            print_json(result)
+        else:
+            print_json(result)
         return 0
     if command == "tray":
         ensure_gui_running()

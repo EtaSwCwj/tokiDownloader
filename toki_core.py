@@ -77,6 +77,8 @@ SETTING_KEYS = frozenset(
         "alwaysOnTop",
         "windowOpacity",
         "quickActions",
+        "completionAction",
+        "completionCountdownSeconds",
         "theme",
         "trayEnabled",
         "closeToTray",
@@ -340,6 +342,8 @@ def default_config() -> dict[str, Any]:
             "folder.open",
             "settings.open",
         ],
+        "completionAction": "none",
+        "completionCountdownSeconds": 15,
         "theme": "system",
         "trayEnabled": False,
         "closeToTray": False,
@@ -426,6 +430,20 @@ def normalize_quick_actions(value: Any) -> list[str]:
             normalized.append(action_id)
     if not normalized:
         raise ValueError("빠른 실행 도구를 하나 이상 선택해주세요.")
+    return normalized
+
+
+def normalize_completion_action(value: str | None) -> str:
+    normalized = str(value or "none").strip().lower()
+    if normalized not in {"none", "exit", "shutdown"}:
+        raise ValueError("완료 후 동작은 none, exit 또는 shutdown이어야 합니다.")
+    return normalized
+
+
+def normalize_completion_countdown(value: int | None) -> int:
+    normalized = 15 if value is None else int(value)
+    if not 5 <= normalized <= 300:
+        raise ValueError("완료 후 동작 카운트다운은 5~300초여야 합니다.")
     return normalized
 
 
@@ -520,6 +538,16 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_quick_actions,
         source.get("quickActions"),
         defaults["quickActions"],
+    )
+    normalized["completionAction"] = _safe_normalize(
+        normalize_completion_action,
+        source.get("completionAction"),
+        defaults["completionAction"],
+    )
+    normalized["completionCountdownSeconds"] = _safe_normalize(
+        normalize_completion_countdown,
+        source.get("completionCountdownSeconds"),
+        defaults["completionCountdownSeconds"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -689,6 +717,8 @@ def validate_app_setting_updates(
         "thumbnailSize": normalize_thumbnail_size,
         "windowOpacity": normalize_window_opacity,
         "quickActions": normalize_quick_actions,
+        "completionAction": normalize_completion_action,
+        "completionCountdownSeconds": normalize_completion_countdown,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -1287,6 +1317,30 @@ def menu_action_availability(
         "list.refresh": True,
         "settings.open": True,
         "screenshot.capture": True,
+    }
+
+
+def completion_action_plan(
+    action: str,
+    countdown_seconds: int,
+    *,
+    active_count: int = 0,
+    pending_count: int = 0,
+    armed: bool = True,
+) -> dict[str, Any]:
+    normalized_action = normalize_completion_action(action)
+    countdown = normalize_completion_countdown(countdown_seconds)
+    idle = max(0, int(active_count)) == 0 and max(0, int(pending_count)) == 0
+    return {
+        "action": normalized_action,
+        "countdownSeconds": countdown,
+        "activeCount": max(0, int(active_count)),
+        "pendingCount": max(0, int(pending_count)),
+        "idle": idle,
+        "armed": bool(armed),
+        "shouldTrigger": bool(armed and idle and normalized_action != "none"),
+        "requiresCountdown": normalized_action in {"exit", "shutdown"},
+        "destructive": normalized_action == "shutdown",
     }
 
 

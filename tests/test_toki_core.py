@@ -23,6 +23,7 @@ from toki_core import (
     build_work_key,
     cleanup_thumbnail_cache,
     cleanup_run_history,
+    completion_action_plan,
     create_work_collection,
     count_jobs,
     count_runs,
@@ -411,6 +412,21 @@ class CoreContractTests(unittest.TestCase):
         self.assertFalse(running["snapshot.import"])
         self.assertFalse(queued["job.rescan_new"])
         self.assertFalse(empty["details.open"])
+
+    def test_completion_action_requires_idle_armed_state_and_countdown(self) -> None:
+        none = completion_action_plan("none", 15, armed=True)
+        busy = completion_action_plan(
+            "shutdown", 30, active_count=1, pending_count=2, armed=True
+        )
+        shutdown = completion_action_plan("shutdown", 30, armed=True)
+
+        self.assertFalse(none["shouldTrigger"])
+        self.assertFalse(busy["shouldTrigger"])
+        self.assertTrue(shutdown["shouldTrigger"])
+        self.assertTrue(shutdown["requiresCountdown"])
+        self.assertTrue(shutdown["destructive"])
+        with self.assertRaises(ValueError):
+            completion_action_plan("shutdown", 1, armed=True)
 
     def test_job_list_view_state_covers_loading_empty_filtered_error_and_content(self) -> None:
         loading = build_job_list_view_state(loading=True, total_count=12)

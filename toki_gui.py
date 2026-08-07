@@ -103,6 +103,7 @@ from toki_core import (
     build_job_list_view_state,
     build_work_key,
     build_downloader_args,
+    completion_action_plan,
     clear_log_file,
     cleanup_run_history,
     cleanup_thumbnail_cache,
@@ -1680,10 +1681,73 @@ class DuplicateImagesDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class CompletionCountdownDialog(QDialog):
+    def __init__(
+        self,
+        action: str,
+        countdown_seconds: int,
+        *,
+        preview: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.action = action
+        self.remaining = max(1, int(countdown_seconds))
+        self.preview = preview
+        self.setWindowTitle("모든 작업 완료 후 동작")
+        self.setModal(False)
+        self.resize(500, 210)
+        layout = QVBoxLayout(self)
+        heading = QLabel("시스템 종료" if action == "shutdown" else "프로그램 종료")
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+        self.message = QLabel()
+        self.message.setWordWrap(True)
+        layout.addWidget(self.message)
+        note = QLabel(
+            "미리보기이므로 실제 종료는 실행하지 않습니다."
+            if preview
+            else "취소를 누르면 이번 완료 후 동작을 실행하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self._update_message()
+        self.timer.start(1000)
+
+    def _update_message(self) -> None:
+        label = "Windows를 종료" if self.action == "shutdown" else "프로그램을 종료"
+        self.message.setText(f"모든 작업이 끝났습니다. {self.remaining}초 후 {label}합니다.")
+
+    def _tick(self) -> None:
+        self.remaining -= 1
+        if self.remaining <= 0:
+            self.timer.stop()
+            if self.preview:
+                self.reject()
+            else:
+                self.accept()
+            return
+        self._update_message()
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "action": self.action,
+            "remainingSeconds": self.remaining,
+            "preview": self.preview,
+        }
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
-        "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화",
+        "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
@@ -1737,6 +1801,15 @@ class SettingsDialog(QDialog):
         general_form.addRow("완료 알림", self.notify_complete_check)
         self.notify_error_check = QCheckBox("다운로드 오류·인증 필요 알림 표시")
         general_form.addRow("오류 알림", self.notify_error_check)
+        self.completion_action_combo = QComboBox()
+        self.completion_action_combo.addItem("아무 동작 안 함", "none")
+        self.completion_action_combo.addItem("프로그램 종료", "exit")
+        self.completion_action_combo.addItem("Windows 종료", "shutdown")
+        general_form.addRow("모든 작업 완료 후", self.completion_action_combo)
+        self.completion_countdown_spin = QSpinBox()
+        self.completion_countdown_spin.setRange(5, 300)
+        self.completion_countdown_spin.setSuffix("초")
+        general_form.addRow("완료 후 카운트다운", self.completion_countdown_spin)
         general_note = QLabel(
             "브라우저 표시는 기본적으로 끄는 것을 권장합니다. 개인 Chrome 프로필은 사용하지 않습니다."
         )
@@ -1931,6 +2004,13 @@ class SettingsDialog(QDialog):
         self.minimize_to_tray_check.setChecked(bool(values["minimizeToTray"]))
         self.notify_complete_check.setChecked(bool(values["notifyOnComplete"]))
         self.notify_error_check.setChecked(bool(values["notifyOnError"]))
+        completion_index = self.completion_action_combo.findData(
+            str(values["completionAction"])
+        )
+        self.completion_action_combo.setCurrentIndex(max(0, completion_index))
+        self.completion_countdown_spin.setValue(
+            int(values["completionCountdownSeconds"])
+        )
         self.work_spin.setValue(int(values["workConcurrency"]))
         self.image_spin.setValue(int(values["imageConcurrency"]))
         self.retry_count_spin.setValue(int(values["retryCount"]))
@@ -2003,6 +2083,8 @@ class SettingsDialog(QDialog):
             "minimizeToTray": self.minimize_to_tray_check.isChecked(),
             "notifyOnComplete": self.notify_complete_check.isChecked(),
             "notifyOnError": self.notify_error_check.isChecked(),
+            "completionAction": str(self.completion_action_combo.currentData()),
+            "completionCountdownSeconds": self.completion_countdown_spin.value(),
             "workConcurrency": self.work_spin.value(),
             "imageConcurrency": self.image_spin.value(),
             "retryCount": self.retry_count_spin.value(),
@@ -2340,6 +2422,9 @@ class MainWindow(QMainWindow):
         self.active_archive_inspection_dialog: ArchiveInspectionDialog | None = None
         self.active_duplicate_works_dialog: DuplicateWorksDialog | None = None
         self.active_duplicate_images_dialog: DuplicateImagesDialog | None = None
+        self.active_completion_dialog: CompletionCountdownDialog | None = None
+        self.completion_action_armed = False
+        self.last_completion_action: dict[str, Any] = {}
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -3117,6 +3202,7 @@ class MainWindow(QMainWindow):
         self.jobs[job.job_id] = job
         self.jobs_by_work[work_key] = job
         self.pending_jobs.append(job)
+        self.completion_action_armed = True
         self._refresh_pending_positions()
         self._add_job_card(job)
         if existing is None:
@@ -3691,6 +3777,8 @@ class MainWindow(QMainWindow):
             self._launch_context(context)
         self._refresh_pending_positions()
         self._update_active_summary()
+        if not self.pending_jobs and not self.active_contexts:
+            QTimer.singleShot(0, self._maybe_trigger_completion_action)
 
     def _launch_context(self, context: ProcessContext) -> None:
         if context.cancel_requested:
@@ -4532,6 +4620,99 @@ class MainWindow(QMainWindow):
             return False
         self.active_duplicate_images_dialog.close()
         return True
+
+    def completion_action_snapshot(self) -> dict[str, Any]:
+        plan = completion_action_plan(
+            str(self.config.get("completionAction") or "none"),
+            int(self.config.get("completionCountdownSeconds") or 15),
+            active_count=len(self.active_contexts),
+            pending_count=len(self.pending_jobs),
+            armed=self.completion_action_armed,
+        )
+        dialog = self.active_completion_dialog
+        return {
+            **plan,
+            "dialog": dialog.state_snapshot() if dialog else {"open": False},
+            "last": self.last_completion_action,
+        }
+
+    def preview_completion_action(
+        self, action: str, countdown_seconds: int
+    ) -> dict[str, Any]:
+        plan = completion_action_plan(action, countdown_seconds, armed=True)
+        self._show_completion_countdown(
+            plan["action"], plan["countdownSeconds"], preview=True
+        )
+        return {**plan, "shown": True, "executed": False}
+
+    def _show_completion_countdown(
+        self, action: str, countdown_seconds: int, *, preview: bool
+    ) -> None:
+        self.cancel_completion_action()
+        dialog = CompletionCountdownDialog(
+            action, countdown_seconds, preview=preview, parent=self
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.finished.connect(
+            lambda result, current=dialog, execute=not preview: self._completion_dialog_finished(
+                current, result, execute
+            )
+        )
+        dialog.destroyed.connect(
+            lambda *_: setattr(self, "active_completion_dialog", None)
+        )
+        self.active_completion_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def cancel_completion_action(self) -> bool:
+        dialog = self.active_completion_dialog
+        if not dialog:
+            return False
+        dialog.reject()
+        return True
+
+    def _completion_dialog_finished(
+        self, dialog: CompletionCountdownDialog, result: int, execute: bool
+    ) -> None:
+        accepted = result == int(QDialog.DialogCode.Accepted)
+        self.last_completion_action = {
+            "action": dialog.action,
+            "accepted": accepted,
+            "executed": bool(accepted and execute),
+            "preview": dialog.preview,
+            "finishedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        if accepted and execute:
+            self._execute_completion_action(dialog.action)
+
+    def _maybe_trigger_completion_action(self) -> None:
+        plan = self.completion_action_snapshot()
+        if not plan["shouldTrigger"]:
+            return
+        self.completion_action_armed = False
+        self.last_completion_action = {**plan, "triggered": True}
+        self._show_completion_countdown(
+            str(plan["action"]), int(plan["countdownSeconds"]), preview=False
+        )
+
+    def _execute_completion_action(self, action: str) -> None:
+        if action == "exit":
+            QTimer.singleShot(0, self.request_exit)
+            return
+        if action != "shutdown":
+            return
+        if os.name != "nt":
+            self.log("시스템 종료는 현재 Windows에서만 지원합니다.", "ERROR")
+            return
+        subprocess.Popen(
+            ["shutdown.exe", "/s", "/t", "0"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **hidden_process_options(),
+        )
 
     def close_settings_dialog(self) -> bool:
         if not self.active_settings_dialog:
@@ -5903,6 +6084,8 @@ class MainWindow(QMainWindow):
             and self.active_duplicate_images_dialog.isVisible()
         ):
             screenshot = self.active_duplicate_images_dialog.grab()
+        elif self.active_completion_dialog and self.active_completion_dialog.isVisible():
+            screenshot = self.active_completion_dialog.grab()
         elif (
             self.active_image_conversion_progress_dialog
             and self.active_image_conversion_progress_dialog.isVisible()
@@ -6328,6 +6511,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd retry-policy [--json]\n"
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced|provider --search TEXT|--close]\n"
+            "toki-cli.cmd completion-action status|set|preview|cancel [options]\n"
             "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
             "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
@@ -6503,6 +6687,7 @@ class MainWindow(QMainWindow):
                 "loadedLimit": int(self.resource_limits["maxLoadedJobs"]),
                 "batchSize": 100,
             },
+            "completionAction": self.completion_action_snapshot(),
             "startupRecovery": self.startup_recovery,
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
@@ -6853,6 +7038,13 @@ class MainWindow(QMainWindow):
             }
         if action == "close_settings":
             return {"closed": self.close_settings_dialog()}
+        if action == "preview_completion_action":
+            return self.preview_completion_action(
+                str(request.get("completionAction") or "exit"),
+                int(request.get("countdownSeconds") or 15),
+            )
+        if action == "cancel_completion_action":
+            return {"cancelled": self.cancel_completion_action()}
         if action == "export_jobs_snapshot":
             return self.export_jobs_snapshot_now(str(request.get("output") or ""))
         if action == "import_jobs_snapshot":

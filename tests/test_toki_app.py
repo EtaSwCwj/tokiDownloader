@@ -14,6 +14,52 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_completion_action_cli_sets_previews_and_cancels_without_execution(self) -> None:
+        set_args = build_parser().parse_args(
+            ["completion-action", "set", "--action", "shutdown", "--countdown", "30", "--json"]
+        )
+        values = {
+            "completionAction": "shutdown",
+            "completionCountdownSeconds": 30,
+        }
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value=values) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        update.assert_called_once_with(
+            {"completionAction": "shutdown", "completionCountdownSeconds": 30}
+        )
+
+        preview = build_parser().parse_args(
+            ["completion-action", "preview", "--action", "shutdown", "--countdown", "20", "--show-gui"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(preview), 0)
+        request.assert_called_once_with(
+            {
+                "action": "preview_completion_action",
+                "completionAction": "shutdown",
+                "countdownSeconds": 20,
+            }
+        )
+
+        cancel = build_parser().parse_args(["completion-action", "cancel"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request", return_value={"cancelled": True}
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(cancel), 0)
+        request.assert_called_once_with({"action": "cancel_completion_action"})
+
     def test_work_copy_commands_route_to_gui_ipc(self) -> None:
         expected = {
             "copy-id": "copy_id",
