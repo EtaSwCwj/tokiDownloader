@@ -491,6 +491,17 @@ PDF 루트 PID별 자식 RSS도 합산한다. 모의 16 GiB/두 자식 프로세
 `logs/memory-usage-status.png`, `logs/memory-display-settings.png`에 화면을 보존했고 기본 표시
 켜짐으로 복원했다. Python 197건과 Node 16건을 통과했다.
 
+2026-08-07 로컬 HTTP API: 설정 스키마 v15에 기본 꺼짐·기본 포트 8765를 추가하고 Qt 서버를
+`127.0.0.1` 전용으로 고정했다. 시작마다 임시 Bearer 토큰을 만들며 원문은 설정·DB·로그에
+저장하지 않고 CORS·공개 주소 바인딩도 지원하지 않는다. 64 KiB 요청 상한과 1,000개 작품
+페이지 상한을 적용하고 `/v1/health|status|jobs`, `/v1/control`은 기존 GUI 제어 서비스를
+재사용하되 명시적 안전 동작만 허용한다. 기록 삭제, 파일 이동·변환, 쿠키, 시스템·프로그램
+종료와 토큰 관리는 HTTP에서 거부한다. `local-api status|set|token|request`, GUI 사용 여부·
+포트·상태·토큰 복사 버튼을 연결했으며 민감한 토큰 CLI에는 `--yes`가 필요하다. 실제 임시
+루프백 포트에서 무토큰 401, 인증 health/jobs/memory 200, 삭제 요청 403/종료 코드 2를 확인했고
+외부 연결은 실행하지 않았다. `logs/local-api-settings.png`를 캡처하고 서버 꺼짐·8765로
+복원했다. Python 200건과 Node 16건을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

@@ -119,6 +119,12 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd list-performance set --page-size 200 --loaded-limit 2000 --scroll-lines 3 --lazy-loading on --low-spec off --json
 .\toki-cli.cmd memory status --child-limit 200 --json
 .\toki-cli.cmd memory set --display on --json
+.\toki-cli.cmd local-api status --json
+.\toki-cli.cmd local-api set --state off --port 8765 --json
+.\toki-cli.cmd local-api request --path "/v1/health" --json
+.\toki-cli.cmd local-api request --method POST --path "/v1/control" --body '{"action":"memory_status"}' --json
+.\toki-cli.cmd local-api token --copy --yes --json
+.\toki-cli.cmd local-api token --rotate --yes --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -675,6 +681,22 @@ GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `�
 PDF 작업별 프로세스 합계를 반환합니다. `--child-limit 0~1000`으로 상세 프로세스 배열 크기를
 제한할 수 있지만 앱 합계에는 생략된 자식도 포함됩니다. `status --json`의 `memoryUsage`에서도
 같은 현재 값을 확인할 수 있습니다.
+
+로컬 HTTP API는 기본적으로 꺼져 있고 켜더라도 `127.0.0.1`에만 바인딩합니다. 기본 포트는
+8765이며 고급 설정 또는 `local-api set --state on|off --port N`으로 바꿉니다. 서버를 시작할
+때마다 32바이트 기반 임시 Bearer 토큰을 새로 만들고 설정 파일·DB·로그에는 원문을 저장하지
+않습니다. 상태 조회에는 토큰 뒤 6자리만 표시하며 원문 표시·클립보드 복사·재발급에는 각각
+`local-api token --show|--copy|--rotate --yes`처럼 명시적 확인이 필요합니다. CORS를 열지 않고
+공개 주소 바인딩도 지원하지 않습니다.
+
+인증된 `GET /v1/health`, `GET /v1/status`, `GET /v1/jobs?limit=200&offset=0`과
+`POST /v1/control`을 제공합니다. 제어 경로는 GUI와 같은 서비스 계약을 사용하지만 다운로드
+추가·중지·일시정지·재시도·안전한 조회/필터 설정 등 문서화된 허용 목록으로 제한합니다.
+기록 삭제, 파일 이동·변환, 쿠키, 시스템 종료, 토큰 관리와 프로그램 종료는 HTTP API에서
+거부합니다. 요청 본문은 최대 64 KiB이고 작품 목록은 최대 1,000개 페이지로 제한됩니다.
+`local-api request`는 토큰을 화면에 출력하지 않고 현재 GUI의 임시 토큰을 로컬 IPC로 받아
+루프백 API를 점검합니다. API를 켠 설정만 저장하고 GUI가 꺼져 있으면 서버는 실행되지
+않습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

@@ -12,6 +12,9 @@ import traceback
 import webbrowser
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 from PyQt6.QtCore import QCoreApplication, Qt
 from PyQt6.QtGui import QFont
@@ -83,6 +86,7 @@ from toki_core import (
     log_retention_status,
     list_job_episode_images,
     list_performance_policy_snapshot,
+    local_api_policy_snapshot,
     memory_usage_snapshot,
     list_work_collections,
     load_run,
@@ -169,6 +173,71 @@ def control_request(request: dict[str, Any], timeout_ms: int = 2500) -> Any:
     if not response.get("ok"):
         raise ControlError(str(response.get("error") or "GUI 명령 실패"))
     return response.get("result")
+
+
+def local_api_http_request(
+    base_url: str,
+    token: str,
+    *,
+    method: str = "GET",
+    path: str = "/v1/health",
+    body: str = "",
+    timeout_seconds: float = 3.0,
+) -> dict[str, Any]:
+    parsed_base = urlsplit(str(base_url or ""))
+    if (
+        parsed_base.scheme != "http"
+        or parsed_base.hostname != "127.0.0.1"
+        or parsed_base.username
+        or parsed_base.password
+        or not parsed_base.port
+    ):
+        raise ControlError("로컬 API 요청은 127.0.0.1 HTTP 주소에만 보낼 수 있습니다.")
+    clean_path = str(path or "")
+    parsed_path = urlsplit(clean_path)
+    if not clean_path.startswith("/") or parsed_path.scheme or parsed_path.netloc:
+        raise ControlError("로컬 API 경로는 /로 시작하는 상대 경로여야 합니다.")
+    clean_method = str(method or "GET").upper()
+    if clean_method not in {"GET", "POST"}:
+        raise ControlError("로컬 API 요청은 GET 또는 POST만 지원합니다.")
+    data = None
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    if clean_method == "POST":
+        try:
+            parsed_body = json.loads(body or "{}")
+        except json.JSONDecodeError as error:
+            raise ControlError("--body에는 올바른 JSON을 입력해야 합니다.") from error
+        data = json.dumps(parsed_body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = Request(
+        f"{parsed_base.scheme}://{parsed_base.hostname}:{parsed_base.port}{clean_path}",
+        data=data,
+        headers=headers,
+        method=clean_method,
+    )
+    try:
+        response = urlopen(request, timeout=max(0.2, min(30.0, timeout_seconds)))
+    except HTTPError as error:
+        response = error
+    except URLError as error:
+        raise ControlError(f"로컬 API에 연결하지 못했습니다: {error.reason}") from error
+    with response:
+        status_code = int(response.status)
+        raw = response.read(4 * 1024 * 1024 + 1)
+    if len(raw) > 4 * 1024 * 1024:
+        raise ControlError("로컬 API 응답이 4 MiB를 넘습니다.")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ControlError("로컬 API JSON 응답을 읽을 수 없습니다.") from error
+    return {
+        "ok": status_code < 400 and bool(payload.get("ok", True)),
+        "statusCode": status_code,
+        "response": payload,
+    }
 
 
 def gui_is_running() -> bool:
@@ -693,6 +762,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--display", choices=("on", "off"), required=True, help="메모리 표시 사용 여부"
     )
     memory_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    local_api = subparsers.add_parser(
+        "local-api", help="127.0.0.1 전용 인증 HTTP API 설정과 점검"
+    )
+    local_api_commands = local_api.add_subparsers(
+        dest="local_api_command", required=True
+    )
+    local_api_status = local_api_commands.add_parser(
+        "status", help="저장 설정과 현재 서버 상태 조회(토큰 원문 제외)"
+    )
+    local_api_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    local_api_set = local_api_commands.add_parser(
+        "set", help="로컬 API 사용 여부와 포트 변경"
+    )
+    local_api_set.add_argument("--state", choices=("on", "off"), help="서버 사용 여부")
+    local_api_set.add_argument("--port", type=int, help="127.0.0.1 수신 포트(1024~65535)")
+    local_api_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    local_api_token = local_api_commands.add_parser(
+        "token", help="실행 중 서버의 임시 토큰을 명시적으로 표시·복사·재발급"
+    )
+    local_api_token_mode = local_api_token.add_mutually_exclusive_group(required=True)
+    local_api_token_mode.add_argument("--show", action="store_true", help="토큰 원문 표시")
+    local_api_token_mode.add_argument("--copy", action="store_true", help="토큰을 클립보드에 복사")
+    local_api_token_mode.add_argument("--rotate", action="store_true", help="기존 토큰 폐기 후 재발급")
+    local_api_token.add_argument("--yes", action="store_true", help="민감한 토큰 작업 확인")
+    local_api_token.add_argument("--json", action="store_true", help="JSON으로 출력")
+    local_api_request = local_api_commands.add_parser(
+        "request", help="토큰을 출력하지 않고 실행 중 로컬 API를 직접 점검"
+    )
+    local_api_request.add_argument(
+        "--method", choices=("GET", "POST"), default="GET", help="HTTP 방식"
+    )
+    local_api_request.add_argument("--path", default="/v1/health", help="/로 시작하는 API 경로")
+    local_api_request.add_argument("--body", default="", help="POST JSON 본문")
+    local_api_request.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2026,6 +2129,65 @@ def run_cli(args: argparse.Namespace) -> int:
             else:
                 saved = update_app_settings(updates)
                 result = memory_usage_snapshot(saved)
+        print_json(result)
+        return 0 if result.get("ok", True) else 2
+    if command == "local-api":
+        if args.local_api_command == "status":
+            result = (
+                control_request({"action": "local_api_status"})
+                if gui_is_running()
+                else {"ok": True, **local_api_policy_snapshot()}
+            )
+        elif args.local_api_command == "set":
+            updates: dict[str, Any] = {}
+            if args.state is not None:
+                updates["localApiEnabled"] = args.state == "on"
+            if args.port is not None:
+                updates["localApiPort"] = args.port
+            if not updates:
+                raise ValueError("--state 또는 --port 중 하나 이상을 지정하세요.")
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request({"action": "local_api_status"})
+            else:
+                saved = update_app_settings(updates)
+                result = {"ok": True, **local_api_policy_snapshot(saved)}
+        elif args.local_api_command == "token":
+            ensure_gui_running()
+            if not args.yes:
+                raise ControlError("토큰 표시·복사·재발급에는 --yes가 필요합니다.")
+            result = control_request(
+                {
+                    "action": "local_api_token",
+                    "reveal": bool(args.show),
+                    "copy": bool(args.copy),
+                    "rotate": bool(args.rotate),
+                    "confirmed": True,
+                }
+            )
+        else:
+            ensure_gui_running()
+            status = control_request({"action": "local_api_status"})
+            if not status.get("running"):
+                raise ControlError("로컬 HTTP API가 실행 중이 아닙니다.")
+            secret = control_request(
+                {
+                    "action": "local_api_token",
+                    "reveal": True,
+                    "copy": False,
+                    "rotate": False,
+                    "confirmed": True,
+                }
+            )
+            result = local_api_http_request(
+                str(status.get("baseUrl") or ""),
+                str(secret.get("token") or ""),
+                method=args.method,
+                path=args.path,
+                body=args.body,
+            )
         print_json(result)
         return 0 if result.get("ok", True) else 2
     if command == "sleep-prevention":

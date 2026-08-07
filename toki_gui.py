@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import psutil
 from PyQt6.QtCore import (
@@ -46,7 +47,7 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
 )
-from PyQt6.QtNetwork import QLocalServer
+from PyQt6.QtNetwork import QHostAddress, QLocalServer, QTcpServer
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -169,6 +170,10 @@ from toki_core import (
     quick_action_catalog,
     provider_cookie_status,
     pdf_generation_policy_snapshot,
+    generate_local_api_token,
+    local_api_policy_snapshot,
+    local_api_request_plan,
+    LOCAL_API_MAX_REQUEST_BYTES,
     proxy_credential_status,
     load_ui_strings,
     lookup_public_ip,
@@ -399,6 +404,218 @@ class HiddenProcess(QObject):
 
 def create_background_process(parent: QObject) -> QProcess | HiddenProcess:
     return HiddenProcess(parent) if os.name == "nt" else QProcess(parent)
+
+
+class LocalApiServer(QObject):
+    def __init__(
+        self,
+        control_handler: Callable[[dict[str, Any]], Any],
+        status_handler: Callable[[], dict[str, Any]],
+        log_handler: Callable[[str, str], None] | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.control_handler = control_handler
+        self.status_handler = status_handler
+        self.log_handler = log_handler
+        self.server = QTcpServer(self)
+        self.server.newConnection.connect(self._accept_connections)
+        self.buffers: dict[Any, bytearray] = {}
+        self._token = ""
+        self._port = 0
+        self._error = ""
+        self.request_count = 0
+        self.last_request: dict[str, Any] = {}
+
+    def start(self, port: int) -> bool:
+        self.stop()
+        selected_port = max(0, min(65_535, int(port)))
+        if not self.server.listen(QHostAddress("127.0.0.1"), selected_port):
+            self._error = self.server.errorString()
+            return False
+        self._port = int(self.server.serverPort())
+        self._token = generate_local_api_token()
+        self._error = ""
+        return True
+
+    def stop(self) -> None:
+        for socket in list(self.buffers):
+            socket.disconnectFromHost()
+        self.buffers.clear()
+        if self.server.isListening():
+            self.server.close()
+        self._token = ""
+        self._port = 0
+        self._error = ""
+
+    def rotate_token(self) -> str:
+        if not self.server.isListening():
+            raise RuntimeError("로컬 HTTP API가 실행 중이 아닙니다.")
+        self._token = generate_local_api_token()
+        return self._token
+
+    def is_running(self) -> bool:
+        return bool(self.server.isListening())
+
+    def port(self) -> int:
+        return self._port
+
+    def token(self) -> str:
+        return self._token
+
+    def error(self) -> str:
+        return self._error
+
+    def _accept_connections(self) -> None:
+        while self.server.hasPendingConnections():
+            socket = self.server.nextPendingConnection()
+            self.buffers[socket] = bytearray()
+            socket.readyRead.connect(lambda selected=socket: self._read_request(selected))
+            socket.disconnected.connect(
+                lambda selected=socket: self._discard_socket(selected)
+            )
+
+    def _discard_socket(self, socket: Any) -> None:
+        self.buffers.pop(socket, None)
+        socket.deleteLater()
+
+    def _read_request(self, socket: Any) -> None:
+        buffer = self.buffers.get(socket)
+        if buffer is None:
+            return
+        buffer.extend(bytes(socket.readAll()))
+        if len(buffer) > LOCAL_API_MAX_REQUEST_BYTES + 16 * 1024:
+            self._send_json(
+                socket,
+                413,
+                {"ok": False, "errorCode": "request_too_large", "error": "요청이 너무 큽니다."},
+            )
+            return
+        header_end = buffer.find(b"\r\n\r\n")
+        if header_end < 0:
+            return
+        if header_end > 16 * 1024:
+            self._send_json(
+                socket,
+                431,
+                {"ok": False, "errorCode": "headers_too_large", "error": "요청 헤더가 너무 큽니다."},
+            )
+            return
+        try:
+            header_lines = bytes(buffer[:header_end]).decode("iso-8859-1").split("\r\n")
+            method, target, _version = header_lines[0].split(" ", 2)
+            headers: dict[str, str] = {}
+            for line in header_lines[1:]:
+                key, separator, value = line.partition(":")
+                if not separator:
+                    raise ValueError("잘못된 HTTP 헤더입니다.")
+                headers[key.strip()] = value.strip()
+            normalized_headers = {
+                key.casefold(): value for key, value in headers.items()
+            }
+            if normalized_headers.get("transfer-encoding", "").casefold() not in {
+                "",
+                "identity",
+            }:
+                raise ValueError("chunked 요청 본문은 지원하지 않습니다.")
+            content_length = int(normalized_headers.get("content-length", "0") or 0)
+            if content_length < 0 or content_length > LOCAL_API_MAX_REQUEST_BYTES:
+                raise OverflowError("요청 본문이 너무 큽니다.")
+        except OverflowError as error:
+            self._send_json(
+                socket,
+                413,
+                {"ok": False, "errorCode": "request_too_large", "error": str(error)},
+            )
+            return
+        except (ValueError, IndexError) as error:
+            self._send_json(
+                socket,
+                400,
+                {"ok": False, "errorCode": "invalid_http", "error": str(error)},
+            )
+            return
+        body_start = header_end + 4
+        if len(buffer) < body_start + content_length:
+            return
+        body = bytes(buffer[body_start : body_start + content_length])
+        plan = local_api_request_plan(method, target, headers, body, self._token)
+        if not plan.get("ok"):
+            self._record_request(method, target, int(plan["statusCode"]))
+            self._send_json(socket, int(plan["statusCode"]), plan)
+            return
+        try:
+            if plan.get("route") == "health":
+                result: Any = {
+                    "service": "tokiDownloader",
+                    "api": self.status_handler(),
+                }
+            else:
+                request = dict(plan.get("request") or {})
+                result = self.control_handler(request)
+                if request.get("action") == "status" and isinstance(result, dict):
+                    result = dict(result)
+                    result.pop("jobs", None)
+                    result["jobsOmitted"] = True
+                    result["jobsEndpoint"] = "/v1/jobs"
+            response = {"ok": True, "result": result}
+            status_code = 200
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            response = {
+                "ok": False,
+                "errorCode": "control_error",
+                "error": str(error),
+            }
+            status_code = 400
+        self._record_request(method, target, status_code)
+        self._send_json(socket, status_code, response)
+
+    def _record_request(self, method: str, target: str, status_code: int) -> None:
+        self.request_count += 1
+        self.last_request = {
+            "method": str(method).upper(),
+            "path": urlsplit(str(target)).path,
+            "statusCode": int(status_code),
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        if self.log_handler:
+            self.log_handler(
+                f"로컬 API {self.last_request['method']} {self.last_request['path']} -> {status_code}",
+                "INFO" if status_code < 400 else "WARNING",
+            )
+
+    def _send_json(self, socket: Any, status_code: int, payload: dict[str, Any]) -> None:
+        reasons = {
+            200: "OK",
+            400: "Bad Request",
+            401: "Unauthorized",
+            403: "Forbidden",
+            404: "Not Found",
+            405: "Method Not Allowed",
+            413: "Payload Too Large",
+            415: "Unsupported Media Type",
+            431: "Request Header Fields Too Large",
+            500: "Internal Server Error",
+        }
+        try:
+            body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            status_code = 500
+            body = json.dumps(
+                {"ok": False, "errorCode": "serialization_error", "error": str(error)},
+                ensure_ascii=False,
+            ).encode("utf-8")
+        header = (
+            f"HTTP/1.1 {status_code} {reasons.get(status_code, 'Error')}\r\n"
+            "Content-Type: application/json; charset=utf-8\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Cache-Control: no-store\r\n"
+            "X-Content-Type-Options: nosniff\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        socket.write(header + body)
+        socket.flush()
+        socket.disconnectFromHost()
 
 
 class JobListModel(QAbstractListModel):
@@ -2592,7 +2809,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2971,6 +3188,32 @@ class SettingsDialog(QDialog):
             "CLI: memory set --display on|off"
         )
         advanced_form.addRow("메모리 사용량 표시", self.memory_display_check)
+        self.local_api_check = QCheckBox(
+            "127.0.0.1에서만 임시 Bearer 토큰으로 제어 API 실행"
+        )
+        self.local_api_check.setToolTip(
+            "CLI: local-api set --state on|off"
+        )
+        advanced_form.addRow("로컬 HTTP API", self.local_api_check)
+        self.local_api_port_spin = QSpinBox()
+        self.local_api_port_spin.setRange(1024, 65_535)
+        self.local_api_port_spin.setToolTip(
+            "CLI: local-api set --port N"
+        )
+        advanced_form.addRow("로컬 API 포트", self.local_api_port_spin)
+        local_api_status_row = QHBoxLayout()
+        self.local_api_status_label = QLabel("")
+        self.local_api_status_label.setObjectName("mutedLabel")
+        self.local_api_status_label.setWordWrap(True)
+        local_api_status_row.addWidget(self.local_api_status_label, 1)
+        self.local_api_copy_token_button = QPushButton("토큰 복사")
+        self.local_api_copy_token_button.setToolTip(
+            "CLI: local-api token --copy --yes"
+        )
+        self.local_api_copy_token_button.clicked.connect(self._copy_local_api_token)
+        local_api_status_row.addWidget(self.local_api_copy_token_button)
+        advanced_form.addRow("로컬 API 상태", local_api_status_row)
+        self.local_api_check.toggled.connect(self.local_api_port_spin.setEnabled)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
@@ -2979,7 +3222,8 @@ class SettingsDialog(QDialog):
             "설정값을 지우지 않고 실행 중 유효 상한과 썸네일 비용만 낮춥니다. 절전 방지는 "
             "화면을 계속 켜지 않고 실제 다운로드가 실행되는 동안에만 시스템 절전을 막습니다. "
             "PDF는 회차별로 별도 생성하며 원본 이미지를 변경하거나 삭제하지 않습니다. "
-            "메모리 표시는 읽기 전용이며 앱과 자식 작업을 시스템 전체 사용률과 구분합니다."
+            "메모리 표시는 읽기 전용이며 앱과 자식 작업을 시스템 전체 사용률과 구분합니다. "
+            "로컬 API는 외부 주소에 바인딩하지 않고 시작할 때마다 새 토큰을 만듭니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -3091,6 +3335,8 @@ class SettingsDialog(QDialog):
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
         targets = (
+            (("토큰", "상태"), self.local_api_status_label),
+            (("http", "HTTP", "api", "API", "로컬", "포트"), self.local_api_check),
             (("메모리 사용량", "ram", "RAM", "자식 프로세스"), self.memory_display_check),
             (("pdf", "PDF", "회차"), self.pdf_generation_check),
             (("절전", "전원"), self.prevent_sleep_check),
@@ -3127,6 +3373,24 @@ class SettingsDialog(QDialog):
         else:
             text = "유휴 · 다운로드가 시작될 때만 활성화됩니다."
         self.sleep_prevention_status_label.setText(text)
+
+    def _update_local_api_status(self) -> None:
+        snapshot_method = getattr(self.owner, "local_api_status_snapshot", None)
+        snapshot = snapshot_method() if callable(snapshot_method) else {}
+        if snapshot.get("running"):
+            text = f"실행 중 · {snapshot.get('baseUrl')} · 토큰 {snapshot.get('tokenHint')}"
+        elif snapshot.get("error"):
+            text = f"시작 오류 · {snapshot['error']}"
+        else:
+            text = "중지됨 · 외부 주소에는 바인딩하지 않습니다."
+        self.local_api_status_label.setText(text)
+        self.local_api_copy_token_button.setEnabled(bool(snapshot.get("tokenPresent")))
+
+    def _copy_local_api_token(self) -> None:
+        try:
+            self.owner.copy_local_api_token()
+        except RuntimeError as error:
+            QMessageBox.warning(self, "로컬 API 토큰", str(error))
 
     def state_snapshot(self) -> dict[str, Any]:
         index = self.tabs.currentIndex()
@@ -3208,6 +3472,10 @@ class SettingsDialog(QDialog):
         )
         self.pdf_generation_check.setChecked(bool(values["pdfGenerationEnabled"]))
         self.memory_display_check.setChecked(bool(values["memoryDisplayEnabled"]))
+        self.local_api_check.setChecked(bool(values["localApiEnabled"]))
+        self.local_api_port_spin.setValue(int(values["localApiPort"]))
+        self.local_api_port_spin.setEnabled(self.local_api_check.isChecked())
+        self._update_local_api_status()
         self._update_sleep_prevention_status()
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
@@ -3401,6 +3669,8 @@ class SettingsDialog(QDialog):
             "preventSleepDuringDownloads": self.prevent_sleep_check.isChecked(),
             "pdfGenerationEnabled": self.pdf_generation_check.isChecked(),
             "memoryDisplayEnabled": self.memory_display_check.isChecked(),
+            "localApiEnabled": self.local_api_check.isChecked(),
+            "localApiPort": self.local_api_port_spin.value(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -4070,6 +4340,12 @@ class MainWindow(QMainWindow):
             "flushes": 0,
             "renderedUpdates": 0,
         }
+        self.local_api_server = LocalApiServer(
+            self._handle_control_action,
+            self.local_api_status_snapshot,
+            lambda message, level: self.log(message, level),
+            self,
+        )
 
         self.setWindowTitle(f"tokiDownloader {APP_VERSION}")
         window_config = self.config.get("window", {})
@@ -4099,6 +4375,7 @@ class MainWindow(QMainWindow):
             self.run_retention_report = {"ok": False, "error": str(error)}
         self._configure_tray()
         self._start_control_server()
+        self._configure_local_api()
         self._restore_job_history()
         QApplication.clipboard().dataChanged.connect(self._clipboard_changed)
 
@@ -5569,6 +5846,69 @@ class MainWindow(QMainWindow):
             f"상태: {display['severity']} · CLI: memory status --json"
         )
 
+    def local_api_status_snapshot(self) -> dict[str, Any]:
+        server = self.local_api_server
+        return {
+            "ok": not bool(server.error()),
+            **local_api_policy_snapshot(
+                self.config,
+                running=server.is_running(),
+                current_port=server.port(),
+                token=server.token(),
+                error=server.error(),
+            ),
+            "requestCount": server.request_count,
+            "lastRequest": server.last_request,
+        }
+
+    def _configure_local_api(self) -> None:
+        enabled = bool(self.config.get("localApiEnabled", False))
+        configured_port = int(self.config.get("localApiPort") or 8765)
+        server = self.local_api_server
+        if enabled:
+            if not server.is_running() or server.port() != configured_port:
+                started = server.start(configured_port)
+                if started:
+                    self.log(
+                        f"로컬 HTTP API 시작: 127.0.0.1:{server.port()} · 임시 토큰 생성"
+                    )
+                else:
+                    self.log(
+                        f"로컬 HTTP API 시작 실패: {server.error()}",
+                        "ERROR",
+                    )
+        elif server.is_running() or server.token() or server.error():
+            server.stop()
+            self.log("로컬 HTTP API 중지")
+        dialog = getattr(self, "active_settings_dialog", None)
+        if dialog:
+            dialog._update_local_api_status()
+
+    def local_api_token_snapshot(self, *, reveal: bool = False) -> dict[str, Any]:
+        status = self.local_api_status_snapshot()
+        if reveal:
+            token = self.local_api_server.token()
+            if not token:
+                raise RuntimeError("로컬 HTTP API가 실행 중이 아닙니다.")
+            status["token"] = token
+        return status
+
+    def copy_local_api_token(self) -> bool:
+        token = self.local_api_server.token()
+        if not token:
+            raise RuntimeError("로컬 HTTP API가 실행 중이 아닙니다.")
+        QApplication.clipboard().setText(token)
+        self.statusBar().showMessage("로컬 API 임시 토큰을 클립보드에 복사했습니다.", 4000)
+        return True
+
+    def rotate_local_api_token(self) -> dict[str, Any]:
+        self.local_api_server.rotate_token()
+        self.log("로컬 HTTP API 임시 토큰 재발급")
+        dialog = getattr(self, "active_settings_dialog", None)
+        if dialog:
+            dialog._update_local_api_status()
+        return self.local_api_status_snapshot()
+
     def _start_next_job(self) -> None:
         concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
         while self.pending_jobs and available_work_slots(
@@ -6902,6 +7242,9 @@ class MainWindow(QMainWindow):
         configure_memory = getattr(self, "_configure_memory_display", None)
         if callable(configure_memory):
             configure_memory()
+        configure_local_api = getattr(self, "_configure_local_api", None)
+        if callable(configure_local_api):
+            configure_local_api()
         sync_sleep = getattr(self, "_sync_sleep_prevention", None)
         if callable(sync_sleep):
             sync_sleep()
@@ -9550,6 +9893,7 @@ class MainWindow(QMainWindow):
             },
             "listPerformance": self.list_performance_status_snapshot(),
             "memoryUsage": self.memory_status_snapshot(),
+            "localApi": self.local_api_status_snapshot(),
             "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),
@@ -10286,6 +10630,19 @@ class MainWindow(QMainWindow):
             return self.memory_status_snapshot(
                 max(0, min(1000, int(request.get("childLimit") or 200)))
             )
+        if action == "local_api_status":
+            return self.local_api_status_snapshot()
+        if action == "local_api_token":
+            if not request.get("confirmed"):
+                raise ValueError("로컬 API 토큰 작업에는 명시적 확인이 필요합니다.")
+            if request.get("rotate"):
+                return self.rotate_local_api_token()
+            if request.get("copy"):
+                return {
+                    **self.local_api_status_snapshot(),
+                    "copied": self.copy_local_api_token(),
+                }
+            return self.local_api_token_snapshot(reveal=bool(request.get("reveal")))
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()
@@ -10381,6 +10738,7 @@ class MainWindow(QMainWindow):
         self.persist_timer.stop()
         self._flush_job_history()
         self.sleep_prevention_controller.close()
+        self.local_api_server.stop()
         self.control_server.close()
         if self.tray_icon:
             self.tray_icon.hide()

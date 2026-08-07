@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import importlib.metadata
 import ipaddress
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -20,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
 import psutil
@@ -42,7 +44,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 14
+CONFIG_SCHEMA_VERSION = 15
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -127,6 +129,8 @@ SETTING_KEYS = frozenset(
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
         "memoryDisplayEnabled",
+        "localApiEnabled",
+        "localApiPort",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -422,6 +426,8 @@ def default_config() -> dict[str, Any]:
         "preventSleepDuringDownloads": False,
         "pdfGenerationEnabled": False,
         "memoryDisplayEnabled": True,
+        "localApiEnabled": False,
+        "localApiPort": 8765,
     }
 
 
@@ -1313,6 +1319,13 @@ def normalize_list_scroll_lines(value: int | None) -> int:
     return normalized
 
 
+def normalize_local_api_port(value: int | None) -> int:
+    normalized = 8765 if value is None else int(value)
+    if not 1024 <= normalized <= 65_535:
+        raise ValueError("로컬 HTTP API 포트는 1024~65535여야 합니다.")
+    return normalized
+
+
 def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
@@ -1390,6 +1403,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
         "memoryDisplayEnabled",
+        "localApiEnabled",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1517,6 +1531,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_list_scroll_lines,
         source.get("listScrollLines"),
         defaults["listScrollLines"],
+    )
+    normalized["localApiPort"] = _safe_normalize(
+        normalize_local_api_port,
+        source.get("localApiPort"),
+        defaults["localApiPort"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -1676,6 +1695,7 @@ def validate_app_setting_updates(
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
         "memoryDisplayEnabled",
+        "localApiEnabled",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -1715,6 +1735,7 @@ def validate_app_setting_updates(
         "listPageSize": normalize_list_page_size,
         "listLoadedLimit": normalize_list_loaded_limit,
         "listScrollLines": normalize_list_scroll_lines,
+        "localApiPort": normalize_local_api_port,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -2185,6 +2206,173 @@ def memory_usage_snapshot(
             "severity": severity,
         },
     }
+
+
+LOCAL_API_READ_ACTIONS = frozenset(
+    {
+        "ping",
+        "status",
+        "list_jobs",
+        "job_info",
+        "list_runs",
+        "queue_list",
+        "memory_status",
+        "resource_status",
+        "pdf_status",
+        "notification_status",
+        "list_performance_status",
+        "sleep_prevention_status",
+        "persistence_status",
+        "image_processing_policy",
+        "archive_viewer_policy",
+    }
+)
+LOCAL_API_CONTROL_ACTIONS = frozenset(
+    {
+        "enqueue",
+        "stop",
+        "pause",
+        "resume",
+        "cancel",
+        "queue_move",
+        "retry",
+        "rescan",
+        "refresh_metadata",
+        "set_image_concurrency",
+        "set_concurrency",
+        "set_retry_policy",
+        "set_list_filter",
+        "pin_job",
+        "tag_job",
+        "refresh_list",
+    }
+)
+LOCAL_API_ALLOWED_ACTIONS = LOCAL_API_READ_ACTIONS | LOCAL_API_CONTROL_ACTIONS
+LOCAL_API_MAX_REQUEST_BYTES = 64 * 1024
+
+
+def generate_local_api_token(byte_count: int = 32) -> str:
+    clean_count = max(24, min(64, int(byte_count)))
+    return secrets.token_urlsafe(clean_count)
+
+
+def local_api_policy_snapshot(
+    config: dict[str, Any] | None = None,
+    *,
+    running: bool = False,
+    current_port: int = 0,
+    token: str = "",
+    error: str = "",
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    clean_token = str(token or "")
+    port = int(current_port or source["localApiPort"])
+    return {
+        "enabled": bool(source["localApiEnabled"]),
+        "running": bool(running),
+        "host": "127.0.0.1",
+        "configuredPort": int(source["localApiPort"]),
+        "port": port,
+        "baseUrl": f"http://127.0.0.1:{port}" if running else "",
+        "authentication": "Bearer",
+        "tokenPresent": bool(clean_token),
+        "tokenHint": f"…{clean_token[-6:]}" if clean_token else "",
+        "tokenPersistent": False,
+        "publicBindingAllowed": False,
+        "corsEnabled": False,
+        "maxRequestBytes": LOCAL_API_MAX_REQUEST_BYTES,
+        "allowedActions": sorted(LOCAL_API_ALLOWED_ACTIONS),
+        "error": str(error or ""),
+    }
+
+
+def _local_api_rejection(status_code: int, code: str, message: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "statusCode": int(status_code),
+        "errorCode": code,
+        "error": message,
+    }
+
+
+def local_api_request_plan(
+    method: str,
+    target: str,
+    headers: dict[str, Any] | None,
+    body: bytes,
+    expected_token: str,
+) -> dict[str, Any]:
+    clean_method = str(method or "").upper()
+    if clean_method not in {"GET", "POST"}:
+        return _local_api_rejection(405, "method_not_allowed", "GET과 POST만 지원합니다.")
+    if len(body) > LOCAL_API_MAX_REQUEST_BYTES:
+        return _local_api_rejection(413, "request_too_large", "요청 본문이 64 KiB를 넘습니다.")
+    normalized_headers = {
+        str(key).strip().casefold(): str(value).strip()
+        for key, value in (headers or {}).items()
+    }
+    authorization = normalized_headers.get("authorization", "")
+    supplied_token = normalized_headers.get("x-toki-token", "")
+    if authorization.casefold().startswith("bearer "):
+        supplied_token = authorization[7:].strip()
+    expected = str(expected_token or "")
+    authorized = bool(expected) and hmac.compare_digest(
+        supplied_token.encode("utf-8", errors="replace"),
+        expected.encode("utf-8", errors="replace"),
+    )
+    if not authorized:
+        return _local_api_rejection(401, "unauthorized", "유효한 Bearer 토큰이 필요합니다.")
+    parsed = urlsplit(str(target or ""))
+    path = parsed.path.rstrip("/") or "/"
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    if clean_method == "GET" and path == "/v1/health":
+        return {"ok": True, "statusCode": 200, "route": "health", "request": None}
+    if clean_method == "GET" and path == "/v1/status":
+        return {
+            "ok": True,
+            "statusCode": 200,
+            "route": "control",
+            "request": {"action": "status"},
+        }
+    if clean_method == "GET" and path == "/v1/jobs":
+        try:
+            limit = max(1, min(1000, int((query.get("limit") or [200])[0])))
+            offset = max(0, int((query.get("offset") or [0])[0]))
+        except (TypeError, ValueError):
+            return _local_api_rejection(400, "invalid_query", "limit 또는 offset이 올바르지 않습니다.")
+        return {
+            "ok": True,
+            "statusCode": 200,
+            "route": "control",
+            "request": {
+                "action": "list_jobs",
+                "query": str((query.get("query") or [""])[0]),
+                "status": str((query.get("status") or [""])[0]),
+                "sort": str((query.get("sort") or ["updated"])[0]),
+                "limit": limit,
+                "offset": offset,
+            },
+        }
+    if clean_method == "POST" and path == "/v1/control":
+        content_type = normalized_headers.get("content-type", "")
+        if "application/json" not in content_type.casefold():
+            return _local_api_rejection(415, "unsupported_media_type", "application/json 본문이 필요합니다.")
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _local_api_rejection(400, "invalid_json", "요청 JSON을 읽을 수 없습니다.")
+        if not isinstance(request, dict):
+            return _local_api_rejection(400, "invalid_request", "JSON 객체가 필요합니다.")
+        action = str(request.get("action") or "")
+        if action not in LOCAL_API_ALLOWED_ACTIONS:
+            return _local_api_rejection(403, "action_not_allowed", "로컬 API에서 허용하지 않는 동작입니다.")
+        return {
+            "ok": True,
+            "statusCode": 200,
+            "route": "control",
+            "request": request,
+        }
+    return _local_api_rejection(404, "not_found", "지원하지 않는 로컬 API 경로입니다.")
 
 
 def list_performance_policy_snapshot(

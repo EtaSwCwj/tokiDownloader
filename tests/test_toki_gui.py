@@ -104,6 +104,48 @@ class _ProgressStub:
         self.visible = value
 
 
+class _LocalApiServerStub:
+    def __init__(self) -> None:
+        self.running = False
+        self.selected_port = 0
+        self.secret = ""
+        self.last_error = ""
+        self.request_count = 0
+        self.last_request = {}
+        self.start_calls: list[int] = []
+        self.stop_calls = 0
+
+    def start(self, port: int) -> bool:
+        self.start_calls.append(port)
+        self.running = True
+        self.selected_port = port
+        self.secret = "temporary-secret"
+        return True
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.running = False
+        self.selected_port = 0
+        self.secret = ""
+        self.last_error = ""
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def port(self) -> int:
+        return self.selected_port
+
+    def token(self) -> str:
+        return self.secret
+
+    def error(self) -> str:
+        return self.last_error
+
+    def rotate_token(self) -> str:
+        self.secret = "rotated-secret"
+        return self.secret
+
+
 class _ProcessStub:
     instances = []
 
@@ -156,6 +198,53 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_local_api_runtime_is_loopback_temporary_and_ipc_controlled(self) -> None:
+        harness = type("LocalApiHarness", (), {})()
+        harness.config = {"localApiEnabled": True, "localApiPort": 9123}
+        harness.local_api_server = _LocalApiServerStub()
+        harness.active_settings_dialog = None
+        harness.logs = []
+        harness.log = lambda *args, **kwargs: harness.logs.append((args, kwargs))
+        harness.local_api_status_snapshot = lambda: MainWindow.local_api_status_snapshot(
+            harness
+        )
+
+        MainWindow._configure_local_api(harness)
+        status = MainWindow.local_api_status_snapshot(harness)
+        self.assertEqual(harness.local_api_server.start_calls, [9123])
+        self.assertTrue(status["running"])
+        self.assertEqual(status["host"], "127.0.0.1")
+        self.assertFalse(status["publicBindingAllowed"])
+        self.assertNotIn("temporary-secret", str(status))
+
+        token_harness = type("LocalApiTokenHarness", (), {})()
+        token_harness.local_api_status_snapshot = lambda: status
+        token_harness.local_api_token_snapshot = lambda reveal=False: {
+            **status,
+            **({"token": "temporary-secret"} if reveal else {}),
+        }
+        token_harness.copy_local_api_token = lambda: True
+        token_harness.rotate_local_api_token = lambda: {**status, "tokenHint": "…rotated"}
+        revealed = MainWindow._handle_control_action(
+            token_harness,
+            {
+                "action": "local_api_token",
+                "reveal": True,
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(revealed["token"], "temporary-secret")
+        with self.assertRaises(ValueError):
+            MainWindow._handle_control_action(
+                token_harness,
+                {"action": "local_api_token", "reveal": True},
+            )
+
+        harness.config["localApiEnabled"] = False
+        MainWindow._configure_local_api(harness)
+        self.assertFalse(harness.local_api_server.running)
+        self.assertEqual(harness.local_api_server.stop_calls, 1)
+
     def test_memory_display_uses_shared_snapshot_timer_and_ipc(self) -> None:
         harness = type("MemoryHarness", (), {})()
         harness.config = {"memoryDisplayEnabled": True}

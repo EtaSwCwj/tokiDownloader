@@ -11,11 +11,99 @@ from pathlib import Path
 from unittest.mock import patch
 
 import toki_app
-from toki_app import build_parser, run_cli, run_direct_download
+from toki_app import ControlError, build_parser, local_api_http_request, run_cli, run_direct_download
 from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_local_api_cli_controls_settings_token_and_loopback_request(self) -> None:
+        status = {
+            "ok": True,
+            "enabled": True,
+            "running": True,
+            "host": "127.0.0.1",
+            "baseUrl": "http://127.0.0.1:8765",
+            "tokenHint": "…abcdef",
+        }
+        status_args = build_parser().parse_args(["local-api", "status", "--json"])
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=status) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        request.assert_called_once_with({"action": "local_api_status"})
+
+        set_args = build_parser().parse_args(
+            ["local-api", "set", "--state", "on", "--port", "9123", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=status) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[0].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"localApiEnabled": True, "localApiPort": 9123},
+                "reset": False,
+            },
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[0], {"action": "local_api_status"}
+        )
+
+        token_args = build_parser().parse_args(
+            ["local-api", "token", "--show", "--yes", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={**status, "token": "secret-value"},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(token_args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "local_api_token",
+                "reveal": True,
+                "copy": False,
+                "rotate": False,
+                "confirmed": True,
+            }
+        )
+
+        request_args = build_parser().parse_args(
+            ["local-api", "request", "--path", "/v1/health", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                side_effect=[status, {**status, "token": "secret-value"}],
+            ) as ipc,
+            patch(
+                "toki_app.local_api_http_request",
+                return_value={"ok": True, "statusCode": 200, "response": {"ok": True}},
+            ) as http_request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(request_args), 0)
+        self.assertEqual(ipc.call_count, 2)
+        http_request.assert_called_once_with(
+            "http://127.0.0.1:8765",
+            "secret-value",
+            method="GET",
+            path="/v1/health",
+            body="",
+        )
+        with self.assertRaises(ControlError):
+            local_api_http_request("http://example.com:8765", "token")
+
     def test_memory_cli_reports_gui_process_tree_and_controls_display(self) -> None:
         snapshot = {
             "ok": True,

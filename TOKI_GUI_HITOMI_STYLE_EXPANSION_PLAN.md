@@ -418,7 +418,7 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 - [x] 다운로드 중 절전 방지
 - [x] PDF 생성
 - [x] 메모리 사용량 표시
-- [ ] 로컬 HTTP API
+- [x] 로컬 HTTP API
 
 변환·리사이즈·PDF는 원본 보존이 기본이며, 원본 제거 옵션은 별도 승인 없이는 실행하지
 않는다. HTTP API는 기본 `127.0.0.1` 바인딩, 임의 토큰 인증, 기본 비활성으로 한다.
@@ -527,6 +527,19 @@ set --display on|off`, `status --json`과 고급 설정이 같은 서비스를 �
 CLI 즉시 숨김·복원을 확인했다. 화면은 `logs/memory-usage-status.png`,
 `logs/memory-display-settings.png`에 보존했으며 기본 표시 켜짐으로 복원했다. Python 197건과
 Node 16건을 통과했다.
+
+2026-08-07 로컬 HTTP API 구현: 설정 스키마 v15에 기본 꺼짐과 1024~65535 포트를 추가하고
+Qt TCP 서버가 `127.0.0.1`에만 수신하도록 고정했다. 시작할 때마다 32바이트 기반 임시 Bearer
+토큰을 재발급하며 설정·DB·로그에는 원문을 쓰지 않고 상태에는 끝 6자리만 표시한다. CORS와
+공개 주소 바인딩은 지원하지 않으며 요청은 64 KiB, 작품 페이지는 최대 1,000개로 제한한다.
+`GET /v1/health|status|jobs`와 `POST /v1/control`은 기존 GUI 제어 서비스를 사용하되 다운로드
+추가·중지·일시정지·재시도·조회 등 명시적 허용 목록만 받는다. 기록 삭제, 파일 이동·변환,
+쿠키, 시스템/프로그램 종료와 토큰 관리는 HTTP에서 403으로 거부한다. `local-api
+status|set|token|request`, GUI 고급 설정·포트·상태·토큰 복사 버튼을 연결했고 원문 표시·복사·
+재발급은 CLI `--yes`를 요구한다. 실제 임시 루프백 포트에서 무토큰 401, 인증된 health/jobs/
+memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부 연결은 실행하지 않았다.
+`logs/local-api-settings.png`에서 주소·토큰 힌트·대비를 확인하고 서버 꺼짐·포트 8765로
+복원했다. Python 200건과 Node 16건을 통과했다.
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 

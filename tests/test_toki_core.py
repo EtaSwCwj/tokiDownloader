@@ -67,6 +67,9 @@ from toki_core import (
     load_jobs_page,
     list_job_episode_images,
     list_performance_policy_snapshot,
+    local_api_policy_snapshot,
+    local_api_request_plan,
+    generate_local_api_token,
     memory_usage_snapshot,
     load_run,
     load_runs_page,
@@ -143,6 +146,68 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_local_api_is_loopback_token_authenticated_and_action_limited(self) -> None:
+        config = default_config()
+        self.assertFalse(config["localApiEnabled"])
+        self.assertEqual(config["localApiPort"], 8765)
+        with patch("toki_core.secrets.token_urlsafe", return_value="temporary-token"):
+            token = generate_local_api_token()
+        self.assertEqual(token, "temporary-token")
+        policy = local_api_policy_snapshot(
+            config,
+            running=True,
+            current_port=9123,
+            token=token,
+        )
+        self.assertEqual(policy["host"], "127.0.0.1")
+        self.assertEqual(policy["baseUrl"], "http://127.0.0.1:9123")
+        self.assertFalse(policy["publicBindingAllowed"])
+        self.assertFalse(policy["corsEnabled"])
+        self.assertFalse(policy["tokenPersistent"])
+        self.assertNotIn(token, json.dumps(policy, ensure_ascii=False))
+
+        unauthorized = local_api_request_plan(
+            "GET", "/v1/health", {}, b"", token
+        )
+        self.assertEqual(unauthorized["statusCode"], 401)
+        headers = {"Authorization": f"Bearer {token}"}
+        health = local_api_request_plan(
+            "GET", "/v1/health", headers, b"", token
+        )
+        self.assertEqual(health["route"], "health")
+        jobs = local_api_request_plan(
+            "GET", "/v1/jobs?limit=25&offset=50&query=test", headers, b"", token
+        )
+        self.assertEqual(
+            jobs["request"],
+            {
+                "action": "list_jobs",
+                "query": "test",
+                "status": "",
+                "sort": "updated",
+                "limit": 25,
+                "offset": 50,
+            },
+        )
+        allowed = local_api_request_plan(
+            "POST",
+            "/v1/control",
+            {**headers, "Content-Type": "application/json"},
+            b'{"action":"pause","jobId":"job-1"}',
+            token,
+        )
+        self.assertEqual(allowed["request"]["action"], "pause")
+        forbidden = local_api_request_plan(
+            "POST",
+            "/v1/control",
+            {**headers, "Content-Type": "application/json"},
+            b'{"action":"remove_record","jobId":"job-1"}',
+            token,
+        )
+        self.assertEqual(forbidden["statusCode"], 403)
+        with self.assertRaises(ValueError):
+            update_app_settings({"localApiPort": 80})
+
     def test_memory_usage_snapshot_separates_app_children_and_system_pressure(self) -> None:
         gib = 1024**3
 
