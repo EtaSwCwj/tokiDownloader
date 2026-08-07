@@ -502,6 +502,16 @@ PDF 루트 PID별 자식 RSS도 합산한다. 모의 16 GiB/두 자식 프로세
 외부 연결은 실행하지 않았다. `logs/local-api-settings.png`를 캡처하고 서버 꺼짐·8765로
 복원했다. Python 200건과 Node 16건을 통과했다.
 
+2026-08-07 Hitomi 선택 공급자 식별자 분석: 별도 `hitomi_provider.py` 계약 v1이 Hitomi
+작품·리더·갤러리 URL, ExHentai/E-Hentai `/g/ID/TOKEN/`과 숫자 갤러리 ID를 외부 접속 없이
+분석하고 `provider:gallery_id` 작품 키로 정규화한다. 공급자별 안정 오류 코드를 제공하며
+ExHentai 갤러리 토큰은 원문을 결과·로그·설정에 남기지 않고 끝 4자리만 표시한다. `hitomi
+status|inspect|close`, GUI 공급자 탭과 URL/ID 분석창, IPC·상태·캡처가 같은 서비스에
+연결됐다. 현재 네트워크·메타데이터·다운로드는 기능 상태에서 명시적으로 비활성으로
+보고하고 접근 제한 우회는 구현하지 않았다. 화면은 `logs/hitomi-reference-inspector.png`,
+`logs/hitomi-provider-settings.png`에 보존했고 Python 207건, Node 16건, 자체 점검 5/5와
+필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

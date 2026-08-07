@@ -125,6 +125,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd local-api request --method POST --path "/v1/control" --body '{"action":"memory_status"}' --json
 .\toki-cli.cmd local-api token --copy --yes --json
 .\toki-cli.cmd local-api token --rotate --yes --json
+.\toki-cli.cmd hitomi status --json
+.\toki-cli.cmd hitomi inspect --input "https://hitomi.la/manga/sample-1234567.html" --json
+.\toki-cli.cmd hitomi inspect --input "1234567" --provider hitomi --show-gui --json
+.\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -697,6 +701,18 @@ PDF 작업별 프로세스 합계를 반환합니다. `--child-limit 0~1000`으�
 `local-api request`는 토큰을 화면에 출력하지 않고 현재 GUI의 임시 토큰을 로컬 IPC로 받아
 루프백 API를 점검합니다. API를 켠 설정만 저장하고 GUI가 꺼져 있으면 서버는 실행되지
 않습니다.
+
+Hitomi/ExHentai 선택 공급자의 첫 단계로 URL·갤러리 ID 분석기를 제공합니다. `hitomi
+inspect --input URL_OR_ID --provider auto|hitomi|exhentai --json`은 외부 네트워크를 전혀
+사용하지 않고 공급자, 숫자 갤러리 ID, `hitomi:ID` 또는 `exhentai:ID` 작품 식별자를
+반환합니다. Hitomi의 작품·리더·갤러리 URL과 ExHentai/E-Hentai의 `/g/ID/TOKEN/` 형식을
+구분하며 잘못된 입력에는 `hitomi.*` 네임스페이스의 안정적인 오류 코드를 냅니다.
+ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에 원문을 남기지 않으며 끝 4자리
+힌트만 표시합니다. `--show-gui`로 같은 분석기를 GUI 대화상자에서 열고 `hitomi close`로
+닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
+false`, `download: false`, `metadata: false`로 아직 연결되지 않은 범위를 명확히 표시합니다.
+접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
+`logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

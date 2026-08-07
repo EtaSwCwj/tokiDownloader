@@ -543,7 +543,7 @@ memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 
-- [ ] URL과 갤러리 ID 분석
+- [x] URL과 갤러리 ID 분석
 - [ ] 서버 자동·수동 선택과 우선순위
 - [ ] 갤러리 메타데이터 모드
 - [ ] 원본/숫자/숫자+원본 파일명
@@ -555,6 +555,17 @@ memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부
 
 접근 제한 우회는 구현 범위에 포함하지 않는다. 사이트 변경에 견딜 수 있도록 공급자
 테스트 픽스처와 명확한 오류 코드를 둔다.
+
+2026-08-07 Hitomi URL·갤러리 ID 분석 구현: `hitomi_provider.py`에 네트워크와 분리된
+공급자 계약 v1을 만들고 Hitomi 작품/리더/갤러리 URL, ExHentai·E-Hentai
+`/g/ID/TOKEN/`, 숫자 ID를 같은 작품 키로 정규화했다. 잘못된 호스트·ID·공급자 힌트·누락
+토큰은 `hitomi.*` 오류 코드로 구분한다. ExHentai 갤러리 토큰은 원문을 반환·표시·기록하지
+않고 끝 4자리 힌트만 유지한다. `hitomi status|inspect|close`, GUI 공급자 탭의 분석 버튼과
+URL/ID 분석창, GUI IPC·상태·화면 캡처가 모두 같은 서비스를 사용한다. 이 단위는 외부
+요청·메타데이터·다운로드를 명시적으로 false로 보고하며 접근 제한 우회는 포함하지 않는다.
+Hitomi/ExHentai/잘못된 입력 픽스처와 CLI·GUI IPC를 네트워크 없이 검증했고
+`logs/hitomi-reference-inspector.png`, `logs/hitomi-provider-settings.png`에 결과창과 공급자
+탭을 보존했다. Python 207건, Node 16건, 자체 점검 5/5와 필수 환경 5/5를 통과했다.
 
 ### 단계 H. YouTube 선택형 공급자
 

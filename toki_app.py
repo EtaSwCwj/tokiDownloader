@@ -21,6 +21,11 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
+from hitomi_provider import (
+    HitomiReferenceError,
+    hitomi_provider_capabilities,
+    inspect_hitomi_reference,
+)
 from toki_core import (
     APP_VERSION,
     archive_viewer_policy_snapshot,
@@ -796,6 +801,36 @@ def build_parser() -> argparse.ArgumentParser:
     local_api_request.add_argument("--path", default="/v1/health", help="/로 시작하는 API 경로")
     local_api_request.add_argument("--body", default="", help="POST JSON 본문")
     local_api_request.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_parser = subparsers.add_parser(
+        "hitomi", help="Hitomi/ExHentai 선택 공급자 URL과 갤러리 ID 도구"
+    )
+    hitomi_commands = hitomi_parser.add_subparsers(
+        dest="hitomi_command", required=True
+    )
+    hitomi_status = hitomi_commands.add_parser(
+        "status", help="공급자 계약과 현재 구현 범위 조회"
+    )
+    hitomi_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_inspect = hitomi_commands.add_parser(
+        "inspect", help="외부 접속 없이 URL 또는 갤러리 ID 분석"
+    )
+    hitomi_inspect.add_argument(
+        "--input", required=True, help="Hitomi/ExHentai URL 또는 숫자 갤러리 ID"
+    )
+    hitomi_inspect.add_argument(
+        "--provider",
+        choices=("auto", "hitomi", "exhentai"),
+        default="auto",
+        help="숫자 ID 해석 공급자 또는 URL 일치 확인",
+    )
+    hitomi_inspect.add_argument(
+        "--show-gui", action="store_true", help="분석 결과를 GUI 대화상자에 표시"
+    )
+    hitomi_inspect.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_close = hitomi_commands.add_parser(
+        "close", help="열린 Hitomi URL/ID 분석창 닫기"
+    )
+    hitomi_close.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2188,6 +2223,31 @@ def run_cli(args: argparse.Namespace) -> int:
                 path=args.path,
                 body=args.body,
             )
+        print_json(result)
+        return 0 if result.get("ok", True) else 2
+    if command == "hitomi":
+        if args.hitomi_command == "status":
+            result = hitomi_provider_capabilities()
+        elif args.hitomi_command == "close":
+            ensure_gui_running()
+            result = control_request({"action": "close_hitomi_inspector"})
+        elif args.show_gui:
+            ensure_gui_running()
+            result = control_request(
+                {
+                    "action": "show_hitomi_inspector",
+                    "reference": args.input,
+                    "provider": args.provider,
+                }
+            )
+        else:
+            try:
+                result = inspect_hitomi_reference(
+                    args.input,
+                    provider_hint=args.provider,
+                )
+            except HitomiReferenceError as error:
+                result = error.to_dict()
         print_json(result)
         return 0 if result.get("ok", True) else 2
     if command == "sleep-prevention":

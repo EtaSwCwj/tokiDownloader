@@ -50,6 +50,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "toki_app.py",
         ROOT_DIR / "toki_core.py",
         ROOT_DIR / "toki_gui.py",
+        ROOT_DIR / "hitomi_provider.py",
         ROOT_DIR / "down.js",
         ROOT_DIR / "downloader_policy.js",
         ROOT_DIR / "downloader_errors.js",
@@ -80,6 +81,7 @@ def _check_python_syntax() -> dict[str, Any]:
         ROOT_DIR / "toki_core.py",
         ROOT_DIR / "toki_gui.py",
         ROOT_DIR / "toki_selftest.py",
+        ROOT_DIR / "hitomi_provider.py",
     ]
     for path in files:
         py_compile.compile(str(path), doraise=True)

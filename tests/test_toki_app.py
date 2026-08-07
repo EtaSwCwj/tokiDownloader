@@ -16,6 +16,77 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_cli_inspects_offline_and_controls_gui_dialog(self) -> None:
+        inspect_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "inspect",
+                "--input",
+                "https://hitomi.la/manga/sample-1234567.html",
+                "--json",
+            ]
+        )
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(run_cli(inspect_args), 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["workKey"], "hitomi:1234567")
+        self.assertFalse(payload["networkRequested"])
+
+        invalid_args = build_parser().parse_args(
+            ["hitomi", "inspect", "--input", "https://example.com/1", "--json"]
+        )
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            self.assertEqual(run_cli(invalid_args), 2)
+        self.assertEqual(
+            json.loads(stdout.getvalue())["errorCode"],
+            "hitomi.unsupported_host",
+        )
+
+        show_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "inspect",
+                "--input",
+                "42",
+                "--provider",
+                "exhentai",
+                "--show-gui",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request",
+                return_value={"shown": True, "result": {"workKey": "exhentai:42"}},
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(show_args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "show_hitomi_inspector",
+                "reference": "42",
+                "provider": "exhentai",
+            }
+        )
+
+        close_args = build_parser().parse_args(["hitomi", "close", "--json"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"closed": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_args), 0)
+        request.assert_called_once_with({"action": "close_hitomi_inspector"})
+
+        status_args = build_parser().parse_args(["hitomi", "status", "--json"])
+        with redirect_stdout(StringIO()) as stdout:
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertFalse(json.loads(stdout.getvalue())["download"])
+
     def test_local_api_cli_controls_settings_token_and_loopback_request(self) -> None:
         status = {
             "ok": True,

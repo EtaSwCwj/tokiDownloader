@@ -99,6 +99,12 @@ except ImportError as error:
     QWebEngineProfile = None
     QWebEngineView = None
 
+from hitomi_provider import (
+    HitomiReferenceError,
+    hitomi_provider_capabilities,
+    inspect_hitomi_reference,
+)
+
 
 def webengine_runtime_status() -> dict[str, Any]:
     available = all((QWebEnginePage, QWebEngineProfile, QWebEngineView))
@@ -2318,6 +2324,124 @@ class CompletionCountdownDialog(QDialog):
         }
 
 
+class HitomiReferenceDialog(QDialog):
+    def __init__(
+        self,
+        owner: "MainWindow",
+        reference: str = "",
+        provider_hint: str = "auto",
+    ) -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.last_result: dict[str, Any] = {}
+        self.setWindowTitle("Hitomi / ExHentai URL·ID 분석")
+        self.resize(720, 430)
+        layout = QVBoxLayout(self)
+
+        heading = QLabel("Hitomi / ExHentai 작품 식별자 검사")
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        note = QLabel(
+            "URL 또는 숫자 갤러리 ID를 외부 네트워크 연결 없이 분석합니다. "
+            "ExHentai 갤러리 토큰은 결과와 로그에 원문으로 표시하지 않습니다."
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        form = QFormLayout()
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItem("자동 판정", "auto")
+        self.provider_combo.addItem("Hitomi", "hitomi")
+        self.provider_combo.addItem("ExHentai", "exhentai")
+        provider_index = self.provider_combo.findData(str(provider_hint or "auto"))
+        self.provider_combo.setCurrentIndex(max(0, provider_index))
+        form.addRow("공급자", self.provider_combo)
+        self.reference_edit = QLineEdit(str(reference or ""))
+        self.reference_edit.setPlaceholderText(
+            "https://hitomi.la/manga/title-1234567.html 또는 1234567"
+        )
+        form.addRow("URL / 갤러리 ID", self.reference_edit)
+        layout.addLayout(form)
+
+        action_row = QHBoxLayout()
+        inspect_button = QPushButton("분석")
+        inspect_button.setToolTip(
+            "CLI: hitomi inspect --input URL_OR_ID --provider auto --json"
+        )
+        inspect_button.clicked.connect(self.inspect_current_reference)
+        action_row.addStretch(1)
+        action_row.addWidget(inspect_button)
+        layout.addLayout(action_row)
+
+        self.result_text = QPlainTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setPlaceholderText("분석 결과가 여기에 표시됩니다.")
+        layout.addWidget(self.result_text, 1)
+
+        footer = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        footer.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        footer.button(QDialogButtonBox.StandardButton.Close).setToolTip(
+            "CLI: hitomi close"
+        )
+        footer.rejected.connect(self.close)
+        layout.addWidget(footer)
+        self.reference_edit.returnPressed.connect(self.inspect_current_reference)
+        if reference:
+            self.inspect_current_reference()
+
+    def inspect_current_reference(self) -> dict[str, Any]:
+        try:
+            result = inspect_hitomi_reference(
+                self.reference_edit.text(),
+                provider_hint=str(self.provider_combo.currentData() or "auto"),
+            )
+        except HitomiReferenceError as error:
+            result = error.to_dict()
+        self.last_result = result
+        if result.get("ok"):
+            authentication = (
+                "필요 · 실제 인증 기능은 아직 사용하지 않음"
+                if result["requiresAuthentication"]
+                else "필요 없음"
+            )
+            token = (
+                f"있음 ({result['galleryTokenHint']}) · 원문 미표시"
+                if result["galleryTokenPresent"]
+                else "없음"
+            )
+            display_url = result.get("displayUrl") or "갤러리 토큰을 포함한 URL 필요"
+            lines = [
+                "분석 완료 · 외부 요청 없음",
+                "",
+                f"공급자: {result['provider']}",
+                f"갤러리 ID: {result['galleryId']}",
+                f"작품 식별자: {result['workKey']}",
+                f"입력 종류: {result['sourceKind']}",
+                f"표시 URL: {display_url}",
+                f"인증: {authentication}",
+                f"갤러리 토큰: {token}",
+            ]
+        else:
+            lines = [
+                "분석 실패 · 외부 요청 없음",
+                "",
+                f"오류 코드: {result.get('errorCode', 'hitomi.unknown')}",
+                f"원인: {result.get('error', '')}",
+            ]
+        self.result_text.setPlainText("\n".join(lines))
+        return dict(result)
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "providerHint": str(self.provider_combo.currentData() or "auto"),
+            "referenceLength": len(self.reference_edit.text()),
+            "result": dict(self.last_result),
+            "networkRequested": False,
+        }
+
+
 class EmbeddedBrowserDialog(QDialog):
     OFFLINE_HTML = """
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -3242,9 +3366,20 @@ class SettingsDialog(QDialog):
         toki_status = QLabel("사용 가능 · Newtoki / Manatoki / Booktoki 내장")
         toki_status.setWordWrap(True)
         provider_form.addRow(self.strings["provider.toki"], toki_status)
-        hitomi_status = QLabel("선택 기능 · 아직 설치되지 않음")
+        hitomi_capability = hitomi_provider_capabilities()
+        hitomi_status = QLabel(
+            "URL·갤러리 ID 분석 사용 가능 · 외부 요청 없음 · 다운로드 엔진 준비 중"
+            if hitomi_capability["referenceInspection"]
+            else "선택 기능 · 분석기 사용 불가"
+        )
         hitomi_status.setWordWrap(True)
         provider_form.addRow(self.strings["provider.hitomi"], hitomi_status)
+        hitomi_inspector_button = QPushButton("Hitomi URL / ID 분석...")
+        hitomi_inspector_button.setToolTip(
+            "CLI: hitomi inspect --input URL_OR_ID --show-gui --json"
+        )
+        hitomi_inspector_button.clicked.connect(owner.show_hitomi_inspector)
+        provider_form.addRow("작품 식별자", hitomi_inspector_button)
         youtube_status = QLabel("선택 기능 · yt-dlp와 FFmpeg 상태는 진단에서 확인")
         youtube_status.setWordWrap(True)
         provider_form.addRow(self.strings["provider.youtube"], youtube_status)
@@ -3269,7 +3404,9 @@ class SettingsDialog(QDialog):
         cookie_button.setEnabled(bool(credential["available"]))
         provider_form.addRow("공급자 쿠키", cookie_button)
         provider_note = QLabel(
-            "선택 공급자는 기본 다운로드와 분리됩니다. 설치되지 않아도 Toki 기능은 정상 작동합니다."
+            "선택 공급자는 기본 다운로드와 분리됩니다. Hitomi 분석은 로컬에서만 동작하고 "
+            "ExHentai 토큰 원문을 결과·로그·설정에 저장하지 않습니다. 다운로드와 메타데이터 "
+            "연결은 이후 단계에서 별도로 활성화합니다."
         )
         provider_note.setObjectName("mutedLabel")
         provider_note.setWordWrap(True)
@@ -4298,6 +4435,7 @@ class MainWindow(QMainWindow):
             PdfGenerationProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
+        self.active_hitomi_inspector_dialog: HitomiReferenceDialog | None = None
         self.active_embedded_browser_dialog: EmbeddedBrowserDialog | None = None
         self.active_proxy_credential_dialog: ProxyCredentialDialog | None = None
         self.active_cookie_manager_dialog: CookieManagerDialog | None = None
@@ -6542,6 +6680,34 @@ class MainWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        return True
+
+    def show_hitomi_inspector(
+        self,
+        reference: str | bool = "",
+        provider: str = "auto",
+    ) -> dict[str, Any]:
+        safe_reference = reference if isinstance(reference, str) else ""
+        if self.active_hitomi_inspector_dialog:
+            self.active_hitomi_inspector_dialog.close()
+        dialog = HitomiReferenceDialog(self, safe_reference, provider)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(
+            lambda _object=None: setattr(
+                self, "active_hitomi_inspector_dialog", None
+            )
+        )
+        self.active_hitomi_inspector_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self.log("Hitomi URL/ID 분석창 표시")
+        return {"shown": True, **dialog.state_snapshot()}
+
+    def close_hitomi_inspector(self) -> bool:
+        if not self.active_hitomi_inspector_dialog:
+            return False
+        self.active_hitomi_inspector_dialog.close()
         return True
 
     def show_embedded_browser(
@@ -9214,6 +9380,11 @@ class MainWindow(QMainWindow):
         elif self.active_performance_dialog and self.active_performance_dialog.isVisible():
             screenshot = self.active_performance_dialog.grab()
         elif (
+            self.active_hitomi_inspector_dialog
+            and self.active_hitomi_inspector_dialog.isVisible()
+        ):
+            screenshot = self.active_hitomi_inspector_dialog.grab()
+        elif (
             self.active_embedded_browser_dialog
             and self.active_embedded_browser_dialog.isVisible()
         ):
@@ -9687,6 +9858,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
             "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd image-processing status|set [options]\n"
+            "toki-cli.cmd hitomi status|inspect|close [options]\n"
             "toki-cli.cmd pdf status|set|plan|generate|cancel|close [options]\n"
             "toki-cli.cmd stop --job ID\n"
             "toki-cli.cmd cancel --job ID\n"
@@ -9973,6 +10145,17 @@ class MainWindow(QMainWindow):
                 self.active_settings_dialog.state_snapshot()
                 if self.active_settings_dialog
                 else {"open": False, "tab": "", "search": "", "visibleTabs": []}
+            ),
+            "hitomiInspector": (
+                self.active_hitomi_inspector_dialog.state_snapshot()
+                if self.active_hitomi_inspector_dialog
+                else {
+                    "open": False,
+                    "providerHint": "auto",
+                    "referenceLength": 0,
+                    "result": {},
+                    "networkRequested": False,
+                }
             ),
             "cookieManager": (
                 self.active_cookie_manager_dialog.state_snapshot()
@@ -10643,6 +10826,21 @@ class MainWindow(QMainWindow):
                     "copied": self.copy_local_api_token(),
                 }
             return self.local_api_token_snapshot(reveal=bool(request.get("reveal")))
+        if action == "hitomi_inspect":
+            try:
+                return inspect_hitomi_reference(
+                    str(request.get("reference") or ""),
+                    provider_hint=str(request.get("provider") or "auto"),
+                )
+            except HitomiReferenceError as error:
+                return error.to_dict()
+        if action == "show_hitomi_inspector":
+            return self.show_hitomi_inspector(
+                str(request.get("reference") or ""),
+                str(request.get("provider") or "auto"),
+            )
+        if action == "close_hitomi_inspector":
+            return {"closed": self.close_hitomi_inspector()}
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()

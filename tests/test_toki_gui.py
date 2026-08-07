@@ -793,6 +793,57 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(closed, {"closed": True})
         self.assertEqual(calls, [("show", "manatoki"), ("close",)])
 
+    def test_hitomi_inspector_ipc_uses_offline_service_and_gui_contract(self) -> None:
+        calls = []
+        harness = type("HitomiIpcHarness", (), {})()
+        harness.show_hitomi_inspector = (
+            lambda reference, provider: calls.append(
+                ("show", reference, provider)
+            )
+            or {"shown": True, "networkRequested": False}
+        )
+        harness.close_hitomi_inspector = (
+            lambda: calls.append(("close",)) or True
+        )
+
+        inspected = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "hitomi_inspect",
+                "reference": "https://hitomi.la/manga/sample-1234567.html",
+                "provider": "auto",
+            },
+        )
+        shown = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "show_hitomi_inspector",
+                "reference": "1234567",
+                "provider": "hitomi",
+            },
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_hitomi_inspector"}
+        )
+        invalid = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "hitomi_inspect",
+                "reference": "https://example.com/g/1",
+                "provider": "auto",
+            },
+        )
+
+        self.assertEqual(inspected["workKey"], "hitomi:1234567")
+        self.assertFalse(inspected["networkRequested"])
+        self.assertTrue(shown["shown"])
+        self.assertTrue(closed["closed"])
+        self.assertEqual(invalid["errorCode"], "hitomi.unsupported_host")
+        self.assertEqual(
+            calls,
+            [("show", "1234567", "hitomi"), ("close",)],
+        )
+
     def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:
         calls = []
         harness = type("ProxyCredentialIpcHarness", (), {})()
