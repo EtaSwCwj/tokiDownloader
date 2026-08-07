@@ -2024,12 +2024,16 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-files",
         help="작품 폴더의 회차, 누락 파일과 이미지 서명을 읽기 전용 검사",
     )
-    verify_files.add_argument("--job", required=True, help="작업 ID")
+    verify_files.add_argument("--job", help="작업 ID")
     verify_files.add_argument(
         "--issue-limit", type=int, default=500, help="JSON에 포함할 문제 항목 수(최대 10000)"
     )
-    verify_files.add_argument(
+    verify_window = verify_files.add_mutually_exclusive_group()
+    verify_window.add_argument(
         "--show-gui", action="store_true", help="GUI 별도 프로세스 검사와 결과 창 표시"
+    )
+    verify_window.add_argument(
+        "--close", action="store_true", help="열린 GUI 파일 검사 결과 창 닫기"
     )
     verify_files.add_argument(
         "--ascii-json", action="store_true", help=argparse.SUPPRESS
@@ -2040,11 +2044,17 @@ def build_parser() -> argparse.ArgumentParser:
         "preview",
         help="작품 회차의 이미지 목록 조회 또는 GUI 미리보기",
     )
-    preview.add_argument("--job", required=True, help="작업 ID")
+    preview.add_argument("--job", help="작업 ID")
     preview.add_argument("--episode", type=int, help="회차 번호(생략 시 첫 보유 회차)")
     preview.add_argument("--limit", type=int, default=200, help="가져올 이미지 수(최대 1000)")
     preview.add_argument("--offset", type=int, default=0, help="건너뛸 이미지 수")
-    preview.add_argument("--show-gui", action="store_true", help="GUI 이미지 미리보기 창 표시")
+    preview_window = preview.add_mutually_exclusive_group()
+    preview_window.add_argument(
+        "--show-gui", action="store_true", help="GUI 이미지 미리보기 창 표시"
+    )
+    preview_window.add_argument(
+        "--close", action="store_true", help="열린 GUI 이미지 미리보기 창 닫기"
+    )
     preview.add_argument("--json", action="store_true", help="JSON으로 출력")
     preview.add_argument("--ascii-json", action="store_true", help=argparse.SUPPRESS)
 
@@ -4174,6 +4184,12 @@ def run_cli(args: argparse.Namespace) -> int:
             )
         return 0
     if command == "verify-files":
+        if args.close:
+            ensure_gui_running()
+            print_json(control_request({"action": "close_file_verification"}))
+            return 0
+        if not args.job:
+            raise ControlError("파일 검사에는 --job 작업ID가 필요합니다.")
         if args.show_gui:
             ensure_gui_running()
             print_json(
@@ -4202,6 +4218,12 @@ def run_cli(args: argparse.Namespace) -> int:
                 print("- 나머지 문제는 --issue-limit 값을 늘려 확인하세요.")
         return 0 if result["healthy"] else 2
     if command == "preview":
+        if args.close:
+            ensure_gui_running()
+            print_json(control_request({"action": "close_image_preview"}))
+            return 0
+        if not args.job:
+            raise ControlError("이미지 미리보기에는 --job 작업ID가 필요합니다.")
         if args.show_gui:
             ensure_gui_running()
             print_json(
@@ -4966,7 +4988,13 @@ def run_cli(args: argparse.Namespace) -> int:
         if gui_is_running():
             print_json(control_request({"action": "open_folder", "jobId": args.job}))
         else:
-            target = load_config().get("outputDir") or str(ROOT_DIR)
+            if args.job:
+                job = load_job_by_id(args.job)
+                if job is None:
+                    raise ControlError(f"작업 기록을 찾을 수 없습니다: {args.job}")
+                target = job.output_path or job.output_dir
+            else:
+                target = load_config().get("outputDir") or str(ROOT_DIR)
             open_in_explorer(target)
             print(target)
         return 0

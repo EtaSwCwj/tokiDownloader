@@ -283,8 +283,10 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd rebuild-metadata --job 작업ID --execute --yes --json
 .\toki-cli.cmd verify-files --job 작업ID --json
 .\toki-cli.cmd verify-files --job 작업ID --show-gui
+.\toki-cli.cmd verify-files --close
 .\toki-cli.cmd preview --job 작업ID --episode 1 --json
 .\toki-cli.cmd preview --job 작업ID --episode 1 --show-gui
+.\toki-cli.cmd preview --close
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --dry-run --json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --progress-json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --show-gui

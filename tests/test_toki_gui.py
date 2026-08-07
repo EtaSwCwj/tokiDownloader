@@ -2284,6 +2284,50 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(captured["url"], source.url)
         self.assertEqual(captured["scan_mode"], "new")
 
+    def test_retry_and_rescan_reject_unknown_explicit_job_ids(self) -> None:
+        harness = type("MissingJobHarness", (), {})()
+        harness.selected_job = lambda _job_id=None: None
+        harness.enqueue_download = lambda **_kwargs: self.fail(
+            "missing work must not be enqueued"
+        )
+
+        with self.assertRaisesRegex(ValueError, "missing-retry"):
+            MainWindow.retry_job(harness, "missing-retry")
+        with self.assertRaisesRegex(ValueError, "missing-rescan"):
+            MainWindow.rescan_job(harness, "missing-rescan", "new")
+
+    def test_file_tool_result_dialogs_can_be_closed_through_ipc(self) -> None:
+        class DialogStub:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        harness = type("FileDialogHarness", (), {})()
+        verify_dialog = DialogStub()
+        preview_dialog = DialogStub()
+        harness.active_file_verify_dialog = verify_dialog
+        harness.active_image_preview_dialog = preview_dialog
+        harness.close_file_verification = lambda: MainWindow.close_file_verification(
+            harness
+        )
+        harness.close_image_preview = lambda: MainWindow.close_image_preview(harness)
+
+        verify_result = MainWindow._handle_control_action(
+            harness, {"action": "close_file_verification"}
+        )
+        preview_result = MainWindow._handle_control_action(
+            harness, {"action": "close_image_preview"}
+        )
+
+        self.assertEqual(verify_result, {"closed": True})
+        self.assertEqual(preview_result, {"closed": True})
+        self.assertTrue(verify_dialog.closed)
+        self.assertTrue(preview_dialog.closed)
+        self.assertIsNone(harness.active_file_verify_dialog)
+        self.assertIsNone(harness.active_image_preview_dialog)
+
     def test_failed_process_enters_retry_wait_without_leaving_active_context(self) -> None:
         job = DownloadJob(
             job_id="retry-job",

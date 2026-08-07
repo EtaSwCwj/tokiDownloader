@@ -3293,6 +3293,21 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(show_gui), 0)
         request.assert_called_once_with({"action": "verify_files", "jobId": "job-1"})
 
+        close_gui = build_parser().parse_args(["verify-files", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request", return_value={"closed": True}
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_gui), 0)
+        request.assert_called_once_with({"action": "close_file_verification"})
+
+        missing_job = build_parser().parse_args(["verify-files", "--json"])
+        with self.assertRaisesRegex(ControlError, "--job"):
+            run_cli(missing_job)
+
     def test_preview_cli_contract_and_gui_request(self) -> None:
         args = build_parser().parse_args(
             [
@@ -3329,6 +3344,21 @@ class CliParserTests(unittest.TestCase):
         request.assert_called_once_with(
             {"action": "preview_images", "jobId": "job-1", "episode": 12}
         )
+
+        close_gui = build_parser().parse_args(["preview", "--close"])
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch(
+                "toki_app.control_request", return_value={"closed": True}
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(close_gui), 0)
+        request.assert_called_once_with({"action": "close_image_preview"})
+
+        missing_job = build_parser().parse_args(["preview", "--json"])
+        with self.assertRaisesRegex(ControlError, "--job"):
+            run_cli(missing_job)
 
     def test_convert_images_defaults_to_dry_run_and_requires_confirmation(self) -> None:
         args = build_parser().parse_args(

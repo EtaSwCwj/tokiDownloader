@@ -7803,8 +7803,9 @@ class MainWindow(QMainWindow):
     def retry_job(self, job_id: str | None = None) -> DownloadJob | None:
         source = self.selected_job(job_id)
         if not source:
-            self.log("재시도할 작업을 선택해주세요.")
-            return None
+            if job_id:
+                raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+            raise ValueError("재시도할 작업을 선택해주세요.")
         return self.enqueue_download(**retry_job_parameters(source))
 
     def rescan_job(
@@ -7816,8 +7817,9 @@ class MainWindow(QMainWindow):
     ) -> DownloadJob | None:
         source = self.selected_job(job_id)
         if not source:
-            self.log("재검사할 작품을 선택해주세요.")
-            return None
+            if job_id:
+                raise ValueError(f"작업 기록을 찾을 수 없습니다: {job_id}")
+            raise ValueError("재검사할 작품을 선택해주세요.")
         if source.provider == "youtube":
             raise ValueError("YouTube 작업은 회차 재검사 대신 재시도를 사용해주세요.")
         parameters = rescan_job_parameters(source, mode, start, last)
@@ -9377,6 +9379,14 @@ class MainWindow(QMainWindow):
         )
         self.statusBar().showMessage("작품 파일 검사가 완료되었습니다.", 3500)
 
+    def close_file_verification(self) -> bool:
+        dialog = self.active_file_verify_dialog
+        if not dialog:
+            return False
+        self.active_file_verify_dialog = None
+        dialog.close()
+        return True
+
     def start_image_preview(
         self, job_id: str | None = None, episode: int | None = None
     ) -> dict[str, Any]:
@@ -9445,6 +9455,14 @@ class MainWindow(QMainWindow):
             f"{len(result.get('images') or [])}장",
             job_id=job_id,
         )
+
+    def close_image_preview(self) -> bool:
+        dialog = self.active_image_preview_dialog
+        if not dialog:
+            return False
+        self.active_image_preview_dialog = None
+        dialog.close()
+        return True
 
     def start_image_conversion(
         self,
@@ -12204,12 +12222,16 @@ class MainWindow(QMainWindow):
             )
         if action == "verify_files":
             return self.start_file_verification(str(request.get("jobId") or ""))
+        if action == "close_file_verification":
+            return {"closed": self.close_file_verification()}
         if action == "preview_images":
             episode = request.get("episode")
             return self.start_image_preview(
                 str(request.get("jobId") or ""),
                 int(episode) if episode is not None else None,
             )
+        if action == "close_image_preview":
+            return {"closed": self.close_image_preview()}
         if action == "convert_images":
             return self.start_image_conversion(
                 str(request.get("jobId") or ""),
