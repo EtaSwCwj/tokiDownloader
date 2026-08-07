@@ -44,8 +44,10 @@ https://github.com/user-attachments/assets/fe974989-5ffb-4831-b2dc-7ea576712f62
 [PYINSTALLER_REVIEW.md](PYINSTALLER_REVIEW.md)를 참고하세요.
 처음 설치부터 업데이트·복구까지의 Windows 절차는 [WINDOWS_SETUP.md](WINDOWS_SETUP.md)를
 기준 문서로 사용합니다.
+개발 과정의 의사결정, 기능별 근거 커밋, 검증 결과와 당시 제한은
+[개발 이력](docs/development-history/README.md)에 별도로 기록합니다.
 
-## 준비물 
+## 준비물
 Node.js, Python 3
 
 ## Windows GUI
