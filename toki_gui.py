@@ -54,6 +54,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFontComboBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -97,6 +98,7 @@ from toki_core import (
     DownloadJob,
     DownloadRun,
     append_bounded_text,
+    available_ui_languages,
     assign_job_to_collection,
     available_work_slots,
     append_log,
@@ -131,6 +133,7 @@ from toki_core import (
     keyboard_shortcut_keys,
     menu_action_availability,
     quick_action_catalog,
+    load_ui_strings,
     load_config,
     load_job_by_id,
     load_job_by_work_key,
@@ -1749,9 +1752,9 @@ class CompletionCountdownDialog(QDialog):
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
-        "일반 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
+        "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
-        "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률 빠른 실행 도구",
+        "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
@@ -1759,14 +1762,17 @@ class SettingsDialog(QDialog):
     def __init__(self, owner: "MainWindow") -> None:
         super().__init__(owner)
         self.owner = owner
-        self.setWindowTitle("설정")
+        self.strings = load_ui_strings(owner.config.get("uiLanguage"))
+        self.setWindowTitle(self.strings["settings.title"])
         self.resize(680, 520)
         layout = QVBoxLayout(self)
-        heading = QLabel("tokiDownloader 설정")
+        heading = QLabel(self.strings["settings.heading"])
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("설정 검색 (예: 테마, 재시도, 공급자)")
+        self.search_edit.setPlaceholderText(
+            self.strings["settings.search.placeholder"]
+        )
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._filter_tabs)
         layout.addWidget(self.search_edit)
@@ -1779,6 +1785,10 @@ class SettingsDialog(QDialog):
         general_page = QWidget()
         general_page.setObjectName("settingsPage")
         general_form = QFormLayout(general_page)
+        self.language_combo = QComboBox()
+        for language in available_ui_languages():
+            self.language_combo.addItem(language["name"], language["code"])
+        general_form.addRow(self.strings["settings.language"], self.language_combo)
         output_row = QHBoxLayout()
         self.output_edit = QLineEdit()
         self.output_edit.setReadOnly(True)
@@ -1786,15 +1796,17 @@ class SettingsDialog(QDialog):
         output_button = QPushButton("폴더 선택...")
         output_button.clicked.connect(self._choose_output)
         output_row.addWidget(output_button)
-        general_form.addRow("기본 저장 폴더", output_row)
+        general_form.addRow(self.strings["settings.output"], output_row)
         self.folder_template_edit = QLineEdit()
         self.folder_template_edit.setPlaceholderText("[{author}][{group}] {title}")
         self.folder_template_edit.textChanged.connect(self._update_folder_preview)
-        general_form.addRow("작품 폴더명", self.folder_template_edit)
+        general_form.addRow(
+            self.strings["settings.folderTemplate"], self.folder_template_edit
+        )
         self.folder_template_preview = QLabel("")
         self.folder_template_preview.setObjectName("mutedLabel")
         self.folder_template_preview.setWordWrap(True)
-        general_form.addRow("미리보기", self.folder_template_preview)
+        general_form.addRow(self.strings["settings.preview"], self.folder_template_preview)
         self.show_browser_check = QCheckBox(
             "사이트 진단이 필요할 때 자동화 브라우저 창 표시"
         )
@@ -1830,7 +1842,7 @@ class SettingsDialog(QDialog):
         general_note.setObjectName("mutedLabel")
         general_note.setWordWrap(True)
         general_form.addRow("", general_note)
-        self.tabs.addTab(general_page, "일반")
+        self.tabs.addTab(general_page, self.strings["settings.tab.general"])
 
         network_page = QWidget()
         network_page.setObjectName("settingsPage")
@@ -1854,7 +1866,7 @@ class SettingsDialog(QDialog):
         network_note.setObjectName("mutedLabel")
         network_note.setWordWrap(True)
         network_form.addRow("", network_note)
-        self.tabs.addTab(network_page, "네트워크")
+        self.tabs.addTab(network_page, self.strings["settings.tab.network"])
 
         display_page = QWidget()
         display_page.setObjectName("settingsPage")
@@ -1885,6 +1897,26 @@ class SettingsDialog(QDialog):
         self.window_opacity_spin.setRange(50, 100)
         self.window_opacity_spin.setSuffix("%")
         display_form.addRow("창 불투명도", self.window_opacity_spin)
+        self.ui_scale_spin = QSpinBox()
+        self.ui_scale_spin.setRange(75, 200)
+        self.ui_scale_spin.setSingleStep(5)
+        self.ui_scale_spin.setSuffix("%")
+        display_form.addRow("UI 배율", self.ui_scale_spin)
+        self.font_combo = QFontComboBox()
+        self.font_combo.setEditable(True)
+        display_form.addRow("글꼴", self.font_combo)
+        background_row = QHBoxLayout()
+        self.background_edit = QLineEdit()
+        self.background_edit.setReadOnly(True)
+        self.background_edit.setPlaceholderText("사용 안 함")
+        background_row.addWidget(self.background_edit, 1)
+        background_button = QPushButton("선택...")
+        background_button.clicked.connect(self._choose_background)
+        background_row.addWidget(background_button)
+        background_clear_button = QPushButton("해제")
+        background_clear_button.clicked.connect(self.background_edit.clear)
+        background_row.addWidget(background_clear_button)
+        display_form.addRow("배경 이미지", background_row)
         self.quick_action_list = QListWidget()
         self.quick_action_list.setDragDropMode(
             QAbstractItemView.DragDropMode.InternalMove
@@ -1898,7 +1930,7 @@ class SettingsDialog(QDialog):
         display_note.setObjectName("mutedLabel")
         display_note.setWordWrap(True)
         display_form.addRow("", display_note)
-        self.tabs.addTab(display_page, "디스플레이")
+        self.tabs.addTab(display_page, self.strings["settings.tab.display"])
 
         advanced_page = QWidget()
         advanced_page.setObjectName("settingsPage")
@@ -1917,20 +1949,20 @@ class SettingsDialog(QDialog):
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
         advanced_form.addRow("", advanced_note)
-        self.tabs.addTab(advanced_page, "고급")
+        self.tabs.addTab(advanced_page, self.strings["settings.tab.advanced"])
 
         provider_page = QWidget()
         provider_page.setObjectName("settingsPage")
         provider_form = QFormLayout(provider_page)
         toki_status = QLabel("사용 가능 · Newtoki / Manatoki / Booktoki 내장")
         toki_status.setWordWrap(True)
-        provider_form.addRow("Toki", toki_status)
+        provider_form.addRow(self.strings["provider.toki"], toki_status)
         hitomi_status = QLabel("선택 기능 · 아직 설치되지 않음")
         hitomi_status.setWordWrap(True)
-        provider_form.addRow("Hitomi / ExHentai", hitomi_status)
+        provider_form.addRow(self.strings["provider.hitomi"], hitomi_status)
         youtube_status = QLabel("선택 기능 · yt-dlp와 FFmpeg 상태는 진단에서 확인")
         youtube_status.setWordWrap(True)
-        provider_form.addRow("YouTube", youtube_status)
+        provider_form.addRow(self.strings["provider.youtube"], youtube_status)
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
@@ -1940,7 +1972,7 @@ class SettingsDialog(QDialog):
         provider_note.setObjectName("mutedLabel")
         provider_note.setWordWrap(True)
         provider_form.addRow("", provider_note)
-        self.tabs.addTab(provider_page, "공급자")
+        self.tabs.addTab(provider_page, self.strings["settings.tab.provider"])
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -2011,6 +2043,8 @@ class SettingsDialog(QDialog):
 
     def _load_values(self, values: dict[str, Any]) -> None:
         self.output_edit.setText(str(values["outputDir"]))
+        language_index = self.language_combo.findData(str(values["uiLanguage"]))
+        self.language_combo.setCurrentIndex(max(0, language_index))
         self.folder_template_edit.setText(str(values["folderNameTemplate"]))
         self.show_browser_check.setChecked(bool(values["showBrowser"]))
         self.log_visible_check.setChecked(bool(values["logVisible"]))
@@ -2044,6 +2078,9 @@ class SettingsDialog(QDialog):
         self.thumbnail_size_combo.setCurrentIndex(max(0, size_index))
         self.always_on_top_check.setChecked(bool(values["alwaysOnTop"]))
         self.window_opacity_spin.setValue(int(values["windowOpacity"]))
+        self.ui_scale_spin.setValue(int(values["uiScale"]))
+        self.font_combo.setCurrentFont(QFont(str(values["fontFamily"])))
+        self.background_edit.setText(str(values["backgroundImage"]))
         self._load_quick_actions(values["quickActions"])
         self._update_folder_preview()
 
@@ -2106,9 +2143,20 @@ class SettingsDialog(QDialog):
             self.output_edit.setText(selected)
             self._update_folder_preview()
 
+    def _choose_background(self) -> None:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self,
+            "배경 이미지 선택",
+            self.background_edit.text() or self.output_edit.text(),
+            "이미지 (*.png *.jpg *.jpeg *.bmp *.webp)",
+        )
+        if selected:
+            self.background_edit.setText(selected)
+
     def _collect_updates(self) -> dict[str, Any]:
         return {
             "outputDir": self.output_edit.text(),
+            "uiLanguage": str(self.language_combo.currentData()),
             "folderNameTemplate": self.folder_template_edit.text(),
             "showBrowser": self.show_browser_check.isChecked(),
             "logVisible": self.log_visible_check.isChecked(),
@@ -2133,6 +2181,9 @@ class SettingsDialog(QDialog):
             "thumbnailSize": str(self.thumbnail_size_combo.currentData()),
             "alwaysOnTop": self.always_on_top_check.isChecked(),
             "windowOpacity": self.window_opacity_spin.value(),
+            "uiScale": self.ui_scale_spin.value(),
+            "fontFamily": self.font_combo.currentFont().family(),
+            "backgroundImage": self.background_edit.text(),
             "quickActions": self._selected_quick_actions(),
         }
 
@@ -2383,10 +2434,44 @@ class ImageConversionProcessContext:
     cancel_requested: bool = False
 
 
+class BackgroundWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._background = QPixmap()
+        self._dark_theme = True
+
+    def set_background(self, path: str, dark_theme: bool) -> None:
+        resolved = str(path or "").strip()
+        self._background = (
+            QPixmap(resolved) if resolved and Path(resolved).is_file() else QPixmap()
+        )
+        self._dark_theme = bool(dark_theme)
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        if self._background.isNull():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        scaled = self._background.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter.drawPixmap(
+            (self.width() - scaled.width()) // 2,
+            (self.height() - scaled.height()) // 2,
+            scaled,
+        )
+        overlay = QColor(31, 35, 41, 205) if self._dark_theme else QColor(243, 245, 247, 218)
+        painter.fillRect(self.rect(), overlay)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.config = load_config()
+        self.strings = load_ui_strings(self.config.get("uiLanguage"))
         self.theme_mode = str(self.config.get("theme") or "system")
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self.jobs: dict[str, DownloadJob] = {}
@@ -2715,7 +2800,8 @@ class MainWindow(QMainWindow):
         self.exit_action.triggered.connect(self.request_exit)
 
     def _build_ui(self) -> None:
-        work_menu = self.menuBar().addMenu("작업")
+        self.work_menu = self.menuBar().addMenu(self.strings["main.menu.work"])
+        work_menu = self.work_menu
         work_menu.addAction(self.start_action)
         work_menu.addAction(self.stop_action)
         work_menu.addAction(self.pause_action)
@@ -2730,7 +2816,8 @@ class MainWindow(QMainWindow):
         work_menu.addSeparator()
         work_menu.addAction(self.exit_action)
 
-        tools_menu = self.menuBar().addMenu("도구")
+        self.tools_menu = self.menuBar().addMenu(self.strings["main.menu.tools"])
+        tools_menu = self.tools_menu
         tools_menu.addAction(self.open_folder_action)
         tools_menu.addAction(self.details_action)
         tools_menu.addAction(self.refresh_list_action)
@@ -2749,7 +2836,8 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.performance_action)
         tools_menu.addAction(self.clear_log_action)
 
-        view_menu = self.menuBar().addMenu("보기")
+        self.view_menu = self.menuBar().addMenu(self.strings["main.menu.view"])
+        view_menu = self.view_menu
         view_menu.addAction(self.focus_url_action)
         view_menu.addAction(self.focus_search_action)
         view_menu.addAction(self.focus_cycle_action)
@@ -2757,12 +2845,15 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.select_previous_action)
         view_menu.addAction(self.select_next_action)
 
-        help_menu = self.menuBar().addMenu("도움말")
+        self.help_menu = self.menuBar().addMenu(self.strings["main.menu.help"])
+        help_menu = self.help_menu
         help_menu.addAction(self.shortcut_help_action)
         cli_action = help_menu.addAction("CLI 명령 보기")
         cli_action.triggered.connect(self.show_cli_help)
 
-        central = QWidget()
+        central = BackgroundWidget()
+        self.central_background = central
+        central.setObjectName("mainCentral")
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(7)
@@ -2892,11 +2983,12 @@ class MainWindow(QMainWindow):
 
         queue_header = QHBoxLayout()
         queue_title = QLabel("다운로드 작업")
+        queue_title.setObjectName("headerLabel")
         queue_font = QFont()
         queue_font.setBold(True)
         queue_title.setFont(queue_font)
         self.queue_summary = QLabel("대기 0 · 실행 0 · 완료 0 · 문제 0")
-        self.queue_summary.setObjectName("mutedLabel")
+        self.queue_summary.setObjectName("headerLabel")
         queue_header.addWidget(queue_title)
         queue_header.addStretch(1)
         queue_header.addWidget(self.queue_summary)
@@ -3053,7 +3145,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         status = QStatusBar()
-        self.status_label = QLabel("준비")
+        self.status_label = QLabel(self.strings["main.status.ready"])
         self.overall_progress = QProgressBar()
         self.overall_progress.setFixedWidth(220)
         self.overall_progress.setRange(0, 100)
@@ -3069,18 +3161,37 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         dark = self.resolved_theme == "dark"
+        scale = max(75, min(200, int(self.config.get("uiScale") or 100))) / 100
+        has_background = bool(
+            str(self.config.get("backgroundImage") or "").strip()
+            and Path(str(self.config.get("backgroundImage"))).is_file()
+        )
         colors = {
             "text": "#edf2f7" if dark else "#20262e",
             "muted": "#aeb9c7" if dark else "#667282",
             "window": "#1f2329" if dark else "#f3f5f7",
-            "surface": "#252a31" if dark else "#ffffff",
-            "surface2": "#303741" if dark else "#e9edf2",
+            "surface": (
+                "rgba(37, 42, 49, 240)" if dark else "rgba(255, 255, 255, 240)"
+            ) if has_background else ("#252a31" if dark else "#ffffff"),
+            "surface2": (
+                "rgba(48, 55, 65, 240)" if dark else "rgba(233, 237, 242, 240)"
+            ) if has_background else ("#303741" if dark else "#e9edf2"),
             "border": "#46505d" if dark else "#cfd6df",
             "hover": "#33455d" if dark else "#edf4ff",
             "pressed": "#3a506b" if dark else "#dfeeff",
             "selection": "#2f7de1",
-            "preview": "#303741" if dark else "#eef1f4",
+            "preview": (
+                "rgba(48, 55, 65, 240)" if dark else "rgba(238, 241, 244, 240)"
+            ) if has_background else ("#303741" if dark else "#eef1f4"),
+            "fieldPadding": max(4, round(5 * scale)),
+            "buttonHeight": max(24, round(28 * scale)),
+            "buttonPadding": max(8, round(12 * scale)),
+            "tabVPadding": max(5, round(8 * scale)),
+            "tabHPadding": max(12, round(18 * scale)),
         }
+        background_path = str(self.config.get("backgroundImage") or "").strip()
+        if hasattr(self, "central_background"):
+            self.central_background.set_background(background_path, dark)
         stylesheet = """
             QWidget { color: %(text)s; }
             QMainWindow, QDialog { background: %(window)s; color: %(text)s; }
@@ -3089,20 +3200,21 @@ class MainWindow(QMainWindow):
             QMenu { background: %(surface)s; color: %(text)s; border: 1px solid %(border)s; }
             QTabWidget::pane { background: %(surface)s; border: 1px solid %(border)s; }
             QTabBar::tab { background: %(surface2)s; color: %(text)s; border: 1px solid %(border)s;
-                border-bottom: 0; padding: 8px 18px; }
+                border-bottom: 0; padding: %(tabVPadding)spx %(tabHPadding)spx; }
             QTabBar::tab:selected { background: %(surface)s; color: %(text)s; font-weight: 700; }
             QTabWidget > QWidget, #settingsPage { background: %(surface)s; color: %(text)s; }
             #inputBox { background: %(surface)s; border: 1px solid %(border)s; border-radius: 5px; }
             #listStatePanel { background: %(surface)s; border: 1px solid %(border)s; border-radius: 4px; }
             #listStateTitle { color: %(text)s; }
+            #headerLabel { background: %(surface)s; color: %(text)s; border-radius: 3px; padding: 3px 6px; }
             QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QListView, QListWidget, QTableWidget {
                 background: %(surface)s; color: %(text)s; border: 1px solid %(border)s; border-radius: 4px;
-                padding: 5px; selection-background-color: %(selection)s; selection-color: #ffffff; }
+                padding: %(fieldPadding)spx; selection-background-color: %(selection)s; selection-color: #ffffff; }
             QTableWidget { gridline-color: %(border)s; padding: 0; }
             QHeaderView::section { background: %(surface2)s; color: %(text)s; border: 0;
                 border-right: 1px solid %(border)s; border-bottom: 1px solid %(border)s;
                 padding: 5px; font-weight: 700; }
-            QPushButton { min-height: 28px; padding: 0 12px; border: 1px solid %(border)s;
+            QPushButton { min-height: %(buttonHeight)spx; padding: 0 %(buttonPadding)spx; border: 1px solid %(border)s;
                 border-radius: 4px; background: %(surface)s; color: %(text)s; }
             QPushButton:hover { background: %(hover)s; border-color: #5f9ee8; }
             QPushButton:pressed { background: %(pressed)s; }
@@ -3122,7 +3234,7 @@ class MainWindow(QMainWindow):
             QProgressBar { color: %(text)s; border: 1px solid %(border)s; border-radius: 3px;
                 text-align: center; background: %(preview)s; }
             QProgressBar::chunk { background: #2f7de1; }
-            QGroupBox { color: %(text)s; font-weight: 700; }
+            QGroupBox { color: %(text)s; background: %(surface)s; font-weight: 700; }
             QStatusBar { color: %(text)s; background: %(window)s; }
             QGroupBox QPlainTextEdit { font-family: Consolas, "Malgun Gothic"; font-size: 9pt; font-weight: 400; }
         """ % colors
@@ -4821,6 +4933,8 @@ class MainWindow(QMainWindow):
     ) -> dict[str, Any]:
         result = update_app_settings(updates, reset=reset)
         self.config.update(result)
+        self.strings = load_ui_strings(result.get("uiLanguage"))
+        MainWindow._apply_language_strings(self)
         self.output_edit.setText(str(result["outputDir"]))
         self.show_browser_check.setChecked(bool(result["showBrowser"]))
         widgets = (
@@ -4868,7 +4982,23 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._start_next_job)
         return result
 
+    def _apply_language_strings(self) -> None:
+        menu_keys = (
+            (getattr(self, "work_menu", None), "main.menu.work"),
+            (getattr(self, "tools_menu", None), "main.menu.tools"),
+            (getattr(self, "view_menu", None), "main.menu.view"),
+            (getattr(self, "help_menu", None), "main.menu.help"),
+        )
+        for menu, key in menu_keys:
+            if menu is not None:
+                menu.setTitle(self.strings[key])
+
     def _apply_display_preferences(self, values: dict[str, Any]) -> None:
+        application = QApplication.instance()
+        if application is not None:
+            font = QFont(str(values.get("fontFamily") or "Malgun Gothic"))
+            font.setPointSizeF(9.0 * int(values.get("uiScale") or 100) / 100.0)
+            application.setFont(font)
         mode = str(values.get("listViewMode") or "list")
         size = str(values.get("thumbnailSize") or "medium")
         visible = bool(values.get("thumbnailsVisible", True))
@@ -4882,6 +5012,11 @@ class MainWindow(QMainWindow):
                 "small": QSize(112, 120),
                 "large": QSize(166, 190),
             }.get(size, QSize(136, 150))
+            scale = max(75, min(200, int(values.get("uiScale") or 100))) / 100
+            dimensions = QSize(
+                max(84, round(dimensions.width() * scale)),
+                max(90, round(dimensions.height() * scale)),
+            )
             self.task_list.setViewMode(QListView.ViewMode.IconMode)
             self.task_list.setFlow(QListView.Flow.LeftToRight)
             self.task_list.setWrapping(True)

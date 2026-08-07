@@ -15,6 +15,7 @@ from unittest.mock import patch
 import toki_core
 from toki_core import (
     append_bounded_text,
+    available_ui_languages,
     available_work_slots,
     DownloadJob,
     DownloadRun,
@@ -42,6 +43,7 @@ from toki_core import (
     import_jobs_snapshot,
     inspect_local_archive,
     inspect_clipboard_url,
+    load_ui_strings,
     list_work_collections,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
@@ -62,6 +64,10 @@ from toki_core import (
     normalize_retry_count,
     normalize_error_category,
     normalize_folder_name_template,
+    normalize_background_image,
+    normalize_font_family,
+    normalize_ui_language,
+    normalize_ui_scale,
     normalize_config,
     normalize_work_concurrency,
     move_job_folder,
@@ -99,6 +105,28 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_korean_ui_resources_and_display_preferences_are_validated(self) -> None:
+        languages = available_ui_languages()
+        self.assertIn({"code": "ko", "name": "한국어"}, languages)
+        strings = load_ui_strings("ko")
+        for key in (
+            "main.menu.work",
+            "settings.tab.general",
+            "settings.tab.display",
+            "provider.youtube",
+        ):
+            self.assertIn(key, strings)
+        self.assertEqual(normalize_ui_language("KO"), "ko")
+        self.assertEqual(normalize_ui_scale(125), 125)
+        self.assertEqual(normalize_font_family("Malgun Gothic"), "Malgun Gothic")
+        self.assertEqual(normalize_background_image("sample.webp"), "sample.webp")
+        with self.assertRaises(ValueError):
+            normalize_ui_language("en")
+        with self.assertRaises(ValueError):
+            normalize_ui_scale(250)
+        with self.assertRaises(ValueError):
+            normalize_background_image("sample.exe")
+
     def test_folder_name_template_preserves_requested_rule_and_validates_windows_path(self) -> None:
         template = "[{author}][{group}] {title}"
         metadata = {
@@ -530,10 +558,16 @@ class CoreContractTests(unittest.TestCase):
                 self.assertFalse(loaded["trayEnabled"])
 
                 output = root / "새 저장 폴더"
+                background = root / "한글 배경.png"
+                background.write_bytes(b"png-test")
                 updated = update_app_settings(
                     {
                         "outputDir": str(output),
                         "folderNameTemplate": "[{site}][{id}] {title}",
+                        "uiLanguage": "ko",
+                        "uiScale": 125,
+                        "fontFamily": "Arial",
+                        "backgroundImage": str(background),
                         "showBrowser": True,
                         "logVisible": False,
                         "workConcurrency": 3,
@@ -563,6 +597,12 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(updated["workConcurrency"], 3)
                 self.assertEqual(
                     updated["folderNameTemplate"], "[{site}][{id}] {title}"
+                )
+                self.assertEqual(updated["uiLanguage"], "ko")
+                self.assertEqual(updated["uiScale"], 125)
+                self.assertEqual(updated["fontFamily"], "Arial")
+                self.assertEqual(
+                    updated["backgroundImage"], str(background.resolve())
                 )
                 self.assertEqual(updated["logBackupCount"], 3)
                 self.assertEqual(updated["rowDensity"], "compact")

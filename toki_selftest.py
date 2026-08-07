@@ -54,6 +54,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "downloader_policy.js",
         ROOT_DIR / "downloader_errors.js",
         ROOT_DIR / "downloader_naming.js",
+        ROOT_DIR / "locales" / "ko.json",
         ROOT_DIR / "tokiDownloader.js",
         ROOT_DIR / "package.json",
         ROOT_DIR / "VERSION",

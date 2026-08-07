@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import QApplication
 
 from toki_core import (
     APP_VERSION,
+    available_ui_languages,
     apply_config_migrations,
     apply_database_migrations,
     CONTROL_SERVER_NAME,
@@ -843,6 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     set_settings = subparsers.add_parser("set-settings", help="일반 설정 일괄 변경")
     set_settings.add_argument("--output", help="기본 저장 폴더")
+    set_settings.add_argument("--language", help="UI 언어 코드")
     set_settings.add_argument(
         "--folder-template",
         help="작품 폴더명 템플릿 ({author}, {group}, {title}, {site}, {id})",
@@ -882,6 +884,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--always-on-top", choices=("on", "off"), help="창을 항상 위에 표시"
     )
     set_settings.add_argument("--opacity", type=int, help="창 불투명도 50~100")
+    set_settings.add_argument("--ui-scale", type=int, help="UI 배율 75~200")
+    set_settings.add_argument("--font", help="GUI 글꼴 이름")
+    background_group = set_settings.add_mutually_exclusive_group()
+    background_group.add_argument("--background", help="GUI 배경 이미지 경로")
+    background_group.add_argument(
+        "--clear-background", action="store_true", help="GUI 배경 이미지 해제"
+    )
     set_settings.add_argument(
         "--quick-actions",
         help="빠른 실행 동작 ID를 쉼표로 구분한 표시 순서",
@@ -916,6 +925,16 @@ def build_parser() -> argparse.ArgumentParser:
     folder_template.add_argument("--id", default="34360")
     folder_template.add_argument("--output", help="충돌까지 확인할 저장 루트")
     folder_template.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    language = subparsers.add_parser("language", help="UI 언어 리소스 조회·설정")
+    language_commands = language.add_subparsers(dest="language_command", required=True)
+    language_list = language_commands.add_parser("list", help="설치된 UI 언어 목록")
+    language_list.add_argument("--json", action="store_true", help="JSON으로 출력")
+    language_status = language_commands.add_parser("status", help="현재 UI 언어")
+    language_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    language_set = language_commands.add_parser("set", help="UI 언어 설정")
+    language_set.add_argument("code", help="언어 코드")
+    language_set.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     completion_action = subparsers.add_parser(
         "completion-action", help="모든 작업 완료 후 동작 조회·설정·미리보기"
@@ -2331,6 +2350,7 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "set-settings":
         mapping = {
             "outputDir": args.output,
+            "uiLanguage": args.language,
             "folderNameTemplate": args.folder_template,
             "workConcurrency": args.works,
             "imageConcurrency": args.images,
@@ -2343,8 +2363,13 @@ def run_cli(args: argparse.Namespace) -> int:
             "listViewMode": args.view_mode,
             "thumbnailSize": args.thumbnail_size,
             "windowOpacity": args.opacity,
+            "uiScale": args.ui_scale,
+            "fontFamily": args.font,
+            "backgroundImage": args.background,
         }
         updates = {key: value for key, value in mapping.items() if value is not None}
+        if args.clear_background:
+            updates["backgroundImage"] = ""
         if args.quick_actions is not None:
             updates["quickActions"] = [
                 value.strip() for value in args.quick_actions.split(",") if value.strip()
@@ -2402,6 +2427,38 @@ def run_cli(args: argparse.Namespace) -> int:
                 print(f"예상 경로: {result['candidatePath']}")
                 print(f"기존 폴더 충돌: {'있음' if result['collision'] else '없음'}")
             print("기존 폴더 변경: 없음 (dry-run)")
+        return 0
+    if command == "language":
+        subcommand = args.language_command
+        if subcommand == "list":
+            result = {"languages": available_ui_languages()}
+        elif subcommand == "status":
+            settings = settings_snapshot()
+            result = {
+                "language": settings["uiLanguage"],
+                "languages": available_ui_languages(),
+            }
+        else:
+            updates = {"uiLanguage": args.code}
+            if gui_is_running():
+                settings = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                settings = update_app_settings(updates)
+            result = {
+                "saved": True,
+                "language": settings["uiLanguage"],
+                "languages": available_ui_languages(),
+            }
+        if args.json:
+            print_json(result)
+        else:
+            if subcommand == "list":
+                for item in result["languages"]:
+                    print(f"{item['code']}: {item['name']}")
+            else:
+                print(f"UI 언어: {result['language']}")
         return 0
     if command == "completion-action":
         subcommand = args.completion_command

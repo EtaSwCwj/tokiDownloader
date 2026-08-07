@@ -40,8 +40,9 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 3
+CONFIG_SCHEMA_VERSION = 4
 JOB_DB_SCHEMA_VERSION = 4
+LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
 FOLDER_TEMPLATE_FIELDS = frozenset({"author", "group", "title", "site", "id"})
 _WINDOWS_RESERVED_SEGMENT = re.compile(
@@ -69,6 +70,7 @@ SETTING_KEYS = frozenset(
     {
         "outputDir",
         "folderNameTemplate",
+        "uiLanguage",
         "logVisible",
         "showBrowser",
         "workConcurrency",
@@ -83,6 +85,9 @@ SETTING_KEYS = frozenset(
         "thumbnailSize",
         "alwaysOnTop",
         "windowOpacity",
+        "uiScale",
+        "fontFamily",
+        "backgroundImage",
         "quickActions",
         "completionAction",
         "completionCountdownSeconds",
@@ -323,6 +328,7 @@ def default_config() -> dict[str, Any]:
         "configVersion": CONFIG_SCHEMA_VERSION,
         "outputDir": str(ROOT_DIR),
         "folderNameTemplate": DEFAULT_FOLDER_TEMPLATE,
+        "uiLanguage": "ko",
         "window": {
             "x": None,
             "y": None,
@@ -344,6 +350,9 @@ def default_config() -> dict[str, Any]:
         "thumbnailSize": "medium",
         "alwaysOnTop": False,
         "windowOpacity": 100,
+        "uiScale": 100,
+        "fontFamily": "Malgun Gothic",
+        "backgroundImage": "",
         "quickActions": [
             "download.start",
             "job.stop",
@@ -419,6 +428,82 @@ def normalize_window_opacity(value: int | None) -> int:
     if not 50 <= normalized <= 100:
         raise ValueError("창 불투명도는 50~100이어야 합니다.")
     return normalized
+
+
+def available_ui_languages() -> list[dict[str, str]]:
+    languages: list[dict[str, str]] = []
+    if not LOCALES_DIR.is_dir():
+        return [{"code": "ko", "name": "한국어"}]
+    for path in sorted(LOCALES_DIR.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        code = str(payload.get("meta.code") or path.stem).strip().lower()
+        name = str(payload.get("meta.name") or code).strip()
+        if code:
+            languages.append({"code": code, "name": name})
+    return languages or [{"code": "ko", "name": "한국어"}]
+
+
+def normalize_ui_language(value: str | None) -> str:
+    language = str(value or "ko").strip().lower()
+    supported = {item["code"] for item in available_ui_languages()}
+    if language not in supported:
+        raise ValueError(
+            f"지원하지 않는 UI 언어입니다: {language} (지원: {', '.join(sorted(supported))})"
+        )
+    return language
+
+
+def load_ui_strings(language: str | None = None) -> dict[str, str]:
+    code = normalize_ui_language(language)
+    path = LOCALES_DIR / f"{code}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"UI 언어 리소스를 읽을 수 없습니다: {path.name}") from error
+    if not isinstance(payload, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in payload.items()
+    ):
+        raise ValueError(f"UI 언어 리소스 형식이 잘못되었습니다: {path.name}")
+    return dict(payload)
+
+
+def ui_text(language: str | None, key: str, **values: Any) -> str:
+    text = load_ui_strings(language).get(key, key)
+    try:
+        return text.format(**values)
+    except (KeyError, ValueError):
+        return text
+
+
+def normalize_ui_scale(value: int | None) -> int:
+    scale = 100 if value is None else int(value)
+    if not 75 <= scale <= 200:
+        raise ValueError("UI 배율은 75~200%여야 합니다.")
+    return scale
+
+
+def normalize_font_family(value: str | None) -> str:
+    family = str(value or "Malgun Gothic").strip()
+    if not family or len(family) > 100 or any(ord(char) < 32 for char in family):
+        raise ValueError("글꼴 이름은 1~100자의 표시 가능한 문자여야 합니다.")
+    return family
+
+
+def normalize_background_image(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > 1024:
+        raise ValueError("배경 이미지 경로가 너무 깁니다.")
+    if Path(raw).suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+        raise ValueError("배경 이미지는 PNG, JPEG, BMP 또는 WebP 파일이어야 합니다.")
+    return str(Path(raw).expanduser())
 
 
 def normalize_folder_name_template(value: str | None) -> str:
@@ -590,6 +675,26 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_folder_name_template,
         source.get("folderNameTemplate"),
         defaults["folderNameTemplate"],
+    )
+    normalized["uiLanguage"] = _safe_normalize(
+        normalize_ui_language,
+        source.get("uiLanguage"),
+        defaults["uiLanguage"],
+    )
+    normalized["uiScale"] = _safe_normalize(
+        normalize_ui_scale,
+        source.get("uiScale"),
+        defaults["uiScale"],
+    )
+    normalized["fontFamily"] = _safe_normalize(
+        normalize_font_family,
+        source.get("fontFamily"),
+        defaults["fontFamily"],
+    )
+    normalized["backgroundImage"] = _safe_normalize(
+        normalize_background_image,
+        source.get("backgroundImage"),
+        defaults["backgroundImage"],
     )
     for key in (
         "logVisible",
@@ -833,6 +938,10 @@ def validate_app_setting_updates(
             validated[key] = updates[key]
     normalizers: dict[str, Callable[[Any], Any]] = {
         "folderNameTemplate": normalize_folder_name_template,
+        "uiLanguage": normalize_ui_language,
+        "uiScale": normalize_ui_scale,
+        "fontFamily": normalize_font_family,
+        "backgroundImage": normalize_background_image,
         "workConcurrency": normalize_work_concurrency,
         "imageConcurrency": normalize_image_concurrency,
         "retryCount": normalize_retry_count,
@@ -851,6 +960,11 @@ def validate_app_setting_updates(
     for key, normalizer in normalizers.items():
         if key in updates:
             validated[key] = normalizer(updates[key])
+    if validated.get("backgroundImage"):
+        background_path = Path(validated["backgroundImage"]).expanduser().resolve()
+        if not background_path.is_file():
+            raise ValueError(f"배경 이미지 파일을 찾을 수 없습니다: {background_path}")
+        validated["backgroundImage"] = str(background_path)
     return validated
 
 

@@ -335,6 +335,8 @@ class WorkSchedulerTests(unittest.TestCase):
     def test_settings_search_catalog_matches_pages_without_opening_gui(self) -> None:
         self.assertEqual(SettingsDialog.matching_tab_indexes("테마"), [2])
         self.assertEqual(SettingsDialog.matching_tab_indexes("폴더명 템플릿"), [0])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("언어 한국어"), [0])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("배율 배경 글꼴"), [2])
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("존재하지않음"), [])
         self.assertEqual(SettingsDialog.matching_tab_indexes(""), [0, 1, 2, 3, 4])

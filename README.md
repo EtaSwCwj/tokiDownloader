@@ -162,6 +162,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd set-settings --show-browser off --log-visible on --log-max-mib 2 --log-backups 1
 .\toki-cli.cmd set-settings --row-density compact
 .\toki-cli.cmd set-settings --theme dark
+.\toki-cli.cmd set-settings --language ko --ui-scale 125 --font "Malgun Gothic"
+.\toki-cli.cmd set-settings --background "D:\Pictures\background.png"
+.\toki-cli.cmd set-settings --clear-background
 .\toki-cli.cmd set-settings --tray on --close-to-tray on --notify-complete on --notify-error on
 .\toki-cli.cmd tray status
 .\toki-cli.cmd tray show
@@ -197,6 +200,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd clipboard inspect --text "https://newtoki1.org/manhwa/34360" --json
 .\toki-cli.cmd clipboard monitor --state on --json
 .\toki-cli.cmd folder-template --template "[{author}][{group}] {title}" --output "D:\Manga" --json
+.\toki-cli.cmd language list --json
+.\toki-cli.cmd language set ko --json
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -248,6 +253,13 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 --thumbnail-size small|medium|large --always-on-top on|off --opacity 50~100`으로 적용하고
 `status --json`의 `view`로 확인합니다. 아이콘 보기도 SQLite 페이지 조회, GUI 최대 2,000개
 보유, 100개 배치 레이아웃을 유지해 기록 전체를 한 번에 메모리에 올리지 않습니다.
+
+한국어 UI 문구는 `locales\ko.json`에 분리되어 있고 `language list|status|set`으로 설치된
+언어와 현재 값을 조회·변경합니다. 현재 배포 언어는 한국어이며 새 언어는 같은 키 구조의
+JSON 리소스를 추가하는 방식입니다. 디스플레이 설정의 UI 배율(75~200%), 글꼴, 배경
+이미지는 `set-settings --ui-scale N --font NAME --background PATH`와 동일한 설정을
+사용합니다. 배경은 밝은 이미지에서도 글자가 묻히지 않도록 현재 테마의 보호 오버레이를
+함께 그리며 `--clear-background`로 원본 파일을 건드리지 않고 연결만 해제합니다.
 
 메인 입력 영역 아래의 빠른 실행 막대는 디스플레이 설정에서 항목을 체크하고 드래그해
 순서를 바꿀 수 있습니다. CLI에서는 `set-settings --quick-actions

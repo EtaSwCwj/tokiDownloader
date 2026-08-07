@@ -844,6 +844,8 @@ class CliParserTests(unittest.TestCase):
                 "--opacity", "85",
                 "--quick-actions", "settings.open,folder.open,download.start",
                 "--folder-template", "[{site}][{id}] {title}",
+                "--language", "ko", "--ui-scale", "125", "--font", "Arial",
+                "--clear-background",
             ]
         )
         with (
@@ -871,6 +873,10 @@ class CliParserTests(unittest.TestCase):
                         "download.start",
                     ],
                     "folderNameTemplate": "[{site}][{id}] {title}",
+                    "uiLanguage": "ko",
+                    "uiScale": 125,
+                    "fontFamily": "Arial",
+                    "backgroundImage": "",
                     "showBrowser": True,
                     "logVisible": False,
                     "thumbnailsVisible": False,
@@ -916,6 +922,35 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(tray), 0)
         tray_request.assert_called_once_with(
             {"action": "tray", "command": "notify", "message": "완료 테스트"}
+        )
+
+    def test_language_cli_lists_status_and_updates_through_gui_contract(self) -> None:
+        list_args = build_parser().parse_args(["language", "list", "--json"])
+        with redirect_stdout(StringIO()):
+            self.assertEqual(run_cli(list_args), 0)
+
+        status_args = build_parser().parse_args(["language", "status", "--json"])
+        with (
+            patch("toki_app.settings_snapshot", return_value={"uiLanguage": "ko"}),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+
+        set_args = build_parser().parse_args(["language", "set", "ko", "--json"])
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request", return_value={"uiLanguage": "ko"}
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        request.assert_called_once_with(
+            {
+                "action": "set_settings",
+                "updates": {"uiLanguage": "ko"},
+                "reset": False,
+            }
         )
 
     def test_retry_policy_arguments_and_gui_request(self) -> None:
