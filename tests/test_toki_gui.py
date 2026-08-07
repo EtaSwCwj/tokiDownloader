@@ -7,6 +7,7 @@ from collections import deque
 from pathlib import Path
 from unittest.mock import patch
 
+import toki_gui
 from toki_core import DownloadJob, DownloadRun, default_config
 from toki_gui import (
     ImageConversionProcessContext,
@@ -222,6 +223,7 @@ class WorkSchedulerTests(unittest.TestCase):
             lambda path: calls.append(("show", path)) or True
         )
         harness.close_archive_inspection = lambda: calls.append(("close",)) or True
+        harness.config = default_config()
 
         shown = MainWindow._handle_control_action(
             harness, {"action": "show_archive_inspection", "path": "work.cbz"}
@@ -229,10 +231,58 @@ class WorkSchedulerTests(unittest.TestCase):
         closed = MainWindow._handle_control_action(
             harness, {"action": "close_archive_inspection"}
         )
+        with patch(
+            "toki_gui.archive_viewer_policy_snapshot",
+            return_value={"mode": "system", "available": True},
+        ) as policy:
+            viewer = MainWindow._handle_control_action(
+                harness, {"action": "archive_viewer_policy"}
+            )
 
         self.assertTrue(shown["shown"])
         self.assertTrue(closed["closed"])
+        self.assertEqual(viewer["mode"], "system")
+        policy.assert_called_once_with(harness.config)
         self.assertEqual(calls, [("show", "work.cbz"), ("close",)])
+
+    def test_archive_viewer_gui_requires_confirmation_and_uses_shared_service(self) -> None:
+        harness = type("ArchiveViewerHarness", (), {})()
+        harness.config = default_config()
+        logs = []
+        messages = []
+        harness.log = lambda message, *_args, **_kwargs: logs.append(message)
+        harness.statusBar = lambda: type(
+            "StatusBarHarness",
+            (),
+            {"showMessage": lambda _self, message, _timeout: messages.append(message)},
+        )()
+        plan = {
+            "ok": True,
+            "executed": False,
+            "path": str(Path("work.cbz").resolve()),
+            "viewerLabel": "Windows 기본 연결 프로그램",
+            "error": "",
+        }
+        executed = {**plan, "executed": True}
+        with (
+            patch("toki_gui.plan_archive_viewer_open", return_value=plan) as planner,
+            patch(
+                "toki_gui.QMessageBox.question",
+                return_value=toki_gui.QMessageBox.StandardButton.Yes,
+            ),
+            patch(
+                "toki_gui.open_archive_with_viewer", return_value=executed
+            ) as opener,
+        ):
+            result = MainWindow.confirm_open_archive_viewer(harness, "work.cbz")
+
+        planner.assert_called_once_with(Path("work.cbz"), config=harness.config)
+        opener.assert_called_once_with(
+            Path("work.cbz"), config=harness.config, execute=True
+        )
+        self.assertTrue(result["executed"])
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(len(messages), 1)
 
     def test_group_ipc_routes_all_manager_and_assignment_actions(self) -> None:
         calls = []
@@ -339,6 +389,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("배율 배경 글꼴"), [2])
         self.assertEqual(SettingsDialog.matching_tab_indexes("프록시 속도 공급자"), [1])
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("존재하지않음"), [])
         self.assertEqual(SettingsDialog.matching_tab_indexes(""), [0, 1, 2, 3, 4])
 

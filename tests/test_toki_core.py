@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import toki_core
 from toki_core import (
+    archive_viewer_policy_snapshot,
     append_bounded_text,
     available_ui_languages,
     available_work_slots,
@@ -79,6 +80,8 @@ from toki_core import (
     normalize_folder_name_template,
     normalize_shortcut_overrides,
     normalize_background_image,
+    open_archive_with_viewer,
+    plan_archive_viewer_open,
     normalize_font_family,
     normalize_proxy_url,
     normalize_provider_policies,
@@ -460,6 +463,53 @@ class CoreContractTests(unittest.TestCase):
             self.assertFalse(result["extracted"])
             self.assertFalse(result["filesChanged"])
             self.assertFalse(outside_path.exists())
+
+    def test_archive_viewer_policy_plans_and_launches_without_changing_associations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive_path = root / "한글 작품.cbz"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("001/001.jpg", b"image")
+
+            system_policy = archive_viewer_policy_snapshot(default_config())
+            self.assertEqual(system_policy["mode"], "system")
+            self.assertFalse(system_policy["changesSystemAssociation"])
+            self.assertTrue(system_policy["requiresConfirmation"])
+
+            custom = default_config()
+            custom["archiveViewerMode"] = "custom"
+            custom["archiveViewerPath"] = str(Path(toki_core.__file__).resolve())
+            plan = plan_archive_viewer_open(archive_path, config=custom)
+            self.assertTrue(plan["ok"])
+            self.assertFalse(plan["executed"])
+            self.assertEqual(plan["mode"], "custom")
+            self.assertEqual(plan["command"][1], str(archive_path.resolve()))
+            self.assertFalse(plan["changesSystemAssociation"])
+
+            launched: list[dict[str, object]] = []
+            result = open_archive_with_viewer(
+                archive_path,
+                config=custom,
+                execute=True,
+                launcher=lambda value: launched.append(value) or 314,
+            )
+            self.assertTrue(result["executed"])
+            self.assertEqual(result["processId"], 314)
+            self.assertEqual(len(launched), 1)
+            self.assertTrue(archive_path.is_file())
+
+            config_path = root / "config.json"
+            with patch.object(toki_core, "CONFIG_PATH", config_path):
+                toki_core.save_config(default_config())
+                with self.assertRaisesRegex(ValueError, "실행 파일 경로"):
+                    toki_core.update_app_settings({"archiveViewerMode": "custom"})
+                saved = toki_core.update_app_settings(
+                    {
+                        "archiveViewerMode": "custom",
+                        "archiveViewerPath": str(Path(toki_core.__file__).resolve()),
+                    }
+                )
+                self.assertEqual(saved["archiveViewerMode"], "custom")
 
     def test_settings_export_import_preview_apply_and_reset_are_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

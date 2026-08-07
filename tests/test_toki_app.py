@@ -565,6 +565,93 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(close_args), 0)
         request.assert_called_once_with({"action": "close_archive_inspection"})
 
+    def test_archive_viewer_cli_reports_sets_and_requires_confirmed_execution(self) -> None:
+        policy = {
+            "mode": "system",
+            "viewerPath": "",
+            "available": True,
+            "changesSystemAssociation": False,
+        }
+        status_args = build_parser().parse_args(
+            ["archive-viewer", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=policy) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        request.assert_called_once_with({"action": "archive_viewer_policy"})
+
+        set_args = build_parser().parse_args(
+            [
+                "archive-viewer",
+                "set",
+                "--mode",
+                "custom",
+                "--path",
+                "viewer.exe",
+                "--json",
+            ]
+        )
+        custom_policy = {**policy, "mode": "custom", "viewerPath": "viewer.exe"}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch(
+                "toki_app.update_app_settings",
+                return_value={"archiveViewerMode": "custom", "archiveViewerPath": "viewer.exe"},
+            ) as update,
+            patch(
+                "toki_app.archive_viewer_policy_snapshot", return_value=custom_policy
+            ),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        update.assert_called_once_with(
+            {"archiveViewerMode": "custom", "archiveViewerPath": "viewer.exe"}
+        )
+
+        preview_args = build_parser().parse_args(
+            ["archive-viewer", "open", "--path", "work.cbz", "--json"]
+        )
+        preview = {
+            "ok": True,
+            "executed": False,
+            "viewerLabel": "Windows 기본 연결 프로그램",
+            "path": "work.cbz",
+        }
+        with (
+            patch("toki_app.open_archive_with_viewer", return_value=preview) as open_viewer,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(preview_args), 0)
+        open_viewer.assert_called_once_with(Path("work.cbz"), execute=False)
+
+        unconfirmed = build_parser().parse_args(
+            ["archive-viewer", "open", "--path", "work.cbz", "--execute"]
+        )
+        with self.assertRaisesRegex(ValueError, "--execute --yes"):
+            run_cli(unconfirmed)
+
+        execute_args = build_parser().parse_args(
+            [
+                "archive-viewer",
+                "open",
+                "--path",
+                "work.cbz",
+                "--execute",
+                "--yes",
+                "--json",
+            ]
+        )
+        executed = {**preview, "executed": True}
+        with (
+            patch("toki_app.open_archive_with_viewer", return_value=executed) as open_viewer,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(execute_args), 0)
+        open_viewer.assert_called_once_with(Path("work.cbz"), execute=True)
+
     def test_group_cli_routes_service_and_gui_management_contracts(self) -> None:
         create_args = build_parser().parse_args(
             ["group", "create", "--name", "나중에 읽기", "--json"]

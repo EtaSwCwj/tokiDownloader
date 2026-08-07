@@ -434,6 +434,14 @@ CLI가 GUI와 같은 경로를 사용한다. JSON 가져오기는 미리보기 �
 `logs/image-processing-settings.png`, `logs/image-resize-conversion-plan.png`에서 고급 설정과
 변환 계획을 확인했으며 Python 177건과 Node 16건을 통과했다.
 
+2026-08-07 압축 파일 연결 프로그램·미리보기: 설정 스키마 v9에 Windows 기본 연결 또는
+사용자가 고른 실행 파일을 앱 내부에서 선택하는 정책을 추가했다. `archive-viewer
+status|set|open`과 압축 검사창의 열기 버튼은 같은 서비스와 명시적 실행 확인을 사용하며,
+기본 `open`은 실행 계획만 반환한다. 레지스트리·Windows 시스템 연결·압축 원본은 변경하지
+않는다. 실제 GUI에서 custom 저장·계획 조회·system 복원을 확인했지만 외부 프로그램은 실행하지
+않았다. `logs/archive-viewer-settings.png`, `logs/archive-viewer-preview.png`에서 화면을 확인했고
+Python 180건과 Node 16건을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

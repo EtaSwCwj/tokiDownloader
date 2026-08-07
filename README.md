@@ -104,6 +104,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd local inspect --path "D:\Manga\work.cbz" --json
 .\toki-cli.cmd local inspect --path "D:\Manga\work.cbz" --show-gui
 .\toki-cli.cmd local inspect --close
+.\toki-cli.cmd archive-viewer status --json
+.\toki-cli.cmd archive-viewer set --mode system --json
+.\toki-cli.cmd archive-viewer set --mode custom --path "C:\Program Files\7-Zip\7zFM.exe" --json
+.\toki-cli.cmd archive-viewer open --path "D:\Manga\work.cbz" --json
+.\toki-cli.cmd archive-viewer open --path "D:\Manga\work.cbz" --execute --yes --json
 .\toki-cli.cmd duplicates works --json
 .\toki-cli.cmd duplicates works --show-gui
 .\toki-cli.cmd duplicates works --close
@@ -446,6 +451,12 @@ GUI 실행 중 CLI로 설정을 바꾸거나 가져오면 현재 창에도 즉�
 7Z와 RAR 계열은 `-WithArchiveTools`로 설치하는 선택 모듈을 사용합니다. 검사는 압축을 풀지
 않고 원본이나 주변 파일을 변경하지 않습니다. `도구 → 로컬 압축 작품 검사...`와
 `--show-gui`, `--close`도 같은 읽기 전용 서비스를 사용합니다.
+
+`archive-viewer`는 압축 검사창의 `연결 프로그램으로 열기` 버튼과 같은 앱 내부 정책을
+제어합니다. `system`은 Windows 기본 연결 프로그램을 사용하고, `custom`은 사용자가 고른
+실행 파일에 압축 경로를 단일 인자로 전달합니다. `open`은 기본적으로 실행 계획만 보여주며
+실제 외부 프로그램 실행에는 `--execute --yes`가 모두 필요합니다. 이 설정과 실행은 Windows
+시스템 파일 연결이나 레지스트리를 변경하지 않으며 압축 원본도 수정하지 않습니다.
 
 메인 작품 검색과 `list --query TEXT`는 제목뿐 아니라 작가, 폴더명용 번역/출판 그룹,
 작업 ID, 작품 키, 원본 URL, 별도 작품 정리 그룹 이름을 함께 찾습니다. 결과는 기존 SQLite

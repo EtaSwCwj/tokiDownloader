@@ -108,6 +108,7 @@ def webengine_runtime_status() -> dict[str, Any]:
 from toki_core import (
     APP_VERSION,
     ACTIVE_JOB_STATES,
+    archive_viewer_policy_snapshot,
     CONTROL_SERVER_NAME,
     EVENT_PREFIX,
     JOB_DB_PATH,
@@ -192,6 +193,8 @@ from toki_core import (
     notification_event_plan,
     notification_settings_snapshot,
     open_in_explorer,
+    open_archive_with_viewer,
+    plan_archive_viewer_open,
     plan_job_folder_move,
     plan_metadata_rebuild,
     plan_window_geometry,
@@ -1758,8 +1761,9 @@ class WorkGroupManagerDialog(QDialog):
 
 
 class ArchiveInspectionDialog(QDialog):
-    def __init__(self, result: dict[str, Any], parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self, owner: "MainWindow", result: dict[str, Any]) -> None:
+        super().__init__(owner)
+        self.owner = owner
         self.result = result
         self.setWindowTitle("로컬 압축 작품 검사")
         self.resize(680, 500)
@@ -1788,6 +1792,8 @@ class ArchiveInspectionDialog(QDialog):
             f"검사 모듈: {(result.get('dependency') or {}).get('name', '-')}",
             "압축 해제: 하지 않음",
             "파일 변경: 없음",
+            f"연결 프로그램: {(result.get('viewer') or {}).get('viewerLabel', '-')}",
+            "Windows 시스템 연결 변경: 없음",
         ]
         suspicious = result.get("suspiciousPaths") or []
         if suspicious:
@@ -1808,9 +1814,39 @@ class ArchiveInspectionDialog(QDialog):
         note.setObjectName("mutedLabel")
         layout.addWidget(note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        open_button = buttons.addButton(
+            "연결 프로그램으로 열기...",
+            QDialogButtonBox.ButtonRole.ActionRole,
+        )
+        open_button.setToolTip(
+            "CLI: archive-viewer open --path PATH --execute --yes"
+        )
+        viewer = result.get("viewer") or {}
+        open_button.setEnabled(bool(viewer.get("ok")))
+        open_button.clicked.connect(
+            lambda: owner.confirm_open_archive_viewer(str(result.get("path") or ""))
+        )
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def state_snapshot(self) -> dict[str, Any]:
+        viewer = self.result.get("viewer") or {}
+        return {
+            "open": self.isVisible(),
+            "path": str(self.result.get("path") or ""),
+            "fileCount": int(self.result.get("fileCount") or 0),
+            "imageCount": int(self.result.get("imageCount") or 0),
+            "viewer": {
+                "mode": str(viewer.get("mode") or ""),
+                "label": str(viewer.get("viewerLabel") or ""),
+                "available": bool(viewer.get("ok")),
+                "requiresConfirmation": bool(viewer.get("requiresConfirmation")),
+                "changesSystemAssociation": bool(
+                    viewer.get("changesSystemAssociation")
+                ),
+            },
+        }
 
 
 class DuplicateWorksDialog(QDialog):
@@ -2461,7 +2497,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2723,9 +2759,47 @@ class SettingsDialog(QDialog):
         advanced_form.addRow(
             "변환 제외 유형", self.image_excluded_extensions_edit
         )
+        self.archive_viewer_mode_combo = QComboBox()
+        self.archive_viewer_mode_combo.addItem(
+            "Windows 기본 연결 프로그램", "system"
+        )
+        self.archive_viewer_mode_combo.addItem("지정한 프로그램", "custom")
+        self.archive_viewer_mode_combo.setToolTip(
+            "CLI: archive-viewer set --mode system|custom"
+        )
+        self.archive_viewer_mode_combo.currentIndexChanged.connect(
+            self._update_archive_viewer_controls
+        )
+        advanced_form.addRow("압축 파일 열기", self.archive_viewer_mode_combo)
+        archive_viewer_row = QHBoxLayout()
+        self.archive_viewer_path_edit = QLineEdit()
+        self.archive_viewer_path_edit.setReadOnly(True)
+        self.archive_viewer_path_edit.setPlaceholderText("지정한 프로그램 사용 안 함")
+        self.archive_viewer_path_edit.textChanged.connect(
+            lambda _text: self._update_archive_viewer_controls()
+        )
+        archive_viewer_row.addWidget(self.archive_viewer_path_edit, 1)
+        self.archive_viewer_choose_button = QPushButton("선택...")
+        self.archive_viewer_choose_button.setToolTip(
+            "CLI: archive-viewer set --mode custom --path EXE"
+        )
+        self.archive_viewer_choose_button.clicked.connect(
+            self._choose_archive_viewer
+        )
+        archive_viewer_row.addWidget(self.archive_viewer_choose_button)
+        self.archive_viewer_clear_button = QPushButton("해제")
+        self.archive_viewer_clear_button.setToolTip(
+            "CLI: archive-viewer set --mode system --clear-path"
+        )
+        self.archive_viewer_clear_button.clicked.connect(
+            self._clear_archive_viewer
+        )
+        archive_viewer_row.addWidget(self.archive_viewer_clear_button)
+        advanced_form.addRow("지정 프로그램", archive_viewer_row)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
-            "사용하며 메시지 상자는 작업을 막지 않습니다. 알림음과 메시지 상자의 기본값은 꺼짐입니다."
+            "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
+            "방법만 정하며 Windows 시스템 연결은 변경하지 않습니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -2886,6 +2960,12 @@ class SettingsDialog(QDialog):
         self.image_excluded_extensions_edit.setText(
             ", ".join(values["imageExcludedExtensions"])
         )
+        archive_mode_index = self.archive_viewer_mode_combo.findData(
+            str(values["archiveViewerMode"])
+        )
+        self.archive_viewer_mode_combo.setCurrentIndex(max(0, archive_mode_index))
+        self.archive_viewer_path_edit.setText(str(values["archiveViewerPath"]))
+        self._update_archive_viewer_controls()
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3001,6 +3081,30 @@ class SettingsDialog(QDialog):
         if selected:
             self.background_edit.setText(selected)
 
+    def _choose_archive_viewer(self) -> None:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self,
+            "압축 파일 연결 프로그램 선택",
+            self.archive_viewer_path_edit.text(),
+            "프로그램 (*.exe);;모든 파일 (*)",
+        )
+        if selected:
+            self.archive_viewer_path_edit.setText(selected)
+            index = self.archive_viewer_mode_combo.findData("custom")
+            self.archive_viewer_mode_combo.setCurrentIndex(max(0, index))
+
+    def _update_archive_viewer_controls(self, _index: int = -1) -> None:
+        custom = str(self.archive_viewer_mode_combo.currentData()) == "custom"
+        self.archive_viewer_choose_button.setEnabled(custom)
+        self.archive_viewer_clear_button.setEnabled(
+            custom and bool(self.archive_viewer_path_edit.text())
+        )
+
+    def _clear_archive_viewer(self) -> None:
+        self.archive_viewer_path_edit.clear()
+        index = self.archive_viewer_mode_combo.findData("system")
+        self.archive_viewer_mode_combo.setCurrentIndex(max(0, index))
+
     def _collect_updates(self) -> dict[str, Any]:
         self._store_current_provider_policy()
         return {
@@ -3042,6 +3146,8 @@ class SettingsDialog(QDialog):
                 )
                 if part.strip()
             ],
+            "archiveViewerMode": str(self.archive_viewer_mode_combo.currentData()),
+            "archiveViewerPath": self.archive_viewer_path_edit.text(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -5671,9 +5777,12 @@ class MainWindow(QMainWindow):
 
     def show_archive_inspection(self, archive_path: str) -> bool:
         result = inspect_local_archive(Path(archive_path))
+        result["viewer"] = plan_archive_viewer_open(
+            Path(archive_path), config=self.config
+        )
         if self.active_archive_inspection_dialog:
             self.active_archive_inspection_dialog.close()
-        dialog = ArchiveInspectionDialog(result, self)
+        dialog = ArchiveInspectionDialog(self, result)
         self.active_archive_inspection_dialog = dialog
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.destroyed.connect(
@@ -5691,6 +5800,34 @@ class MainWindow(QMainWindow):
             f"의심 경로 {result['suspiciousPathCount']}개"
         )
         return True
+
+    def confirm_open_archive_viewer(self, archive_path: str) -> dict[str, Any]:
+        plan = plan_archive_viewer_open(Path(archive_path), config=self.config)
+        if not plan["ok"]:
+            QMessageBox.warning(self, "연결 프로그램을 사용할 수 없음", plan["error"])
+            return plan
+        answer = QMessageBox.question(
+            self,
+            "압축 파일 열기",
+            f"{plan['viewerLabel']}으로 다음 파일을 여시겠습니까?\n\n{plan['path']}\n\n"
+            "Windows 시스템 파일 연결은 변경하지 않습니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return plan
+        try:
+            result = open_archive_with_viewer(
+                Path(archive_path), config=self.config, execute=True
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "압축 파일을 열 수 없음", str(error))
+            return {**plan, "ok": False, "error": str(error)}
+        self.log(
+            f"압축 파일 연결 프로그램 실행: {result['viewerLabel']} · {result['path']}"
+        )
+        self.statusBar().showMessage("압축 파일을 연결 프로그램으로 열었습니다.", 5000)
+        return result
 
     def close_archive_inspection(self) -> bool:
         if not self.active_archive_inspection_dialog:
@@ -8027,6 +8164,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
             "toki-cli.cmd group list|create|rename|assign|unassign|manage [options]\n"
             "toki-cli.cmd local inspect [--path ARCHIVE --json|--show-gui|--close]\n"
+            "toki-cli.cmd archive-viewer status|set|open [options]\n"
             "toki-cli.cmd duplicates works [--json|--show-gui|--close]\n"
             "toki-cli.cmd duplicates images --job ID [--algorithm sha256|phash --json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
@@ -8318,6 +8456,12 @@ class MainWindow(QMainWindow):
             "archiveInspectionOpen": bool(
                 self.active_archive_inspection_dialog
                 and self.active_archive_inspection_dialog.isVisible()
+            ),
+            "archiveViewer": archive_viewer_policy_snapshot(self.config),
+            "archiveInspection": (
+                self.active_archive_inspection_dialog.state_snapshot()
+                if self.active_archive_inspection_dialog
+                else {"open": False}
             ),
             "duplicateWorksOpen": bool(
                 self.active_duplicate_works_dialog
@@ -8682,6 +8826,8 @@ class MainWindow(QMainWindow):
             }
         if action == "close_archive_inspection":
             return {"closed": self.close_archive_inspection()}
+        if action == "archive_viewer_policy":
+            return archive_viewer_policy_snapshot(self.config)
         if action == "show_duplicate_works":
             return {"shown": self.show_duplicate_works()}
         if action == "close_duplicate_works":

@@ -412,7 +412,7 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 - [x] 작업 완료 알림음과 메시지
 - [x] 이미지 형식 변환
 - [x] 이미지 리사이즈와 파일 유형 제외
-- [ ] 압축 파일 연결 프로그램과 미리보기
+- [x] 압축 파일 연결 프로그램과 미리보기
 - [ ] 자동 저장 주기와 불완전 작업 복구
 - [ ] 페이지 수 제한, 스크롤 속도, 지연 로딩, 저사양 모드
 - [ ] 다운로드 중 절전 방지
@@ -459,6 +459,16 @@ GIF/BMP/AVIF 제외는 후처리 대상 선택에만 적용해 원본과 기존 
 바이트 불변을 확인했고 사용자 작품에는 파일 생성 없이 dry-run만 실행했다. GUI는
 `logs/image-processing-settings.png`, `logs/image-resize-conversion-plan.png`로 확인했고
 Python 177건과 Node 16건을 통과했다.
+
+2026-08-07 압축 파일 연결 프로그램·미리보기 구현: 설정 스키마 v9에 앱 내부
+`system|custom` 뷰어 방식과 선택 실행 파일 경로를 추가했다. 기존 ZIP/CBZ/7Z/CB7/RAR/CBR
+중앙 목록 검사는 그대로 읽기 전용이며 검사창에서 현재 뷰어와 `연결 프로그램으로 열기`
+버튼을 제공한다. `archive-viewer status|set|open` CLI가 같은 정책을 사용하고 `open`은 기본
+미리보기, 실제 외부 프로그램 실행은 `--execute --yes` 또는 GUI 확인 뒤에만 가능하다.
+레지스트리와 Windows 시스템 파일 연결은 변경하지 않는다. 실제 GUI에서 Python 실행 파일을
+임시 custom 뷰어로 저장·조회하고 기존 ZIP의 실행 계획만 확인한 뒤 system/빈 경로로 복원했으며
+외부 프로그램은 실행하지 않았다. 화면은 `logs/archive-viewer-settings.png`,
+`logs/archive-viewer-preview.png`에 보존했고 Python 180건과 Node 16건을 통과했다.
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 

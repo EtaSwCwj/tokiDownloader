@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import QApplication
 
 from toki_core import (
     APP_VERSION,
+    archive_viewer_policy_snapshot,
     available_ui_languages,
     apply_config_migrations,
     apply_database_migrations,
@@ -103,6 +104,7 @@ from toki_core import (
     parse_shortcut_keys_text,
     update_job_markers,
     open_in_explorer,
+    open_archive_with_viewer,
     read_log_tail,
     read_run_log,
     rebuild_job_metadata,
@@ -542,6 +544,37 @@ def build_parser() -> argparse.ArgumentParser:
     local_inspect_window.add_argument("--show-gui", action="store_true", help="GUI 검사 결과 표시")
     local_inspect_window.add_argument("--close", action="store_true", help="GUI 검사 결과 닫기")
     local_inspect.add_argument("--json", action="store_true", help="JSON으로 출력")
+    archive_viewer = subparsers.add_parser(
+        "archive-viewer", help="압축 파일 연결 프로그램 조회·설정·안전한 열기"
+    )
+    archive_viewer_commands = archive_viewer.add_subparsers(
+        dest="archive_viewer_command", required=True
+    )
+    archive_viewer_status = archive_viewer_commands.add_parser(
+        "status", help="현재 앱 내부 연결 프로그램 정책 조회"
+    )
+    archive_viewer_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    archive_viewer_set = archive_viewer_commands.add_parser(
+        "set", help="기본 연결 프로그램 또는 지정한 프로그램 선택"
+    )
+    archive_viewer_set.add_argument("--mode", choices=("system", "custom"))
+    archive_viewer_path = archive_viewer_set.add_mutually_exclusive_group()
+    archive_viewer_path.add_argument("--path", help="custom 방식에서 사용할 실행 파일")
+    archive_viewer_path.add_argument(
+        "--clear-path", action="store_true", help="저장된 지정 프로그램 경로 지우기"
+    )
+    archive_viewer_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    archive_viewer_open = archive_viewer_commands.add_parser(
+        "open", help="압축 파일 열기 계획 조회 또는 확인 후 실행"
+    )
+    archive_viewer_open.add_argument("--path", required=True, help="열 압축 파일 경로")
+    archive_viewer_open.add_argument(
+        "--execute", action="store_true", help="외부 연결 프로그램 실제 실행"
+    )
+    archive_viewer_open.add_argument(
+        "--yes", action="store_true", help="외부 프로그램 실행 확인"
+    )
+    archive_viewer_open.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -1667,6 +1700,47 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"이미지 {result['imageCount']} | 의심 경로 {result['suspiciousPathCount']}"
             )
         return 0 if result.get("ok") else 2
+    if command == "archive-viewer":
+        if args.archive_viewer_command == "status":
+            result = (
+                control_request({"action": "archive_viewer_policy"})
+                if gui_is_running()
+                else archive_viewer_policy_snapshot()
+            )
+        elif args.archive_viewer_command == "set":
+            updates: dict[str, Any] = {}
+            if args.mode:
+                updates["archiveViewerMode"] = args.mode
+            if args.path is not None:
+                updates["archiveViewerPath"] = args.path
+            elif args.clear_path:
+                updates["archiveViewerPath"] = ""
+            if not updates:
+                raise ValueError("--mode, --path 또는 --clear-path 중 하나를 지정하세요.")
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request({"action": "archive_viewer_policy"})
+            else:
+                saved = update_app_settings(updates)
+                result = archive_viewer_policy_snapshot(saved)
+        else:
+            if args.execute and not args.yes:
+                raise ValueError(
+                    "압축 파일 연결 프로그램을 실행하려면 --execute --yes를 함께 지정하세요."
+                )
+            result = open_archive_with_viewer(
+                Path(args.path), execute=bool(args.execute)
+            )
+        if args.json:
+            print_json(result)
+        elif args.archive_viewer_command == "open":
+            state = "실행함" if result["executed"] else "실행 전 미리보기"
+            print(f"{state} | {result['viewerLabel']} | {result['path']}")
+        else:
+            print_json(result)
+        return 0 if result.get("ok", result.get("available", True)) else 2
     if command == "duplicates":
         if args.close:
             ensure_gui_running()

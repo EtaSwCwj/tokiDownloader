@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 8
+CONFIG_SCHEMA_VERSION = 9
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -115,6 +115,8 @@ SETTING_KEYS = frozenset(
         "imageResizeMaxWidth",
         "imageResizeMaxHeight",
         "imageExcludedExtensions",
+        "archiveViewerMode",
+        "archiveViewerPath",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -398,6 +400,8 @@ def default_config() -> dict[str, Any]:
         "imageResizeMaxWidth": 0,
         "imageResizeMaxHeight": 0,
         "imageExcludedExtensions": [],
+        "archiveViewerMode": "system",
+        "archiveViewerPath": "",
     }
 
 
@@ -1245,6 +1249,22 @@ def normalize_notification_sound(value: str | None) -> str:
     return normalized
 
 
+def normalize_archive_viewer_mode(value: str | None) -> str:
+    normalized = str(value or "system").strip().lower()
+    if normalized not in {"system", "custom"}:
+        raise ValueError("압축 파일 연결 프로그램 방식은 system 또는 custom이어야 합니다.")
+    return normalized
+
+
+def normalize_archive_viewer_path(value: str | os.PathLike[str] | None) -> str:
+    normalized = str(value or "").strip()
+    if "\x00" in normalized:
+        raise ValueError("압축 파일 연결 프로그램 경로에 NUL 문자를 사용할 수 없습니다.")
+    if len(normalized) > 32_767:
+        raise ValueError("압축 파일 연결 프로그램 경로가 너무 깁니다.")
+    return normalized
+
+
 def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
@@ -1413,6 +1433,16 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_image_excluded_extensions,
         source.get("imageExcludedExtensions"),
         defaults["imageExcludedExtensions"],
+    )
+    normalized["archiveViewerMode"] = _safe_normalize(
+        normalize_archive_viewer_mode,
+        source.get("archiveViewerMode"),
+        defaults["archiveViewerMode"],
+    )
+    normalized["archiveViewerPath"] = _safe_normalize(
+        normalize_archive_viewer_path,
+        source.get("archiveViewerPath"),
+        defaults["archiveViewerPath"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -1599,6 +1629,8 @@ def validate_app_setting_updates(
         "imageResizeMaxWidth": normalize_image_resize_dimension,
         "imageResizeMaxHeight": normalize_image_resize_dimension,
         "imageExcludedExtensions": normalize_image_excluded_extensions,
+        "archiveViewerMode": normalize_archive_viewer_mode,
+        "archiveViewerPath": normalize_archive_viewer_path,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -1608,6 +1640,13 @@ def validate_app_setting_updates(
         if not background_path.is_file():
             raise ValueError(f"배경 이미지 파일을 찾을 수 없습니다: {background_path}")
         validated["backgroundImage"] = str(background_path)
+    if validated.get("archiveViewerPath"):
+        viewer_path = Path(validated["archiveViewerPath"]).expanduser().resolve()
+        if not viewer_path.is_file():
+            raise ValueError(
+                f"압축 파일 연결 프로그램을 찾을 수 없습니다: {viewer_path}"
+            )
+        validated["archiveViewerPath"] = str(viewer_path)
     return validated
 
 
@@ -1622,6 +1661,12 @@ def update_app_settings(
         if isinstance(window, dict):
             current["window"] = window
     current.update(validated)
+    if (
+        {"archiveViewerMode", "archiveViewerPath"} & set(updates)
+        and current["archiveViewerMode"] == "custom"
+        and not current["archiveViewerPath"]
+    ):
+        raise ValueError("지정한 프로그램 방식을 사용하려면 실행 파일 경로가 필요합니다.")
     save_config(current)
     return settings_snapshot(current)
 
@@ -3944,6 +3989,120 @@ ARCHIVE_IMAGE_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 )
 SUPPORTED_ARCHIVE_EXTENSIONS = frozenset({".zip", ".cbz", ".7z", ".cb7", ".rar", ".cbr"})
+
+
+def archive_viewer_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe the app-local archive opener without changing OS associations."""
+    source = normalize_config(config) if config is not None else load_config()
+    mode = normalize_archive_viewer_mode(source.get("archiveViewerMode"))
+    viewer_path = normalize_archive_viewer_path(source.get("archiveViewerPath"))
+    custom_available = bool(viewer_path and Path(viewer_path).is_file())
+    if os.name == "nt":
+        system_available = hasattr(os, "startfile")
+        system_label = "Windows 기본 연결 프로그램"
+    elif sys.platform == "darwin":
+        system_available = bool(shutil.which("open"))
+        system_label = "macOS 기본 연결 프로그램"
+    else:
+        system_available = bool(shutil.which("xdg-open"))
+        system_label = "시스템 기본 연결 프로그램"
+    available = system_available if mode == "system" else custom_available
+    return {
+        "mode": mode,
+        "viewerPath": viewer_path,
+        "configured": mode == "system" or bool(viewer_path),
+        "available": available,
+        "label": system_label if mode == "system" else (Path(viewer_path).name or "지정한 프로그램"),
+        "supportedExtensions": sorted(SUPPORTED_ARCHIVE_EXTENSIONS),
+        "changesSystemAssociation": False,
+        "requiresConfirmation": True,
+    }
+
+
+def plan_archive_viewer_open(
+    archive_path: Path,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = Path(archive_path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"압축 파일이 없습니다: {source}")
+    suffix = source.suffix.lower()
+    if suffix not in SUPPORTED_ARCHIVE_EXTENSIONS:
+        raise ValueError(f"지원하지 않는 압축 형식입니다: {suffix or '(확장자 없음)'}")
+    policy = archive_viewer_policy_snapshot(config)
+    command = (
+        [policy["viewerPath"], str(source)]
+        if policy["mode"] == "custom"
+        else ["<system-association>", str(source)]
+    )
+    error = ""
+    if not policy["available"]:
+        error = (
+            "지정한 압축 파일 연결 프로그램을 찾을 수 없습니다."
+            if policy["mode"] == "custom"
+            else "시스템 기본 연결 프로그램을 사용할 수 없습니다."
+        )
+    return {
+        "ok": not error,
+        "executed": False,
+        "path": str(source),
+        "extension": suffix,
+        "mode": policy["mode"],
+        "viewerPath": policy["viewerPath"],
+        "viewerLabel": policy["label"],
+        "command": command,
+        "requiresConfirmation": True,
+        "changesSystemAssociation": False,
+        "filesChanged": False,
+        "error": error,
+    }
+
+
+def _launch_archive_viewer(plan: dict[str, Any]) -> int | None:
+    if plan["mode"] == "system" and os.name == "nt":
+        os.startfile(plan["path"])  # type: ignore[attr-defined]
+        return None
+    command = (
+        ["open", plan["path"]]
+        if plan["mode"] == "system" and sys.platform == "darwin"
+        else ["xdg-open", plan["path"]]
+        if plan["mode"] == "system"
+        else list(plan["command"])
+    )
+    options: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        options["start_new_session"] = True
+    process = subprocess.Popen(command, **options)
+    return int(process.pid)
+
+
+def open_archive_with_viewer(
+    archive_path: Path,
+    *,
+    config: dict[str, Any] | None = None,
+    execute: bool = False,
+    launcher: Callable[[dict[str, Any]], int | None] | None = None,
+) -> dict[str, Any]:
+    plan = plan_archive_viewer_open(archive_path, config=config)
+    if not execute:
+        return plan
+    if not plan["ok"]:
+        raise RuntimeError(str(plan["error"]))
+    process_id = (launcher or _launch_archive_viewer)(plan)
+    return {
+        **plan,
+        "executed": True,
+        "processId": process_id,
+    }
 
 
 def _archive_path_is_suspicious(name: str) -> bool:
