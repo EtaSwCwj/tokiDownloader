@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import importlib.metadata
+import ipaddress
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 import psutil
 
@@ -50,6 +52,10 @@ _WINDOWS_RESERVED_SEGMENT = re.compile(
 )
 _WINDOWS_INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 NETWORK_PROVIDERS = ("manatoki", "newtoki", "booktoki")
+PUBLIC_IP_ENDPOINT = "https://api.ipify.org?format=json"
+CREDENTIAL_SERVICE = "tokiDownloader"
+MAX_COOKIE_IMPORT_BYTES = 5 * 1024 * 1024
+MAX_COOKIE_COUNT = 10_000
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
     2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
@@ -618,6 +624,277 @@ def network_policy_snapshot(
         "provider": provider,
         "providerPolicy": policies.get(provider) if provider else None,
         "providerPolicies": policies,
+    }
+
+
+def public_ip_check_plan(endpoint: str = PUBLIC_IP_ENDPOINT) -> dict[str, Any]:
+    parsed = urlsplit(str(endpoint or ""))
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("공인 IP 확인 주소는 HTTPS여야 합니다.")
+    return {
+        "requiresNetwork": True,
+        "requiresConfirmation": True,
+        "endpoint": endpoint,
+        "sendsCookies": False,
+        "sendsDownloadedFiles": False,
+        "timeoutSeconds": 10,
+    }
+
+
+def lookup_public_ip(
+    *,
+    endpoint: str = PUBLIC_IP_ENDPOINT,
+    fetcher: Callable[[str, int], bytes] | None = None,
+) -> dict[str, Any]:
+    plan = public_ip_check_plan(endpoint)
+    if fetcher is None:
+        def fetcher(url: str, timeout: int) -> bytes:
+            request = Request(url, headers={"User-Agent": f"tokiDownloader/{APP_VERSION}"})
+            with urlopen(request, timeout=timeout) as response:
+                return response.read(4096)
+    payload = fetcher(endpoint, int(plan["timeoutSeconds"]))
+    try:
+        decoded = json.loads(bytes(payload).decode("utf-8"))
+        address = str(decoded.get("ip") or "").strip()
+        parsed_address = ipaddress.ip_address(address)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("공인 IP 확인 응답 형식이 잘못되었습니다.") from error
+    return {
+        "ok": True,
+        "ip": str(parsed_address),
+        "version": parsed_address.version,
+        "endpoint": endpoint,
+        "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+def normalize_cookie_provider(value: str) -> str:
+    provider = str(value or "").strip().lower()
+    if provider not in NETWORK_PROVIDERS:
+        raise ValueError(
+            f"쿠키 공급자는 {', '.join(NETWORK_PROVIDERS)} 중 하나여야 합니다."
+        )
+    return provider
+
+
+def credential_store_status() -> dict[str, Any]:
+    try:
+        import keyring
+
+        backend = keyring.get_keyring()
+        priority = float(getattr(backend, "priority", 0) or 0)
+        return {
+            "available": priority > 0,
+            "backend": f"{type(backend).__module__}.{type(backend).__name__}",
+            "priority": priority,
+            "plaintext": False,
+            "packageVersion": importlib.metadata.version("keyring"),
+        }
+    except (ImportError, importlib.metadata.PackageNotFoundError, RuntimeError) as error:
+        return {
+            "available": False,
+            "backend": "",
+            "priority": 0,
+            "plaintext": False,
+            "error": str(error),
+        }
+
+
+def _credential_backend(backend: Any | None = None) -> Any:
+    if backend is not None:
+        return backend
+    try:
+        import keyring
+    except ImportError as error:
+        raise RuntimeError(
+            "보안 저장소가 설치되지 않았습니다. requirements-security.txt를 설치해주세요."
+        ) from error
+    status = credential_store_status()
+    if not status["available"]:
+        raise RuntimeError("사용 가능한 OS 자격 증명 저장소가 없습니다.")
+    return keyring
+
+
+def _normalize_cookie(cookie: dict[str, Any]) -> dict[str, Any]:
+    name = str(cookie.get("name") or "").strip()
+    value = str(cookie.get("value") or "")
+    domain = str(cookie.get("domain") or "").strip().lower()
+    path_value = str(cookie.get("path") or "/").strip() or "/"
+    if not name or not domain or any(ord(char) < 32 for char in name + domain):
+        raise ValueError("쿠키 이름과 도메인이 필요합니다.")
+    if len(name) > 512 or len(value) > 16_384 or len(domain) > 253:
+        raise ValueError("쿠키 필드 길이가 안전 한도를 초과합니다.")
+    return {
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": path_value,
+        "expires": int(cookie.get("expires") or cookie.get("expirationDate") or 0),
+        "secure": bool(cookie.get("secure", False)),
+        "httpOnly": bool(cookie.get("httpOnly", False)),
+        "sameSite": str(cookie.get("sameSite") or ""),
+    }
+
+
+def parse_cookie_file(input_path: Path) -> list[dict[str, Any]]:
+    path = Path(input_path).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"쿠키 파일을 찾을 수 없습니다: {path}")
+    if path.stat().st_size > MAX_COOKIE_IMPORT_BYTES:
+        raise ValueError("쿠키 파일은 5 MiB 이하여야 합니다.")
+    text = path.read_text(encoding="utf-8-sig")
+    cookies: list[dict[str, Any]] = []
+    stripped = text.lstrip()
+    if stripped.startswith(("[", "{")):
+        payload = json.loads(text)
+        source = payload.get("cookies") if isinstance(payload, dict) else payload
+        if not isinstance(source, list):
+            raise ValueError("JSON 쿠키 파일은 배열 또는 cookies 배열이어야 합니다.")
+        for item in source:
+            if not isinstance(item, dict):
+                raise ValueError("JSON 쿠키 항목은 객체여야 합니다.")
+            cookies.append(_normalize_cookie(item))
+    else:
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+                continue
+            http_only = line.startswith("#HttpOnly_")
+            if http_only:
+                line = line.removeprefix("#HttpOnly_")
+            fields = line.split("\t")
+            if len(fields) != 7:
+                raise ValueError("Netscape 쿠키 행은 탭으로 구분된 7개 필드여야 합니다.")
+            domain, _include_subdomains, path_value, secure, expires, name, value = fields
+            cookies.append(
+                _normalize_cookie(
+                    {
+                        "domain": domain,
+                        "path": path_value,
+                        "secure": secure.upper() == "TRUE",
+                        "expires": expires,
+                        "name": name,
+                        "value": value,
+                        "httpOnly": http_only,
+                    }
+                )
+            )
+    if not cookies:
+        raise ValueError("가져올 쿠키가 없습니다.")
+    if len(cookies) > MAX_COOKIE_COUNT:
+        raise ValueError(f"쿠키는 최대 {MAX_COOKIE_COUNT:,}개까지 가져올 수 있습니다.")
+    return cookies
+
+
+def cookie_import_plan(provider: str, input_path: Path) -> dict[str, Any]:
+    normalized_provider = normalize_cookie_provider(provider)
+    cookies = parse_cookie_file(input_path)
+    return {
+        "provider": normalized_provider,
+        "inputPath": str(Path(input_path).expanduser().resolve()),
+        "cookieCount": len(cookies),
+        "domains": sorted({cookie["domain"] for cookie in cookies}),
+        "containsValues": True,
+        "willStoreInOsCredentialVault": True,
+        "executed": False,
+    }
+
+
+def import_provider_cookies(
+    provider: str,
+    input_path: Path,
+    *,
+    backend: Any | None = None,
+) -> dict[str, Any]:
+    plan = cookie_import_plan(provider, input_path)
+    cookies = parse_cookie_file(input_path)
+    payload = {
+        "format": "tokiDownloader-cookies",
+        "formatVersion": 1,
+        "provider": plan["provider"],
+        "cookies": cookies,
+        "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    store = _credential_backend(backend)
+    store.set_password(
+        CREDENTIAL_SERVICE,
+        f"cookies:{plan['provider']}",
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+    return {**plan, "executed": True}
+
+
+def _load_provider_cookie_payload(provider: str, backend: Any | None = None) -> dict[str, Any] | None:
+    normalized_provider = normalize_cookie_provider(provider)
+    store = _credential_backend(backend)
+    secret = store.get_password(CREDENTIAL_SERVICE, f"cookies:{normalized_provider}")
+    if not secret:
+        return None
+    try:
+        payload = json.loads(secret)
+    except json.JSONDecodeError as error:
+        raise ValueError("OS 보안 저장소의 쿠키 데이터가 손상되었습니다.") from error
+    if not isinstance(payload, dict) or not isinstance(payload.get("cookies"), list):
+        raise ValueError("OS 보안 저장소의 쿠키 형식이 잘못되었습니다.")
+    return payload
+
+
+def provider_cookie_status(provider: str, *, backend: Any | None = None) -> dict[str, Any]:
+    normalized_provider = normalize_cookie_provider(provider)
+    payload = _load_provider_cookie_payload(normalized_provider, backend)
+    cookies = payload.get("cookies", []) if payload else []
+    return {
+        "provider": normalized_provider,
+        "stored": payload is not None,
+        "cookieCount": len(cookies),
+        "domains": sorted(
+            {str(cookie.get("domain") or "") for cookie in cookies if cookie.get("domain")}
+        ),
+        "updatedAt": str(payload.get("updatedAt") or "") if payload else "",
+        "valuesExposed": False,
+    }
+
+
+def export_provider_cookies(
+    provider: str,
+    output_path: Path,
+    *,
+    backend: Any | None = None,
+) -> dict[str, Any]:
+    normalized_provider = normalize_cookie_provider(provider)
+    payload = _load_provider_cookie_payload(normalized_provider, backend)
+    if payload is None:
+        raise ValueError("저장된 쿠키가 없습니다.")
+    target = Path(output_path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, target)
+    return {
+        "provider": normalized_provider,
+        "outputPath": str(target),
+        "cookieCount": len(payload["cookies"]),
+        "containsSensitiveValues": True,
+        "executed": True,
+    }
+
+
+def clear_provider_cookies(provider: str, *, backend: Any | None = None) -> dict[str, Any]:
+    normalized_provider = normalize_cookie_provider(provider)
+    store = _credential_backend(backend)
+    existing = store.get_password(CREDENTIAL_SERVICE, f"cookies:{normalized_provider}")
+    if existing:
+        try:
+            store.delete_password(CREDENTIAL_SERVICE, f"cookies:{normalized_provider}")
+        except Exception as error:
+            if type(error).__name__ != "PasswordDeleteError":
+                raise
+    return {
+        "provider": normalized_provider,
+        "cleared": bool(existing),
+        "executed": True,
     }
 
 
@@ -1350,6 +1627,7 @@ def dependency_diagnostics() -> dict[str, Any]:
     checks.append(package("ImageHash", "ImageHash", False))
     checks.append(package("py7zr", "py7zr", False))
     checks.append(package("rarfile", "rarfile", False))
+    checks.append(package("keyring", "keyring", False))
     for name, executable, version_argument in (
         ("FFmpeg", "ffmpeg", "-version"),
         ("yt-dlp", "yt-dlp", "--version"),

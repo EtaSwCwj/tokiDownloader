@@ -362,6 +362,23 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertTrue(closed["closed"])
         self.assertEqual(calls, [("show", "provider", "yt-dlp"), ("close",)])
 
+    def test_cookie_manager_ipc_shows_provider_without_reading_secrets(self) -> None:
+        calls = []
+        harness = type("CookieIpcHarness", (), {})()
+        harness.show_cookie_manager = (
+            lambda provider: calls.append(("show", provider)) or True
+        )
+        harness.close_cookie_manager = lambda: calls.append(("close",)) or True
+        shown = MainWindow._handle_control_action(
+            harness, {"action": "show_cookie_manager", "provider": "manatoki"}
+        )
+        closed = MainWindow._handle_control_action(
+            harness, {"action": "close_cookie_manager"}
+        )
+        self.assertEqual(shown, {"shown": True})
+        self.assertEqual(closed, {"closed": True})
+        self.assertEqual(calls, [("show", "manatoki"), ("close",)])
+
     def test_settings_import_ipc_applies_executed_values_to_live_gui(self) -> None:
         applied = []
         harness = type("SettingsImportHarness", (), {})()

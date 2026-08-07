@@ -106,6 +106,9 @@ from toki_core import (
     build_work_key,
     build_downloader_args,
     completion_action_plan,
+    cookie_import_plan,
+    credential_store_status,
+    clear_provider_cookies,
     clear_log_file,
     cleanup_run_history,
     cleanup_thumbnail_cache,
@@ -119,6 +122,7 @@ from toki_core import (
     error_category_label,
     export_diagnostics,
     export_jobs_snapshot,
+    export_provider_cookies,
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
@@ -126,6 +130,7 @@ from toki_core import (
     hydrate_job_metadata,
     import_app_settings,
     import_jobs_snapshot,
+    import_provider_cookies,
     inspect_local_archive,
     inspect_clipboard_url,
     job_database_diagnostics,
@@ -133,7 +138,9 @@ from toki_core import (
     keyboard_shortcut_keys,
     menu_action_availability,
     quick_action_catalog,
+    provider_cookie_status,
     load_ui_strings,
+    lookup_public_ip,
     load_config,
     load_job_by_id,
     load_job_by_work_key,
@@ -1749,11 +1756,162 @@ class CompletionCountdownDialog(QDialog):
         }
 
 
+class CookieManagerDialog(QDialog):
+    def __init__(self, owner: "MainWindow") -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.setWindowTitle("공급자 쿠키 관리")
+        self.resize(620, 330)
+        layout = QVBoxLayout(self)
+        warning = QLabel(
+            "쿠키는 계정 접근 권한을 포함할 수 있는 민감 정보입니다. 실제 읽기·저장·내보내기·삭제마다 다시 확인합니다."
+        )
+        warning.setWordWrap(True)
+        layout.addWidget(warning)
+        form = QFormLayout()
+        self.provider_combo = QComboBox()
+        for label, value in (
+            ("마나토끼", "manatoki"),
+            ("뉴토끼", "newtoki"),
+            ("북토끼", "booktoki"),
+        ):
+            self.provider_combo.addItem(label, value)
+        self.provider_combo.currentIndexChanged.connect(self._reset_summary)
+        form.addRow("공급자", self.provider_combo)
+        capability = credential_store_status()
+        backend_text = (
+            f"사용 가능 · {capability['backend']}"
+            if capability["available"]
+            else "사용 불가 · requirements-security.txt 설치 필요"
+        )
+        self.backend_label = QLabel(backend_text)
+        self.backend_label.setWordWrap(True)
+        form.addRow("OS 보안 저장소", self.backend_label)
+        self.summary_label = QLabel("쿠키 상태를 아직 읽지 않았습니다.")
+        self.summary_label.setWordWrap(True)
+        form.addRow("현재 상태", self.summary_label)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        status_button = QPushButton("상태 읽기")
+        status_button.setToolTip("CLI: cookies status --provider PROVIDER --yes")
+        status_button.clicked.connect(self._read_status)
+        import_button = QPushButton("가져오기...")
+        import_button.setToolTip("CLI: cookies import --provider PROVIDER --input PATH --yes")
+        import_button.clicked.connect(self._import_cookies)
+        export_button = QPushButton("내보내기...")
+        export_button.setToolTip("CLI: cookies export --provider PROVIDER --output PATH --yes")
+        export_button.clicked.connect(self._export_cookies)
+        clear_button = QPushButton("초기화...")
+        clear_button.setToolTip("CLI: cookies clear --provider PROVIDER --yes")
+        clear_button.clicked.connect(self._clear_cookies)
+        for button in (status_button, import_button, export_button, clear_button):
+            button.setEnabled(bool(capability["available"]))
+            actions.addWidget(button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+    def provider(self) -> str:
+        return str(self.provider_combo.currentData() or "manatoki")
+
+    def _reset_summary(self, _index: int = 0) -> None:
+        self.summary_label.setText("쿠키 상태를 아직 읽지 않았습니다.")
+
+    def _confirm(self, title: str, message: str) -> bool:
+        return (
+            QMessageBox.question(self, title, message)
+            == QMessageBox.StandardButton.Yes
+        )
+
+    def _read_status(self) -> None:
+        if not self._confirm(
+            "쿠키 상태 읽기",
+            "OS 보안 저장소에서 쿠키 메타데이터를 읽을까요? 쿠키 값은 화면에 표시하지 않습니다.",
+        ):
+            return
+        try:
+            status = provider_cookie_status(self.provider())
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "쿠키 상태를 읽을 수 없음", str(error))
+            return
+        domains = ", ".join(status["domains"]) or "없음"
+        self.summary_label.setText(
+            f"저장: {'예' if status['stored'] else '아니요'} · "
+            f"{status['cookieCount']}개 · 도메인: {domains}"
+        )
+
+    def _import_cookies(self) -> None:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self, "쿠키 파일 선택", "", "쿠키 파일 (*.json *.txt);;모든 파일 (*)"
+        )
+        if not selected:
+            return
+        try:
+            plan = cookie_import_plan(self.provider(), Path(selected))
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            QMessageBox.warning(self, "쿠키 파일을 읽을 수 없음", str(error))
+            return
+        if not self._confirm(
+            "쿠키 가져오기",
+            f"쿠키 {plan['cookieCount']}개를 Windows 보안 저장소에 저장할까요?",
+        ):
+            return
+        try:
+            import_provider_cookies(self.provider(), Path(selected))
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "쿠키를 저장할 수 없음", str(error))
+            return
+        self.summary_label.setText(f"쿠키 {plan['cookieCount']}개를 안전하게 저장했습니다.")
+
+    def _export_cookies(self) -> None:
+        selected, _filter = QFileDialog.getSaveFileName(
+            self, "쿠키 내보내기", f"{self.provider()}-cookies.json", "JSON (*.json)"
+        )
+        if not selected:
+            return
+        if not self._confirm(
+            "민감한 쿠키 내보내기",
+            "쿠키 값이 포함된 평문 JSON 파일을 생성합니다. 안전한 개인 경로인지 확인했나요?",
+        ):
+            return
+        try:
+            result = export_provider_cookies(self.provider(), Path(selected))
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "쿠키를 내보낼 수 없음", str(error))
+            return
+        self.summary_label.setText(f"쿠키 {result['cookieCount']}개를 내보냈습니다.")
+
+    def _clear_cookies(self) -> None:
+        if not self._confirm(
+            "저장된 쿠키 초기화",
+            "선택 공급자의 쿠키를 Windows 보안 저장소에서 삭제할까요? 되돌릴 수 없습니다.",
+        ):
+            return
+        try:
+            result = clear_provider_cookies(self.provider())
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "쿠키를 초기화할 수 없음", str(error))
+            return
+        self.summary_label.setText(
+            "저장된 쿠키를 삭제했습니다." if result["cleared"] else "저장된 쿠키가 없습니다."
+        )
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "provider": self.provider(),
+            "statusRead": "아직" not in self.summary_label.text(),
+        }
+
+
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
-        "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격",
+        "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
@@ -1889,6 +2047,9 @@ class SettingsDialog(QDialog):
         self.provider_backoff_spin.setRange(1, 60)
         self.provider_backoff_spin.setSuffix("초")
         network_form.addRow("공급자 백오프", self.provider_backoff_spin)
+        public_ip_button = QPushButton("공인 IP 확인...")
+        public_ip_button.clicked.connect(owner.confirm_public_ip_check)
+        network_form.addRow("외부 연결 확인", public_ip_button)
         network_note = QLabel(
             "동시성 상한은 사이트와 PC 부하를 고려한 안전 범위입니다. 재시도 대기는 실패마다 지수 증가합니다."
         )
@@ -1995,6 +2156,17 @@ class SettingsDialog(QDialog):
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
+        credential = credential_store_status()
+        credential_label = QLabel(
+            "Windows 보안 저장소 사용 가능"
+            if credential["available"]
+            else "보안 저장소 선택 기능 미설치"
+        )
+        provider_form.addRow("쿠키 보안", credential_label)
+        cookie_button = QPushButton("쿠키 관리...")
+        cookie_button.clicked.connect(owner.show_cookie_manager)
+        cookie_button.setEnabled(bool(credential["available"]))
+        provider_form.addRow("공급자 쿠키", cookie_button)
         provider_note = QLabel(
             "선택 공급자는 기본 다운로드와 분리됩니다. 설치되지 않아도 Toki 기능은 정상 작동합니다."
         )
@@ -2590,6 +2762,7 @@ class MainWindow(QMainWindow):
         self.total_output_dropped_bytes = 0
         self.last_performance_benchmark: dict[str, Any] | None = None
         self.last_stability_test: dict[str, Any] | None = None
+        self.public_ip_task: ServiceTask | None = None
         self.startup_recovery: dict[str, Any] = {
             "jobCount": 0,
             "runCount": 0,
@@ -2612,6 +2785,7 @@ class MainWindow(QMainWindow):
             ImageConversionProgressDialog | None
         ) = None
         self.active_settings_dialog: SettingsDialog | None = None
+        self.active_cookie_manager_dialog: CookieManagerDialog | None = None
         self.active_jobs_snapshot_dialog: JobsSnapshotImportDialog | None = None
         self.active_group_manager_dialog: WorkGroupManagerDialog | None = None
         self.active_archive_inspection_dialog: ArchiveInspectionDialog | None = None
@@ -4587,6 +4761,29 @@ class MainWindow(QMainWindow):
         self.log("설정 창 표시")
         return True
 
+    def show_cookie_manager(self, provider: str = "manatoki") -> bool:
+        if self.active_cookie_manager_dialog:
+            self.active_cookie_manager_dialog.close()
+        dialog = CookieManagerDialog(self)
+        index = dialog.provider_combo.findData(str(provider or "manatoki"))
+        if index >= 0:
+            dialog.provider_combo.setCurrentIndex(index)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(
+            lambda _object=None: setattr(self, "active_cookie_manager_dialog", None)
+        )
+        self.active_cookie_manager_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
+
+    def close_cookie_manager(self) -> bool:
+        if not self.active_cookie_manager_dialog:
+            return False
+        self.active_cookie_manager_dialog.close()
+        return True
+
     def export_jobs_snapshot_now(self, output_path: str) -> dict[str, Any]:
         result = export_jobs_snapshot(Path(output_path))
         message = (
@@ -5336,6 +5533,40 @@ class MainWindow(QMainWindow):
             "retryCount": self.retry_count_spin.value(),
             "retryBackoffSeconds": self.retry_backoff_spin.value(),
         }
+
+    def confirm_public_ip_check(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "공인 IP 확인",
+            "공인 IP 확인을 위해 api.ipify.org에 HTTPS 요청을 보냅니다.\n"
+            "쿠키와 다운로드 파일은 전송하지 않습니다. 계속할까요?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self.start_public_ip_check()
+        return True
+
+    def start_public_ip_check(self) -> None:
+        if self.public_ip_task is not None:
+            raise ValueError("공인 IP 확인이 이미 진행 중입니다.")
+        task = ServiceTask("public-ip", lookup_public_ip)
+        self.public_ip_task = task
+        task.signals.finished.connect(self._public_ip_check_finished)
+        self.io_thread_pool.start(task)
+        self.log("사용자 확인 후 공인 IP 조회 시작")
+
+    def _public_ip_check_finished(
+        self, _task_id: str, result: object, error: str
+    ) -> None:
+        self.public_ip_task = None
+        if error:
+            self.log(f"공인 IP 확인 실패: {error}", "ERROR")
+            QMessageBox.warning(self, "공인 IP 확인 실패", error)
+            return
+        payload = result if isinstance(result, dict) else {}
+        address = str(payload.get("ip") or "")
+        self.log(f"공인 IP 확인 완료: {address}")
+        QMessageBox.information(self, "공인 IP 확인", f"현재 공인 IP: {address}")
 
     def open_output_folder(self, job_id: str | None = None) -> str:
         job = self.selected_job(job_id)
@@ -6364,6 +6595,11 @@ class MainWindow(QMainWindow):
             screenshot = self.active_doctor_dialog.grab()
         elif self.active_performance_dialog and self.active_performance_dialog.isVisible():
             screenshot = self.active_performance_dialog.grab()
+        elif (
+            self.active_cookie_manager_dialog
+            and self.active_cookie_manager_dialog.isVisible()
+        ):
+            screenshot = self.active_cookie_manager_dialog.grab()
         elif self.active_settings_dialog and self.active_settings_dialog.isVisible():
             screenshot = self.active_settings_dialog.grab()
         elif (
@@ -7050,6 +7286,11 @@ class MainWindow(QMainWindow):
                 if self.active_settings_dialog
                 else {"open": False, "tab": "", "search": "", "visibleTabs": []}
             ),
+            "cookieManager": (
+                self.active_cookie_manager_dialog.state_snapshot()
+                if self.active_cookie_manager_dialog
+                else {"open": False, "provider": "", "statusRead": False}
+            ),
             "jobsSnapshotDialogOpen": bool(
                 self.active_jobs_snapshot_dialog
                 and self.active_jobs_snapshot_dialog.isVisible()
@@ -7350,6 +7591,14 @@ class MainWindow(QMainWindow):
             }
         if action == "close_settings":
             return {"closed": self.close_settings_dialog()}
+        if action == "show_cookie_manager":
+            return {
+                "shown": self.show_cookie_manager(
+                    str(request.get("provider") or "manatoki")
+                )
+            }
+        if action == "close_cookie_manager":
+            return {"closed": self.close_cookie_manager()}
         if action == "preview_completion_action":
             return self.preview_completion_action(
                 str(request.get("completionAction") or "exit"),

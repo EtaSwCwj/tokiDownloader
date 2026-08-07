@@ -16,6 +16,8 @@ cd tokiDownloader
 `setup-gui.cmd`는 `.venv`, PyQt6·psutil과 `package-lock.json` 기준 Node 의존성을 설치한 뒤
 `doctor --json`을 실행한다. 이미지 변환도 사용할 경우 `setup-gui.cmd -WithImageTools`를
 실행하고, 7Z/RAR 작품 검사도 사용할 경우 `setup-gui.cmd -WithArchiveTools`를 실행한다.
+공급자 쿠키를 Windows 자격 증명 저장소에 보관하려면
+`setup-gui.cmd -WithSecurityTools`를 실행한다.
 
 ## 실행
 

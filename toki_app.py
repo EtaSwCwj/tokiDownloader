@@ -43,6 +43,9 @@ from toki_core import (
     count_runs,
     copy_text_to_clipboard,
     completion_action_plan,
+    cookie_import_plan,
+    credential_store_status,
+    clear_provider_cookies,
     convert_job_images,
     delete_job_record,
     delete_job_records,
@@ -53,12 +56,14 @@ from toki_core import (
     export_diagnostics,
     export_app_settings,
     export_jobs_snapshot,
+    export_provider_cookies,
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
     load_config,
     import_app_settings,
     import_jobs_snapshot,
+    import_provider_cookies,
     inspect_local_archive,
     inspect_clipboard_url,
     load_job_by_id,
@@ -78,6 +83,9 @@ from toki_core import (
     normalize_work_concurrency,
     plan_job_folder_move,
     plan_metadata_rebuild,
+    public_ip_check_plan,
+    lookup_public_ip,
+    provider_cookie_status,
     plan_image_conversion,
     update_job_markers,
     open_in_explorer,
@@ -977,6 +985,49 @@ def build_parser() -> argparse.ArgumentParser:
     network_set.add_argument("--request-delay-ms", type=int)
     network_set.add_argument("--backoff", type=int)
     network_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    public_ip = subparsers.add_parser("public-ip", help="외부 서비스로 공인 IP 확인")
+    public_ip_commands = public_ip.add_subparsers(dest="public_ip_command", required=True)
+    public_ip_plan = public_ip_commands.add_parser("plan", help="네트워크 요청 계획만 조회")
+    public_ip_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
+    public_ip_check = public_ip_commands.add_parser("check", help="사용자 확인 후 실제 조회")
+    public_ip_check.add_argument("--yes", action="store_true", help="외부 요청 확인")
+    public_ip_check.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    cookies = subparsers.add_parser("cookies", help="OS 보안 저장소의 공급자 쿠키 관리")
+    cookie_commands = cookies.add_subparsers(dest="cookie_command", required=True)
+    cookie_capabilities = cookie_commands.add_parser("capabilities", help="보안 저장소 상태")
+    cookie_capabilities.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_plan = cookie_commands.add_parser("plan-import", help="파일을 저장하지 않고 검사")
+    cookie_plan.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_plan.add_argument("--input", required=True)
+    cookie_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_status = cookie_commands.add_parser("status", help="저장된 쿠키 메타데이터")
+    cookie_status.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_status.add_argument("--yes", action="store_true", help="보안 저장소 읽기 확인")
+    cookie_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_import = cookie_commands.add_parser("import", help="쿠키를 OS 보안 저장소에 저장")
+    cookie_import.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_import.add_argument("--input", required=True)
+    cookie_import.add_argument("--yes", action="store_true", help="민감 정보 저장 확인")
+    cookie_import.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_export = cookie_commands.add_parser("export", help="쿠키 값을 JSON 파일로 내보내기")
+    cookie_export.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_export.add_argument("--output", required=True)
+    cookie_export.add_argument("--yes", action="store_true", help="평문 민감 파일 생성 확인")
+    cookie_export.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_clear = cookie_commands.add_parser("clear", help="OS 보안 저장소 쿠키 삭제")
+    cookie_clear.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_clear.add_argument("--yes", action="store_true", help="삭제 확인")
+    cookie_clear.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_manage = cookie_commands.add_parser("manage", help="GUI 쿠키 관리 창 제어")
+    cookie_manage.add_argument(
+        "--provider", default="manatoki", choices=("manatoki", "newtoki", "booktoki")
+    )
+    cookie_manage_window = cookie_manage.add_mutually_exclusive_group(required=True)
+    cookie_manage_window.add_argument("--show-gui", action="store_true")
+    cookie_manage_window.add_argument("--close", action="store_true")
+    cookie_manage.add_argument("--json", action="store_true", help="JSON으로 출력")
 
     completion_action = subparsers.add_parser(
         "completion-action", help="모든 작업 완료 후 동작 조회·설정·미리보기"
@@ -2578,6 +2629,60 @@ def run_cli(args: argparse.Namespace) -> int:
                     f"{provider}: 간격 {policy['requestDelayMs']}ms · "
                     f"백오프 {policy['backoffSeconds']}초"
                 )
+        return 0
+    if command == "public-ip":
+        if args.public_ip_command == "plan":
+            result = public_ip_check_plan()
+        else:
+            if not args.yes:
+                raise ControlError(
+                    "공인 IP 확인은 외부 서비스에 요청합니다. 실행하려면 --yes가 필요합니다."
+                )
+            result = lookup_public_ip()
+        if args.json:
+            print_json(result)
+        else:
+            if args.public_ip_command == "plan":
+                print(f"확인 주소: {result['endpoint']}")
+                print("외부 네트워크 요청: 사용자 확인 필요")
+            else:
+                print(f"공인 IP: {result['ip']}")
+        return 0
+    if command == "cookies":
+        subcommand = args.cookie_command
+        if subcommand == "manage":
+            ensure_gui_running()
+            result = control_request(
+                {"action": "close_cookie_manager"}
+                if args.close
+                else {
+                    "action": "show_cookie_manager",
+                    "provider": args.provider,
+                }
+            )
+        elif subcommand == "capabilities":
+            result = credential_store_status()
+        elif subcommand == "plan-import":
+            result = cookie_import_plan(args.provider, Path(args.input))
+        else:
+            if not args.yes:
+                raise ControlError(
+                    "쿠키는 민감 정보입니다. OS 보안 저장소 읽기·쓰기·삭제를 실행하려면 --yes가 필요합니다."
+                )
+            if subcommand == "status":
+                result = provider_cookie_status(args.provider)
+            elif subcommand == "import":
+                result = import_provider_cookies(args.provider, Path(args.input))
+            elif subcommand == "export":
+                result = export_provider_cookies(
+                    args.provider, Path(args.output)
+                )
+            else:
+                result = clear_provider_cookies(args.provider)
+        if args.json:
+            print_json(result)
+        else:
+            print_json(result)
         return 0
     if command == "completion-action":
         subcommand = args.completion_command

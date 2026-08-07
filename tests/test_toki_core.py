@@ -26,6 +26,8 @@ from toki_core import (
     cleanup_thumbnail_cache,
     cleanup_run_history,
     completion_action_plan,
+    cookie_import_plan,
+    clear_provider_cookies,
     create_work_collection,
     count_jobs,
     count_runs,
@@ -37,11 +39,13 @@ from toki_core import (
     downloader_event_update_policy,
     export_diagnostics,
     export_jobs_snapshot,
+    export_provider_cookies,
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
     hydrate_job_metadata,
     import_jobs_snapshot,
+    import_provider_cookies,
     inspect_local_archive,
     inspect_clipboard_url,
     load_ui_strings,
@@ -80,6 +84,9 @@ from toki_core import (
     plan_image_conversion,
     plan_metadata_rebuild,
     plan_window_geometry,
+    public_ip_check_plan,
+    lookup_public_ip,
+    provider_cookie_status,
     read_run_log,
     rebuild_job_metadata,
     rename_work_collection,
@@ -110,6 +117,79 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_cookie_import_status_export_and_clear_use_injected_secure_backend(self) -> None:
+        class MemoryCredentialBackend:
+            def __init__(self) -> None:
+                self.values: dict[tuple[str, str], str] = {}
+
+            def set_password(self, service: str, username: str, value: str) -> None:
+                self.values[(service, username)] = value
+
+            def get_password(self, service: str, username: str) -> str | None:
+                return self.values.get((service, username))
+
+            def delete_password(self, service: str, username: str) -> None:
+                self.values.pop((service, username), None)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "cookies.json"
+            output = root / "exported.json"
+            source.write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "session",
+                            "value": "secret-value",
+                            "domain": ".example.test",
+                            "path": "/",
+                            "secure": True,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            backend = MemoryCredentialBackend()
+            plan = cookie_import_plan("manatoki", source)
+            self.assertFalse(plan["executed"])
+            self.assertEqual(plan["cookieCount"], 1)
+            imported = import_provider_cookies(
+                "manatoki", source, backend=backend
+            )
+            self.assertTrue(imported["executed"])
+            status = provider_cookie_status("manatoki", backend=backend)
+            self.assertTrue(status["stored"])
+            self.assertEqual(status["cookieCount"], 1)
+            self.assertFalse(status["valuesExposed"])
+            self.assertNotIn("secret-value", json.dumps(status))
+            exported = export_provider_cookies(
+                "manatoki", output, backend=backend
+            )
+            self.assertTrue(exported["containsSensitiveValues"])
+            self.assertIn("secret-value", output.read_text(encoding="utf-8"))
+            cleared = clear_provider_cookies("manatoki", backend=backend)
+            self.assertTrue(cleared["cleared"])
+            self.assertFalse(
+                provider_cookie_status("manatoki", backend=backend)["stored"]
+            )
+
+    def test_public_ip_service_requires_confirmation_plan_and_accepts_injected_response(self) -> None:
+        plan = public_ip_check_plan()
+        self.assertTrue(plan["requiresNetwork"])
+        self.assertTrue(plan["requiresConfirmation"])
+        self.assertFalse(plan["sendsCookies"])
+        calls = []
+        result = lookup_public_ip(
+            fetcher=lambda endpoint, timeout: (
+                calls.append((endpoint, timeout)) or b'{"ip":"203.0.113.7"}'
+            )
+        )
+        self.assertEqual(result["ip"], "203.0.113.7")
+        self.assertEqual(result["version"], 4)
+        self.assertEqual(len(calls), 1)
+        with self.assertRaises(ValueError):
+            lookup_public_ip(fetcher=lambda _endpoint, _timeout: b'{"ip":"invalid"}')
+
     def test_network_policy_validates_proxy_speed_and_provider_pacing(self) -> None:
         config = default_config()
         config["proxyUrl"] = "socks5://127.0.0.1:1080"

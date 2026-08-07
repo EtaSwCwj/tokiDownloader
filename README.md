@@ -68,6 +68,8 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 이미지 변환·유사 이미지 해시용 Pillow와 ImageHash까지 함께 설치하려면
 `setup-gui.cmd -WithImageTools`를 사용합니다.
 7Z/RAR 작품 검사 모듈까지 설치하려면 `setup-gui.cmd -WithArchiveTools`를 사용합니다.
+Windows 자격 증명 저장소 기반 쿠키 관리까지 사용하려면
+`setup-gui.cmd -WithSecurityTools`를 사용합니다.
 
 ### GUI 제어 CLI
 
@@ -206,6 +208,15 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd browser-mode set headless --json
 .\toki-cli.cmd network-policy status --url "https://newtoki1.org/manhwa/34360" --json
 .\toki-cli.cmd network-policy set --speed-limit-kib 2048 --provider manatoki --request-delay-ms 250 --backoff 4 --json
+.\toki-cli.cmd public-ip plan --json
+.\toki-cli.cmd public-ip check --yes --json
+.\toki-cli.cmd cookies capabilities --json
+.\toki-cli.cmd cookies plan-import --provider manatoki --input "D:\cookies.json" --json
+.\toki-cli.cmd cookies status --provider manatoki --yes --json
+.\toki-cli.cmd cookies import --provider manatoki --input "D:\cookies.json" --yes --json
+.\toki-cli.cmd cookies export --provider manatoki --output "D:\cookies-backup.json" --yes --json
+.\toki-cli.cmd cookies clear --provider manatoki --yes --json
+.\toki-cli.cmd cookies manage --provider manatoki --show-gui --json
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -292,6 +303,17 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 스케줄을 공유하므로 연결 수만큼 제한이 배로 늘지 않습니다. 프록시는 브라우저 탐색과 별도
 이미지 요청에 함께 적용됩니다. 사용자명·비밀번호가 든 URL은 평문 저장을 막기 위해 현재
 거부하며, 인증 프록시는 OS 보안 저장소 기능이 추가된 뒤 활성화합니다.
+
+공급자 쿠키 관리는 선택 설치한 `keyring`을 통해 Windows 자격 증명 저장소를 사용합니다.
+JSON 배열과 Netscape 쿠키 파일을 최대 5 MiB·10,000개 한도로 검사하며
+`cookies plan-import`는 저장하지 않고 개수와 도메인만 보여줍니다. 상태 읽기, 가져오기,
+평문 JSON 내보내기와 초기화는 모두 `--yes`가 필요하고 GUI도 매번 확인합니다. 상태 화면과
+로그에는 쿠키 값을 표시하지 않습니다. 내보낸 JSON은 민감한 평문 파일이므로 개인 보안
+경로에서만 보관해야 합니다.
+
+`public-ip plan`은 외부 요청 주소와 전송 범위만 보여주며 네트워크를 사용하지 않습니다.
+실제 `public-ip check`는 `api.ipify.org`에 쿠키·다운로드 파일 없이 HTTPS 요청을 보내므로
+명시적인 `--yes` 또는 GUI 확인이 필요합니다.
 
 일반 설정의 작품 폴더명은 기본적으로 `[작가][그룹] 제목` 규칙을 사용합니다.
 `{author}`, `{group}`, `{title}`, `{site}`, `{id}`를 조합할 수 있고 `{title}`은 필수입니다.

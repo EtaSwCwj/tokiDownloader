@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import argparse
 import re
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -15,6 +16,85 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_cookie_cli_plans_without_store_and_guards_sensitive_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "cookies.json"
+            source.write_text(
+                '[{"name":"session","value":"x","domain":".example.test"}]',
+                encoding="utf-8",
+            )
+            plan = build_parser().parse_args(
+                [
+                    "cookies", "plan-import", "--provider", "manatoki",
+                    "--input", str(source), "--json",
+                ]
+            )
+            with (
+                patch("toki_app.import_provider_cookies") as importer,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(run_cli(plan), 0)
+            importer.assert_not_called()
+
+        status = build_parser().parse_args(
+            ["cookies", "status", "--provider", "manatoki", "--json"]
+        )
+        with self.assertRaisesRegex(toki_app.ControlError, "--yes"):
+            run_cli(status)
+
+        confirmed = build_parser().parse_args(
+            [
+                "cookies", "status", "--provider", "manatoki", "--yes", "--json",
+            ]
+        )
+        with (
+            patch(
+                "toki_app.provider_cookie_status",
+                return_value={"provider": "manatoki", "stored": False},
+            ) as status_service,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(confirmed), 0)
+        status_service.assert_called_once_with("manatoki")
+
+        manage = build_parser().parse_args(
+            ["cookies", "manage", "--provider", "manatoki", "--show-gui", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(manage), 0)
+        request.assert_called_once_with(
+            {"action": "show_cookie_manager", "provider": "manatoki"}
+        )
+    def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
+        plan = build_parser().parse_args(["public-ip", "plan", "--json"])
+        with (
+            patch("toki_app.lookup_public_ip") as lookup,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(plan), 0)
+        lookup.assert_not_called()
+
+        check = build_parser().parse_args(["public-ip", "check", "--json"])
+        with self.assertRaisesRegex(toki_app.ControlError, "--yes"):
+            run_cli(check)
+
+        confirmed = build_parser().parse_args(
+            ["public-ip", "check", "--yes", "--json"]
+        )
+        with (
+            patch(
+                "toki_app.lookup_public_ip",
+                return_value={"ok": True, "ip": "203.0.113.7"},
+            ) as lookup,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(confirmed), 0)
+        lookup.assert_called_once_with()
+
     def test_network_policy_cli_merges_provider_values_and_updates_gui(self) -> None:
         policies = {
             provider: {"requestDelayMs": 0, "backoffSeconds": 2}
