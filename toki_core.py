@@ -39,6 +39,7 @@ from hitomi_provider import (
 )
 from youtube_provider import (
     normalize_youtube_audio_codec,
+    normalize_youtube_collection_order,
     normalize_youtube_container,
     normalize_youtube_format_mode,
     normalize_youtube_filename_template,
@@ -67,7 +68,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 26
+CONFIG_SCHEMA_VERSION = 27
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -225,6 +226,7 @@ SETTING_KEYS = frozenset(
         "youtubeWriteInfoJson",
         "youtubeWriteDescription",
         "youtubeEmbedMetadata",
+        "youtubeCollectionOrder",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -547,6 +549,7 @@ def default_config() -> dict[str, Any]:
         "youtubeWriteInfoJson": False,
         "youtubeWriteDescription": False,
         "youtubeEmbedMetadata": False,
+        "youtubeCollectionOrder": "site",
     }
 
 
@@ -1894,6 +1897,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     normalized["youtubeAudioTrackMode"] = _safe_normalize(
         normalize_youtube_audio_track_mode, source.get("youtubeAudioTrackMode"), defaults["youtubeAudioTrackMode"]
     )
+    normalized["youtubeCollectionOrder"] = _safe_normalize(
+        normalize_youtube_collection_order,
+        source.get("youtubeCollectionOrder"),
+        defaults["youtubeCollectionOrder"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -2118,6 +2126,7 @@ def validate_app_setting_updates(
         "youtubeSubtitleMode": normalize_youtube_subtitle_mode,
         "youtubeSubtitleFormat": normalize_youtube_subtitle_format,
         "youtubeAudioTrackMode": normalize_youtube_audio_track_mode,
+        "youtubeCollectionOrder": normalize_youtube_collection_order,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

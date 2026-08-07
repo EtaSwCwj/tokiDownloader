@@ -52,11 +52,13 @@ from youtube_provider import (
     YOUTUBE_SUBTITLE_MODES,
     YOUTUBE_SUBTITLE_FORMATS,
     YOUTUBE_AUDIO_TRACK_MODES,
+    YOUTUBE_COLLECTION_ORDERS,
     YouTubePolicyError,
     plan_youtube_format,
     preview_youtube_filename,
     youtube_format_policy_snapshot,
     youtube_metadata_policy_snapshot,
+    youtube_collection_policy_snapshot,
 )
 from toki_core import (
     APP_VERSION,
@@ -1013,6 +1015,24 @@ def build_parser() -> argparse.ArgumentParser:
         metadata_command.add_argument("--write-description", choices=("on", "off"))
         metadata_command.add_argument("--embed-metadata", choices=("on", "off"))
         metadata_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_collection = youtube_commands.add_parser(
+        "collection", help="채널·재생목록 처리 순서"
+    )
+    youtube_collection_commands = youtube_collection.add_subparsers(
+        dest="youtube_collection_command", required=True
+    )
+    youtube_collection_status = youtube_collection_commands.add_parser(
+        "status", help="현재 채널·재생목록 순서"
+    )
+    youtube_collection_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name in ("set", "plan"):
+        collection_command = youtube_collection_commands.add_parser(
+            name, help="순서 정책 저장" if name == "set" else "오프라인 범위·인자 계획"
+        )
+        if name == "plan":
+            collection_command.add_argument("--input", required=True)
+        collection_command.add_argument("--order", choices=YOUTUBE_COLLECTION_ORDERS)
+        collection_command.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2899,6 +2919,29 @@ def run_cli(args: argparse.Namespace) -> int:
             if gui_is_running()
             else settings_snapshot()
         )
+        if args.youtube_command == "collection":
+            order = args.order if args.youtube_collection_command != "status" else None
+            if args.youtube_collection_command == "status":
+                result = youtube_collection_policy_snapshot(current)
+            elif args.youtube_collection_command == "set":
+                if order is None:
+                    raise ValueError("저장할 YouTube 채널·재생목록 순서를 지정하세요.")
+                updates = {"youtubeCollectionOrder": order}
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **youtube_collection_policy_snapshot(saved)}
+            else:
+                plan_config = (
+                    current if order is None else {**current, "youtubeCollectionOrder": order}
+                )
+                result = plan_youtube_format(args.input, plan_config)
+            print_json(result)
+            return 0
         if args.youtube_command == "metadata":
             metadata_updates = {
                 key: value == "on"

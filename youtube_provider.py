@@ -13,6 +13,7 @@ YOUTUBE_AUDIO_CODECS = ("auto", "aac", "opus")
 YOUTUBE_SUBTITLE_MODES = ("none", "manual", "manual_auto")
 YOUTUBE_SUBTITLE_FORMATS = ("best", "srt", "vtt", "ass")
 YOUTUBE_AUDIO_TRACK_MODES = ("preferred_single", "all")
+YOUTUBE_COLLECTION_ORDERS = ("site", "reverse")
 YOUTUBE_HOSTS = frozenset(
     {
         "youtube.com",
@@ -131,6 +132,27 @@ def normalize_youtube_audio_track_mode(value: Any) -> str:
     return _normalize_choice(value, YOUTUBE_AUDIO_TRACK_MODES, "YouTube 오디오 트랙 방식")
 
 
+def normalize_youtube_collection_order(value: Any) -> str:
+    return _normalize_choice(value, YOUTUBE_COLLECTION_ORDERS, "YouTube 채널·재생목록 순서")
+
+
+def youtube_collection_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    return {
+        "ok": True,
+        "order": normalize_youtube_collection_order(
+            source.get("youtubeCollectionOrder", "site")
+        ),
+        "supportedOrders": list(YOUTUBE_COLLECTION_ORDERS),
+        "videoWithPlaylistPolicy": "single_video",
+        "channelBaseScope": "all_uploads",
+        "channelTabScopePreserved": True,
+        "reverseRequiresFullCollectionScan": True,
+        "networkRequested": False,
+        "downloadExecuted": False,
+    }
+
+
 def _normalize_youtube_boolean(value: Any, label: str, default: bool = False) -> bool:
     if value is None:
         return default
@@ -230,16 +252,39 @@ def inspect_youtube_url(url: str) -> dict[str, Any]:
         parts = [part for part in parsed.path.split("/") if part]
         video_id = parts[1] if len(parts) > 1 else ""
     playlist_id = str(parse_qs(parsed.query).get("list", [""])[0]).strip()
-    if not video_id and not playlist_id:
+    path_parts = [part for part in parsed.path.split("/") if part]
+    channel_scope = ""
+    channel_path = ""
+    if host != "youtu.be" and not video_id and path_parts:
+        first = path_parts[0]
+        channel_prefix = first.startswith("@") or first in {"channel", "c", "user"}
+        required_parts = 1 if first.startswith("@") else 2
+        allowed_tabs = {"featured", "videos", "shorts", "streams", "playlists"}
+        if channel_prefix and len(path_parts) in {required_parts, required_parts + 1}:
+            channel_id = path_parts[0] if first.startswith("@") else path_parts[1]
+            tab = path_parts[-1].lower() if len(path_parts) == required_parts + 1 else ""
+            if (
+                channel_id
+                and not re.search(r"[\s\\?#]", channel_id)
+                and (not tab or tab in allowed_tabs)
+            ):
+                channel_path = "/" + "/".join(path_parts)
+                channel_scope = tab or "all_uploads"
+    is_playlist = bool(playlist_id and parsed.path.rstrip("/") == "/playlist")
+    if not video_id and not is_playlist and not channel_path:
         raise YouTubePolicyError(
-            "youtube.reference_missing", "동영상 또는 재생목록 식별자를 찾을 수 없습니다."
+            "youtube.reference_missing", "동영상, 재생목록 또는 채널 식별자를 찾을 수 없습니다."
         )
+    reference_type = "video" if video_id else ("playlist" if is_playlist else "channel")
     return {
         "ok": True,
         "host": host,
         "videoId": video_id,
-        "playlistId": playlist_id,
-        "referenceType": "video" if video_id else "playlist",
+        "playlistId": playlist_id if is_playlist or video_id else "",
+        "channelPath": channel_path,
+        "channelScope": channel_scope,
+        "referenceType": reference_type,
+        "collection": reference_type in {"playlist", "channel"},
         "networkRequested": False,
     }
 
@@ -247,6 +292,7 @@ def inspect_youtube_url(url: str) -> dict[str, Any]:
 def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
     metadata_policy = youtube_metadata_policy_snapshot(source)
+    collection_policy = youtube_collection_policy_snapshot(source)
     return {
         "ok": True,
         "mode": normalize_youtube_format_mode(source.get("youtubeFormatMode")),
@@ -272,6 +318,7 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
         "audioTrackMode": normalize_youtube_audio_track_mode(
             source.get("youtubeAudioTrackMode", "preferred_single")
         ),
+        "collectionOrder": collection_policy["order"],
         "writeThumbnail": metadata_policy["writeThumbnail"],
         "embedThumbnail": metadata_policy["embedThumbnail"],
         "writeInfoJson": metadata_policy["writeInfoJson"],
@@ -315,7 +362,9 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         format_sort.append(_AUDIO_CODEC_SORT[policy["audioCodec"]])
     if policy["preferredLanguages"] and policy["mode"] != "video_only":
         format_sort.insert(0, f"lang:{policy['preferredLanguages'][0]}")
-    playlist_switch = "--no-playlist" if reference["videoId"] else "--yes-playlist"
+    playlist_switch = (
+        "--no-playlist" if reference["referenceType"] == "video" else "--yes-playlist"
+    )
     arguments = [
         playlist_switch,
         "--format",
@@ -325,6 +374,12 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
     ]
     if format_sort:
         arguments.extend(("--format-sort", ",".join(format_sort)))
+    collection_order_applied = bool(reference["collection"])
+    if collection_order_applied:
+        if policy["collectionOrder"] == "reverse":
+            arguments.extend(("--no-lazy-playlist", "--playlist-items", "::-1"))
+        else:
+            arguments.extend(("--playlist-items", "::"))
     requires_ffmpeg = policy["mode"] == "video_audio"
     if policy["audioTrackMode"] == "all" and policy["mode"] != "video_only":
         arguments.append("--audio-multistreams")
@@ -366,6 +421,10 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         "reference": reference,
         "formatSelector": selector,
         "formatSort": format_sort,
+        "collectionOrderApplied": collection_order_applied,
+        "fullCollectionScanRequired": bool(
+            collection_order_applied and policy["collectionOrder"] == "reverse"
+        ),
         "executable": "yt-dlp",
         "arguments": arguments,
         "requiresYtDlp": True,

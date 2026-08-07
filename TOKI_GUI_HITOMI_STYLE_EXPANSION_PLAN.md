@@ -669,7 +669,7 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 - [x] 파일명 템플릿
 - [x] 선호 언어, 자막, 오디오 트랙
 - [x] 썸네일과 메타데이터
-- [ ] 채널/재생목록 순서
+- [x] 채널/재생목록 순서
 - [ ] 챕터 마커
 - [ ] 업로드 날짜를 파일 수정 날짜로 적용
 - [ ] 진행률, 중지, 재시도와 실행 이력 통합
@@ -719,6 +719,19 @@ CLI로 적용해 상태 JSON과 화면을 확인한 뒤 모두 기본값으로 �
 `logs/youtube-thumbnail-metadata.png`에 개인정보 안내를 포함한 화면을 보존했으며 외부 요청과
 다운로드·파일 생성은 실행하지 않았다.
 Python 241건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 YouTube 채널·재생목록 순서 구현: 설정 스키마 v27에 사이트 기본 순서와 역순을
+추가하고 `/@handle`, `/channel/id`, `/c/name`, `/user/name`의 기본 주소와 videos/shorts/
+streams/playlists/featured 탭을 오프라인으로 구분한다. 채널 기본 주소는 전체 업로드, 탭
+주소는 해당 탭 범위를 보존한다. 영상 URL에 재생목록 ID가 함께 있어도 기존
+`--no-playlist` 안전 경계를 유지하고, 순수 채널·재생목록에만 `--yes-playlist`와 현대식
+`--playlist-items ::` 또는 `--no-lazy-playlist --playlist-items ::-1`을 적용한다. 역순은 전체
+목록 확인이 필요함을 계획과 GUI에 표시한다. `youtube collection status|set|plan`, 공급자
+설정 콤보와 상태 JSON이 같은 서비스를 사용한다. CLI로 실행 중 GUI를 역순으로 바꾸고
+`/@OpenAI/videos`를 로컬 계획해 탭 범위와 인자를 확인한 뒤 사이트 기본 순서로 복원했다.
+`logs/youtube-channel-playlist-order.png`에 화면을 보존했으며 채널 접속·다운로드는 실행하지
+않았다.
+Python 242건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ## 6. 기능별 안전 경계
 

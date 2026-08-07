@@ -15,7 +15,7 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 26)
+        self.assertEqual(config["configVersion"], 27)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)
@@ -130,6 +130,35 @@ class YouTubeProviderTests(unittest.TestCase):
         self.assertFalse(plan["networkRequested"])
         self.assertFalse(plan["downloadExecuted"])
 
+    def test_channel_and_playlist_order_preserves_explicit_scope(self) -> None:
+        channel = inspect_youtube_url("https://www.youtube.com/@OpenAI/videos")
+        self.assertEqual(channel["referenceType"], "channel")
+        self.assertEqual(channel["channelScope"], "videos")
+        self.assertTrue(channel["collection"])
+        reverse = plan_youtube_format(
+            "https://www.youtube.com/@OpenAI/videos",
+            {**default_config(), "youtubeCollectionOrder": "reverse"},
+        )
+        self.assertEqual(reverse["arguments"][0], "--yes-playlist")
+        self.assertIn("--no-lazy-playlist", reverse["arguments"])
+        self.assertIn("--playlist-items", reverse["arguments"])
+        self.assertIn("::-1", reverse["arguments"])
+        self.assertTrue(reverse["fullCollectionScanRequired"])
+        site_order = plan_youtube_format(
+            "https://www.youtube.com/playlist?list=PL1234567890", default_config()
+        )
+        self.assertIn("--playlist-items", site_order["arguments"])
+        self.assertIn("::", site_order["arguments"])
+        single_video = plan_youtube_format(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1234567890",
+            {**default_config(), "youtubeCollectionOrder": "reverse"},
+        )
+        self.assertEqual(single_video["arguments"][0], "--no-playlist")
+        self.assertFalse(single_video["collectionOrderApplied"])
+        self.assertNotIn("--playlist-items", single_video["arguments"])
+        with self.assertRaises(YouTubePolicyError):
+            inspect_youtube_url("https://www.youtube.com/@OpenAI/unknown-tab")
+
     def test_invalid_urls_and_config_values_are_rejected_or_migrated(self) -> None:
         with self.assertRaises(YouTubePolicyError) as caught:
             inspect_youtube_url("https://example.com/watch?v=abc")
@@ -146,6 +175,7 @@ class YouTubeProviderTests(unittest.TestCase):
                 "youtubeWriteInfoJson": [],
                 "youtubeWriteDescription": "false",
                 "youtubeEmbedMetadata": "on",
+                "youtubeCollectionOrder": "random",
             }
         )
         defaults = default_config()
@@ -166,5 +196,6 @@ class YouTubeProviderTests(unittest.TestCase):
             "youtubeWriteInfoJson",
             "youtubeWriteDescription",
             "youtubeEmbedMetadata",
+            "youtubeCollectionOrder",
         ):
             self.assertEqual(normalized[key], defaults[key])

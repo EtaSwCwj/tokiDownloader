@@ -1218,6 +1218,37 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(metadata_set), 0)
         update.assert_called_once_with({"youtubeWriteThumbnail": True})
 
+        collection = build_parser().parse_args(
+            [
+                "youtube", "collection", "plan", "--input",
+                "https://www.youtube.com/@OpenAI/videos",
+                "--order", "reverse", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(collection), 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["reference"]["channelScope"], "videos")
+        self.assertIn("--playlist-items", payload["arguments"])
+        self.assertIn("::-1", payload["arguments"])
+        self.assertTrue(payload["fullCollectionScanRequired"])
+
+        collection_set = build_parser().parse_args(
+            ["youtube", "collection", "set", "--order", "reverse", "--json"]
+        )
+        expected = {**default_config(), "youtubeCollectionOrder": "reverse"}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value=expected) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(collection_set), 0)
+        update.assert_called_once_with({"youtubeCollectionOrder": "reverse"})
+
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (

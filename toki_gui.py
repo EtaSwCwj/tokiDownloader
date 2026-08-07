@@ -128,6 +128,7 @@ from youtube_provider import (
     YOUTUBE_SUBTITLE_MODES,
     YOUTUBE_SUBTITLE_FORMATS,
     YOUTUBE_AUDIO_TRACK_MODES,
+    YOUTUBE_COLLECTION_ORDERS,
     youtube_format_policy_snapshot,
     preview_youtube_filename,
 )
@@ -3408,7 +3409,7 @@ class SettingsDialog(QDialog):
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
-        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 형식 해상도 컨테이너 비디오 오디오 코덱 선호 언어 자막 트랙 썸네일 설명 정보 json 포함 의존성 플러그인",
+        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 형식 해상도 컨테이너 비디오 오디오 코덱 선호 언어 자막 트랙 썸네일 설명 정보 json 포함 채널 재생목록 순서 역순 의존성 플러그인",
     )
 
     def __init__(self, owner: "MainWindow") -> None:
@@ -4068,6 +4069,24 @@ class SettingsDialog(QDialog):
         self.youtube_metadata_privacy_note.setObjectName("mutedLabel")
         self.youtube_metadata_privacy_note.setWordWrap(True)
         provider_form.addRow("", self.youtube_metadata_privacy_note)
+        self.youtube_collection_order_combo = QComboBox()
+        collection_labels = {
+            "site": "사이트 기본 순서",
+            "reverse": "역순 · 전체 목록 확인 필요",
+        }
+        for value in YOUTUBE_COLLECTION_ORDERS:
+            self.youtube_collection_order_combo.addItem(collection_labels[value], value)
+        self.youtube_collection_order_combo.setToolTip(
+            "CLI: youtube collection set --order site|reverse --json"
+        )
+        provider_form.addRow("채널/재생목록 순서", self.youtube_collection_order_combo)
+        self.youtube_collection_note = QLabel(
+            "개별 영상+재생목록 주소는 영상 한 편만 처리합니다. 채널 탭 주소는 해당 탭 범위를 "
+            "유지하며, 역순은 다운로드 전에 전체 목록을 확인해야 합니다."
+        )
+        self.youtube_collection_note.setObjectName("mutedLabel")
+        self.youtube_collection_note.setWordWrap(True)
+        provider_form.addRow("", self.youtube_collection_note)
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
@@ -4173,6 +4192,10 @@ class SettingsDialog(QDialog):
         elif any(word in lowered for word in ("썸네일", "정보 json", "설명", "메타데이터 포함")):
             self.provider_scroll.ensureWidgetVisible(
                 self.youtube_metadata_privacy_note, 20, 40
+            )
+        elif any(word in lowered for word in ("채널", "재생목록", "역순")):
+            self.provider_scroll.ensureWidgetVisible(
+                self.youtube_collection_note, 20, 40
             )
         elif any(
             word in lowered
@@ -4316,6 +4339,12 @@ class SettingsDialog(QDialog):
                 "infoJsonMayContainPersonalInformation": self.youtube_write_info_json_check.isChecked(),
                 "networkRequested": False,
             },
+            "youtubeCollection": {
+                "order": str(self.youtube_collection_order_combo.currentData() or "site"),
+                "videoWithPlaylistPolicy": "single_video",
+                "reverseRequiresFullCollectionScan": True,
+                "networkRequested": False,
+            },
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -4447,6 +4476,9 @@ class SettingsDialog(QDialog):
         self.youtube_write_info_json_check.setChecked(bool(values["youtubeWriteInfoJson"]))
         self.youtube_write_description_check.setChecked(bool(values["youtubeWriteDescription"]))
         self.youtube_embed_metadata_check.setChecked(bool(values["youtubeEmbedMetadata"]))
+        self.youtube_collection_order_combo.setCurrentIndex(
+            max(0, self.youtube_collection_order_combo.findData(values["youtubeCollectionOrder"]))
+        )
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -4708,6 +4740,7 @@ class SettingsDialog(QDialog):
             "youtubeWriteInfoJson": self.youtube_write_info_json_check.isChecked(),
             "youtubeWriteDescription": self.youtube_write_description_check.isChecked(),
             "youtubeEmbedMetadata": self.youtube_embed_metadata_check.isChecked(),
+            "youtubeCollectionOrder": str(self.youtube_collection_order_combo.currentData()),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),

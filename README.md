@@ -170,6 +170,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd youtube metadata status --json
 .\toki-cli.cmd youtube metadata set --write-thumbnail on --embed-thumbnail on --write-info-json on --write-description on --embed-metadata on --json
 .\toki-cli.cmd youtube metadata plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
+.\toki-cli.cmd youtube collection status --json
+.\toki-cli.cmd youtube collection set --order reverse --json
+.\toki-cli.cmd youtube collection plan --input "https://www.youtube.com/@CHANNEL/videos" --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -877,6 +880,16 @@ YouTube 썸네일·메타데이터 부가 산출물은 기본적으로 모두 �
 후처리가 필요하며 현재 계획에서는 FFmpeg 필요로 표시합니다. `youtube metadata
 status|set|plan`과 GUI가 같은 정책을 사용하고 `plan`은 외부 요청 없이 인자만 계산합니다.
 화면은 `logs\youtube-thumbnail-metadata.png`에 있습니다.
+
+YouTube 채널·재생목록 순서는 사이트 기본 순서 또는 역순을 선택합니다. 채널 기본 주소는
+전체 업로드 범위로, `/videos`, `/shorts`, `/streams`, `/playlists` 같은 탭 주소는 입력한
+탭 범위로 식별합니다. `watch?v=...&list=...` 형태는 의도하지 않은 대량 다운로드를 막기
+위해 순서 설정과 관계없이 영상 한 편만 계획합니다. 사이트 순서는 현대식 항목 지정자
+`--playlist-items ::`, 역순은 `--no-lazy-playlist --playlist-items ::-1`로 명시하며 역순은
+다운로드 전에 전체 목록을 확인해야 하므로 큰 채널에서 시작이 느릴 수 있습니다.
+`youtube collection status|set|plan`과 GUI가 같은 정책을 사용하고 `plan`은 채널이나
+재생목록에 접속하지 않고 범위와 인자만 계산합니다. 실제 다운로드 실행은 아직
+활성화하지 않았습니다. 화면은 `logs\youtube-channel-playlist-order.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows
