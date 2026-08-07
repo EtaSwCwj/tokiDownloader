@@ -417,7 +417,7 @@ JSON에는 넣지 않는다. 다운로드 실행 시 저장 주소가 현재 프
 - [x] 페이지 수 제한, 스크롤 속도, 지연 로딩, 저사양 모드
 - [x] 다운로드 중 절전 방지
 - [x] PDF 생성
-- [ ] 메모리 사용량 표시
+- [x] 메모리 사용량 표시
 - [ ] 로컬 HTTP API
 
 변환·리사이즈·PDF는 원본 보존이 기본이며, 원본 제거 옵션은 별도 승인 없이는 실행하지
@@ -515,6 +515,18 @@ PDF 서명, 원본 바이트 불변, 재실행 건너뛰기, 원본 변경 뒤 �
 복구를 검증했다. 사용자 작품은 24개 회차·169장 계획만 조회해 `_pdf`를 만들지 않았고,
 `logs/pdf-generation-plan.png`, `logs/pdf-generation-settings.png`에서 한글 경로와 화면을
 확인한 뒤 자동 생성 기본값을 다시 껐다. Python 194건과 Node 16건을 통과했다.
+
+2026-08-07 메모리 사용량 표시 구현: 설정 스키마 v14에 참고 GUI와 같은 기본 켜짐 표시
+선택을 추가했다. 공용 `memory_usage_snapshot`이 현재 앱 RSS, 모든 재귀 자식 프로세스 RSS,
+시스템 전체·가용·사용 메모리와 80%/90% 경고 단계를 분리하며 읽기만 하고 메모리 제한이나
+시스템 설정은 바꾸지 않는다. GUI 상태 표시줄은 2초마다 `RAM N% · 앱 N MiB`를 갱신하고
+도움말에 앱 자체·자식 작업 수와 합계를 표시한다. `memory status --child-limit N`, `memory
+set --display on|off`, `status --json`과 고급 설정이 같은 서비스를 사용하며 GUI 실행 중에는
+다운로드·이미지 변환·PDF 루트 PID별 재귀 자식 RSS도 합산한다. 모의 16 GiB 시스템과 두
+자식 프로세스로 경고·정렬·상세 상한·합계를 검증하고, 실제 GUI에서 68%/149 MiB 표시와
+CLI 즉시 숨김·복원을 확인했다. 화면은 `logs/memory-usage-status.png`,
+`logs/memory-display-settings.png`에 보존했으며 기본 표시 켜짐으로 복원했다. Python 197건과
+Node 16건을 통과했다.
 
 ### 단계 G. Hitomi/ExHentai 선택형 공급자
 

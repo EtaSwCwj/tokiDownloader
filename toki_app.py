@@ -83,6 +83,7 @@ from toki_core import (
     log_retention_status,
     list_job_episode_images,
     list_performance_policy_snapshot,
+    memory_usage_snapshot,
     list_work_collections,
     load_run,
     load_runs_page,
@@ -672,6 +673,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--active-downloads", type=int, required=True, help="가정할 실행 다운로드 수(0 이상)"
     )
     sleep_prevention_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
+    memory_parser = subparsers.add_parser(
+        "memory", help="앱·자식 작업·시스템 메모리 사용량과 표시 설정"
+    )
+    memory_commands = memory_parser.add_subparsers(
+        dest="memory_command", required=True
+    )
+    memory_status = memory_commands.add_parser(
+        "status", help="현재 메모리 사용량과 경고 상태 조회"
+    )
+    memory_status.add_argument(
+        "--child-limit", type=int, default=200, help="반환할 자식 프로세스 최대 수(0~1000)"
+    )
+    memory_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    memory_set = memory_commands.add_parser(
+        "set", help="GUI 상태 표시줄의 메모리 표시 여부 변경"
+    )
+    memory_set.add_argument(
+        "--display", choices=("on", "off"), required=True, help="메모리 표시 사용 여부"
+    )
+    memory_set.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -1980,6 +2001,31 @@ def run_cli(args: argparse.Namespace) -> int:
             else:
                 saved = update_app_settings(updates)
                 result = {"ok": True, **list_performance_policy_snapshot(saved)}
+        print_json(result)
+        return 0 if result.get("ok", True) else 2
+    if command == "memory":
+        if args.memory_command == "status":
+            if not 0 <= args.child_limit <= 1000:
+                raise ValueError("자식 프로세스 반환 수는 0~1000개여야 합니다.")
+            result = (
+                control_request(
+                    {"action": "memory_status", "childLimit": args.child_limit}
+                )
+                if gui_is_running()
+                else memory_usage_snapshot(child_limit=args.child_limit)
+            )
+        else:
+            updates = {"memoryDisplayEnabled": args.display == "on"}
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request(
+                    {"action": "memory_status", "childLimit": 200}
+                )
+            else:
+                saved = update_app_settings(updates)
+                result = memory_usage_snapshot(saved)
         print_json(result)
         return 0 if result.get("ok", True) else 2
     if command == "sleep-prevention":

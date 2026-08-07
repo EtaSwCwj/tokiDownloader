@@ -117,6 +117,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd persistence recover --close
 .\toki-cli.cmd list-performance status --json
 .\toki-cli.cmd list-performance set --page-size 200 --loaded-limit 2000 --scroll-lines 3 --lazy-loading on --low-spec off --json
+.\toki-cli.cmd memory status --child-limit 200 --json
+.\toki-cli.cmd memory set --display on --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -663,6 +665,16 @@ GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `�
 숨긴 뒤 메모리 썸네일 캐시도 32개로 줄입니다. 모드를 끄면 원래 설정으로 돌아갑니다.
 `list-performance status --json`과 `status --json`의 `listPerformance`에서 설정값,
 유효값, 현재 적재 수와 픽셀 스크롤 단계를 함께 확인할 수 있습니다.
+
+상태 표시줄의 메모리 막대는 기본적으로 켜져 있으며 시스템 RAM 사용률과 tokiDownloader
+앱·자식 작업 프로세스의 RSS 합계를 `RAM 68% · 앱 149 MiB` 형식으로 구분해 표시합니다.
+2초마다 읽기 전용으로 갱신하며 시스템 사용률 80% 이상은 `warning`, 90% 이상은
+`critical`로 분류합니다. 메모리 제한이나 Windows 설정을 변경하지 않습니다. 고급 설정 또는
+`memory set --display on|off`로 표시만 켜고 끌 수 있으며, `memory status --json`은 앱 자체,
+모든 자식 프로세스, 시스템 전체·가용 메모리와 현재 GUI에서 추적하는 다운로드·이미지 변환·
+PDF 작업별 프로세스 합계를 반환합니다. `--child-limit 0~1000`으로 상세 프로세스 배열 크기를
+제한할 수 있지만 앱 합계에는 생략된 자식도 포함됩니다. `status --json`의 `memoryUsage`에서도
+같은 현재 값을 확인할 수 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

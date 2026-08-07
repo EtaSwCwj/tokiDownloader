@@ -84,6 +84,26 @@ class _TimerStub:
         return self.active
 
 
+class _ProgressStub:
+    def __init__(self) -> None:
+        self.value = 0
+        self.format = ""
+        self.tooltip = ""
+        self.visible = True
+
+    def setValue(self, value: int) -> None:
+        self.value = value
+
+    def setFormat(self, value: str) -> None:
+        self.format = value
+
+    def setToolTip(self, value: str) -> None:
+        self.tooltip = value
+
+    def setVisible(self, value: bool) -> None:
+        self.visible = value
+
+
 class _ProcessStub:
     instances = []
 
@@ -136,6 +156,93 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_memory_display_uses_shared_snapshot_timer_and_ipc(self) -> None:
+        harness = type("MemoryHarness", (), {})()
+        harness.config = {"memoryDisplayEnabled": True}
+        harness.memory_progress = _ProgressStub()
+        harness.memory_timer = _TimerStub()
+        harness.active_contexts = {}
+        harness.image_conversion_processes = {}
+        harness.pdf_generation_processes = {}
+        harness.last_memory_usage = {}
+        harness._memory_mib = MainWindow._memory_mib
+        snapshot = {
+            "ok": True,
+            "displayEnabled": True,
+            "application": {
+                "ownRssBytes": 100 * 1024**2,
+                "childRssBytes": 50 * 1024**2,
+                "combinedRssBytes": 150 * 1024**2,
+                "childProcessCount": 2,
+                "children": [],
+            },
+            "system": {
+                "usedBytes": 8 * 1024**3,
+                "totalBytes": 16 * 1024**3,
+                "percent": 50.0,
+            },
+            "display": {"percent": 50, "severity": "normal"},
+        }
+        harness.memory_status_snapshot = lambda child_limit=200: snapshot
+        harness._update_memory_usage = lambda: MainWindow._update_memory_usage(harness)
+
+        MainWindow._configure_memory_display(harness)
+
+        self.assertTrue(harness.memory_timer.active)
+        self.assertTrue(harness.memory_progress.visible)
+        self.assertEqual(harness.memory_progress.value, 50)
+        self.assertIn("RAM 50%", harness.memory_progress.format)
+        self.assertIn("150 MiB", harness.memory_progress.format)
+        self.assertIn("자식 작업 50 MiB", harness.memory_progress.tooltip)
+
+        harness.config["memoryDisplayEnabled"] = False
+        MainWindow._configure_memory_display(harness)
+        self.assertFalse(harness.memory_timer.active)
+        self.assertFalse(harness.memory_progress.visible)
+
+        ipc_harness = type("MemoryIpcHarness", (), {})()
+        ipc_harness.memory_status_snapshot = lambda limit=200: {
+            "ok": True,
+            "childLimit": limit,
+        }
+        ipc = MainWindow._handle_control_action(
+            ipc_harness,
+            {"action": "memory_status", "childLimit": 25},
+        )
+        self.assertEqual(ipc, {"ok": True, "childLimit": 25})
+
+        process = type("TrackedProcess", (), {"processId": lambda self: 300})()
+        context = type("TrackedContext", (), {"process": process})()
+        tree_harness = type("MemoryTreeHarness", (), {})()
+        tree_harness.config = {"memoryDisplayEnabled": True}
+        tree_harness.active_contexts = {"job-1": context}
+        tree_harness.image_conversion_processes = {}
+        tree_harness.pdf_generation_processes = {}
+        tree_harness.last_memory_usage = {}
+        process_tree = {
+            **snapshot,
+            "application": {
+                **snapshot["application"],
+                "children": [
+                    {"pid": 300, "parentPid": 10, "rssBytes": 40},
+                    {"pid": 301, "parentPid": 300, "rssBytes": 60},
+                ],
+            },
+        }
+        with patch("toki_gui.memory_usage_snapshot", return_value=process_tree):
+            tracked = MainWindow.memory_status_snapshot(tree_harness, 25)
+        self.assertEqual(
+            tracked["trackedJobProcesses"],
+            [
+                {
+                    "kind": "download",
+                    "jobId": "job-1",
+                    "pid": 300,
+                    "rssBytes": 100,
+                }
+            ],
+        )
+
     def test_clipboard_inspection_ipc_never_prompts_without_explicit_request(self) -> None:
         calls = []
         harness = type("ClipboardHarness", (), {})()

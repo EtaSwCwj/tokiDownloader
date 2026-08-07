@@ -16,6 +16,50 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_memory_cli_reports_gui_process_tree_and_controls_display(self) -> None:
+        snapshot = {
+            "ok": True,
+            "displayEnabled": True,
+            "processId": 123,
+            "application": {"combinedRssBytes": 400 * 1024**2},
+            "system": {"percent": 55.0},
+            "display": {"percent": 55, "severity": "normal"},
+        }
+        status_args = build_parser().parse_args(
+            ["memory", "status", "--child-limit", "50", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=snapshot) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        request.assert_called_once_with(
+            {"action": "memory_status", "childLimit": 50}
+        )
+
+        set_args = build_parser().parse_args(
+            ["memory", "set", "--display", "off", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=snapshot) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[0].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"memoryDisplayEnabled": False},
+                "reset": False,
+            },
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {"action": "memory_status", "childLimit": 200},
+        )
+
     def test_sleep_prevention_cli_reports_sets_and_plans_without_power_call(self) -> None:
         status = {
             "ok": True,

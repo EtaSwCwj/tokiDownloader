@@ -178,6 +178,7 @@ from toki_core import (
     load_jobs_page,
     list_job_episode_images,
     list_performance_policy_snapshot,
+    memory_usage_snapshot,
     list_work_collections,
     log_retention_status,
     load_run,
@@ -2591,7 +2592,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2963,6 +2964,13 @@ class SettingsDialog(QDialog):
             "CLI: pdf set --automatic on|off"
         )
         advanced_form.addRow("PDF 자동 생성", self.pdf_generation_check)
+        self.memory_display_check = QCheckBox(
+            "상태 표시줄에 시스템 사용률과 앱·자식 작업 메모리 표시"
+        )
+        self.memory_display_check.setToolTip(
+            "CLI: memory set --display on|off"
+        )
+        advanced_form.addRow("메모리 사용량 표시", self.memory_display_check)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
@@ -2970,7 +2978,8 @@ class SettingsDialog(QDialog):
             "묶어서 저장하고 복구는 다운로드 파일을 수정하지 않습니다. 저사양 모드는 원래 "
             "설정값을 지우지 않고 실행 중 유효 상한과 썸네일 비용만 낮춥니다. 절전 방지는 "
             "화면을 계속 켜지 않고 실제 다운로드가 실행되는 동안에만 시스템 절전을 막습니다. "
-            "PDF는 회차별로 별도 생성하며 원본 이미지를 변경하거나 삭제하지 않습니다."
+            "PDF는 회차별로 별도 생성하며 원본 이미지를 변경하거나 삭제하지 않습니다. "
+            "메모리 표시는 읽기 전용이며 앱과 자식 작업을 시스템 전체 사용률과 구분합니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
@@ -3082,6 +3091,7 @@ class SettingsDialog(QDialog):
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
         targets = (
+            (("메모리 사용량", "ram", "RAM", "자식 프로세스"), self.memory_display_check),
             (("pdf", "PDF", "회차"), self.pdf_generation_check),
             (("절전", "전원"), self.prevent_sleep_check),
             (("저사양",), self.low_spec_mode_check),
@@ -3197,6 +3207,7 @@ class SettingsDialog(QDialog):
             bool(values["preventSleepDuringDownloads"])
         )
         self.pdf_generation_check.setChecked(bool(values["pdfGenerationEnabled"]))
+        self.memory_display_check.setChecked(bool(values["memoryDisplayEnabled"]))
         self._update_sleep_prevention_status()
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
@@ -3389,6 +3400,7 @@ class SettingsDialog(QDialog):
             "lowSpecMode": self.low_spec_mode_check.isChecked(),
             "preventSleepDuringDownloads": self.prevent_sleep_check.isChecked(),
             "pdfGenerationEnabled": self.pdf_generation_check.isChecked(),
+            "memoryDisplayEnabled": self.memory_display_check.isChecked(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -4072,6 +4084,11 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_style()
         self._apply_display_preferences(self.config)
+        self.last_memory_usage: dict[str, Any] = {}
+        self.memory_timer = QTimer(self)
+        self.memory_timer.setInterval(2000)
+        self.memory_timer.timeout.connect(self._update_memory_usage)
+        self._configure_memory_display()
         try:
             self.thumbnail_cache_report = cleanup_thumbnail_cache(execute=True)
         except OSError as error:
@@ -4646,7 +4663,14 @@ class MainWindow(QMainWindow):
         self.overall_progress = QProgressBar()
         self.overall_progress.setFixedWidth(220)
         self.overall_progress.setRange(0, 100)
+        self.memory_progress = QProgressBar()
+        self.memory_progress.setObjectName("memoryProgress")
+        self.memory_progress.setFixedWidth(225)
+        self.memory_progress.setRange(0, 100)
+        self.memory_progress.setValue(0)
+        self.memory_progress.setFormat("메모리 확인 중…")
         status.addWidget(self.status_label, 1)
+        status.addPermanentWidget(self.memory_progress)
         status.addPermanentWidget(self.overall_progress)
         self.setStatusBar(status)
 
@@ -5444,6 +5468,106 @@ class MainWindow(QMainWindow):
                 "droppedProcessOutputBytes": self.total_output_dropped_bytes,
             },
         }
+
+    @staticmethod
+    def _memory_mib(value: Any) -> str:
+        return f"{max(0, int(value or 0)) / (1024 * 1024):,.0f} MiB"
+
+    def memory_status_snapshot(self, child_limit: int = 200) -> dict[str, Any]:
+        snapshot = memory_usage_snapshot(
+            self.config,
+            process_id=os.getpid(),
+            child_limit=child_limit,
+        )
+        if snapshot.get("ok"):
+            child_entries = {
+                int(item["pid"]): item
+                for item in snapshot["application"].get("children") or []
+            }
+            parent_by_pid = {
+                pid: int(item.get("parentPid") or 0)
+                for pid, item in child_entries.items()
+            }
+
+            def memory_for_root(root_pid: int) -> int:
+                total = 0
+                for pid, item in child_entries.items():
+                    current = pid
+                    visited: set[int] = set()
+                    while current and current not in visited:
+                        if current == root_pid:
+                            total += int(item.get("rssBytes") or 0)
+                            break
+                        visited.add(current)
+                        current = parent_by_pid.get(current, 0)
+                return total
+
+            tracked: list[dict[str, Any]] = []
+            candidates: list[tuple[str, str, Any]] = [
+                ("download", job_id, context)
+                for job_id, context in self.active_contexts.items()
+            ]
+            candidates.extend(
+                ("image_conversion", job_id, context)
+                for job_id, context in self.image_conversion_processes.items()
+            )
+            candidates.extend(
+                ("pdf", job_id, context)
+                for job_id, context in self.pdf_generation_processes.items()
+            )
+            for kind, job_id, context in candidates:
+                process = getattr(context, "process", None)
+                pid = int(process.processId()) if process else 0
+                if pid <= 0:
+                    continue
+                tracked.append(
+                    {
+                        "kind": kind,
+                        "jobId": job_id,
+                        "pid": pid,
+                        "rssBytes": memory_for_root(pid),
+                    }
+                )
+            snapshot["trackedJobProcesses"] = tracked
+        self.last_memory_usage = snapshot
+        return snapshot
+
+    def _configure_memory_display(self) -> None:
+        enabled = bool(self.config.get("memoryDisplayEnabled", True))
+        self.memory_progress.setVisible(enabled)
+        if enabled:
+            if not self.memory_timer.isActive():
+                self.memory_timer.start()
+            self._update_memory_usage()
+        else:
+            self.memory_timer.stop()
+
+    def _update_memory_usage(self) -> None:
+        if not bool(self.config.get("memoryDisplayEnabled", True)):
+            return
+        snapshot = self.memory_status_snapshot()
+        if not snapshot.get("ok"):
+            self.memory_progress.setValue(0)
+            self.memory_progress.setFormat("메모리 확인 실패")
+            self.memory_progress.setToolTip(str(snapshot.get("error") or "알 수 없는 오류"))
+            return
+        application = snapshot["application"]
+        system = snapshot["system"]
+        display = snapshot["display"]
+        self.memory_progress.setValue(int(display["percent"]))
+        self.memory_progress.setFormat(
+            f"RAM {float(system['percent']):.0f}% · 앱 "
+            f"{self._memory_mib(application['combinedRssBytes'])}"
+        )
+        self.memory_progress.setToolTip(
+            "시스템 사용 "
+            f"{self._memory_mib(system['usedBytes'])} / "
+            f"{self._memory_mib(system['totalBytes'])}\n"
+            f"앱 자체 {self._memory_mib(application['ownRssBytes'])} · "
+            f"자식 작업 {self._memory_mib(application['childRssBytes'])} "
+            f"({application['childProcessCount']}개)\n"
+            f"상태: {display['severity']} · CLI: memory status --json"
+        )
 
     def _start_next_job(self) -> None:
         concurrency = normalize_work_concurrency(self.work_concurrency_spin.value())
@@ -6775,6 +6899,9 @@ class MainWindow(QMainWindow):
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self._apply_style()
         self._apply_display_preferences(result)
+        configure_memory = getattr(self, "_configure_memory_display", None)
+        if callable(configure_memory):
+            configure_memory()
         sync_sleep = getattr(self, "_sync_sleep_prevention", None)
         if callable(sync_sleep):
             sync_sleep()
@@ -9422,6 +9549,7 @@ class MainWindow(QMainWindow):
                 "lowSpecMode": bool(self.config.get("lowSpecMode", False)),
             },
             "listPerformance": self.list_performance_status_snapshot(),
+            "memoryUsage": self.memory_status_snapshot(),
             "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),
@@ -10154,6 +10282,10 @@ class MainWindow(QMainWindow):
             return {"started": started, **self.stability_test_snapshot()}
         if action == "resource_status":
             return {"ok": True, **self.resource_snapshot()}
+        if action == "memory_status":
+            return self.memory_status_snapshot(
+                max(0, min(1000, int(request.get("childLimit") or 200)))
+            )
         if action == "keyboard_focus":
             self.showNormal()
             self.raise_()

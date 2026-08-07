@@ -481,6 +481,16 @@ PDF만 교체한다. 자동 후처리는 공유 CPU 프로세스 한도에 막�
 `logs/pdf-generation-plan.png`, `logs/pdf-generation-settings.png` 화면만 확인해 `_pdf`를
 생성하지 않았고 자동 생성도 기본 꺼짐으로 복원했다. Python 194건과 Node 16건을 통과했다.
 
+2026-08-07 메모리 사용량 표시: 설정 스키마 v14의 기본 켜짐 값을 상태 표시줄 메모리 막대와
+연결하고, 공용 서비스가 시스템 RAM 사용률과 앱 자체·재귀 자식 작업 RSS를 분리해 2초마다
+읽기 전용으로 갱신한다. 80%/90% 경고 단계, 상세 자식 수 제한, 접근할 수 없는 종료 프로세스
+처리를 포함하며 메모리 제한이나 Windows 설정은 변경하지 않는다. `memory status|set`,
+`status --json`, 고급 설정 검색과 GUI가 같은 값을 사용하고 실행 중 다운로드·이미지 변환·
+PDF 루트 PID별 자식 RSS도 합산한다. 모의 16 GiB/두 자식 프로세스와 GUI IPC 테스트를 거친
+뒤 실제 화면에서 `RAM 68% · 앱 149 MiB`, 설정 검색 및 CLI 실시간 숨김·복원을 확인했다.
+`logs/memory-usage-status.png`, `logs/memory-display-settings.png`에 화면을 보존했고 기본 표시
+켜짐으로 복원했다. Python 197건과 Node 16건을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

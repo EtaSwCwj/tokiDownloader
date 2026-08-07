@@ -67,6 +67,7 @@ from toki_core import (
     load_jobs_page,
     list_job_episode_images,
     list_performance_policy_snapshot,
+    memory_usage_snapshot,
     load_run,
     load_runs_page,
     mark_job_cancelled,
@@ -142,6 +143,62 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_memory_usage_snapshot_separates_app_children_and_system_pressure(self) -> None:
+        gib = 1024**3
+
+        class MemoryInfo:
+            def __init__(self, rss: int) -> None:
+                self.rss = rss
+
+        class Process:
+            def __init__(self, pid: int, parent: int, name: str, rss: int) -> None:
+                self.pid = pid
+                self._parent = parent
+                self._name = name
+                self._rss = rss
+                self._children: list[Process] = []
+
+            def memory_info(self) -> MemoryInfo:
+                return MemoryInfo(self._rss)
+
+            def children(self, recursive: bool = False) -> list[Process]:
+                self.assert_recursive = recursive
+                return list(self._children)
+
+            def ppid(self) -> int:
+                return self._parent
+
+            def name(self) -> str:
+                return self._name
+
+            def status(self) -> str:
+                return "running"
+
+        root = Process(100, 1, "pythonw.exe", 300 * 1024**2)
+        root._children = [
+            Process(102, 100, "chrome.exe", 700 * 1024**2),
+            Process(101, 100, "node.exe", 500 * 1024**2),
+        ]
+        virtual = type("Virtual", (), {"total": 16 * gib, "available": 2 * gib})()
+        config = default_config()
+        self.assertTrue(config["memoryDisplayEnabled"])
+
+        with (
+            patch("toki_core.psutil.Process", return_value=root),
+            patch("toki_core.psutil.virtual_memory", return_value=virtual),
+        ):
+            snapshot = memory_usage_snapshot(config, process_id=100, child_limit=1)
+
+        self.assertTrue(snapshot["ok"])
+        self.assertEqual(snapshot["system"]["percent"], 87.5)
+        self.assertEqual(snapshot["display"]["severity"], "warning")
+        self.assertEqual(snapshot["application"]["ownRssBytes"], 300 * 1024**2)
+        self.assertEqual(snapshot["application"]["childRssBytes"], 1200 * 1024**2)
+        self.assertEqual(snapshot["application"]["combinedRssBytes"], 1500 * 1024**2)
+        self.assertEqual(snapshot["application"]["childProcessCount"], 2)
+        self.assertEqual(snapshot["application"]["children"][0]["pid"], 102)
+        self.assertTrue(snapshot["application"]["childrenTruncated"])
+
     def test_sleep_prevention_policy_uses_thread_request_and_releases_cleanly(self) -> None:
         config = default_config()
         self.assertFalse(config["preventSleepDuringDownloads"])

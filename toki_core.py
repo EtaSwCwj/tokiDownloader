@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 13
+CONFIG_SCHEMA_VERSION = 14
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -126,6 +126,7 @@ SETTING_KEYS = frozenset(
         "lowSpecMode",
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
+        "memoryDisplayEnabled",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -420,6 +421,7 @@ def default_config() -> dict[str, Any]:
         "lowSpecMode": False,
         "preventSleepDuringDownloads": False,
         "pdfGenerationEnabled": False,
+        "memoryDisplayEnabled": True,
     }
 
 
@@ -1387,6 +1389,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "lowSpecMode",
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
+        "memoryDisplayEnabled",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1672,6 +1675,7 @@ def validate_app_setting_updates(
         "lowSpecMode",
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
+        "memoryDisplayEnabled",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -2095,6 +2099,91 @@ def resource_budget(
         "maxPendingDownloads": 1_000,
         "maxLoadedJobs": 5_000,
         "maxProcessOutputBytes": 2 * 1024 * 1024,
+    }
+
+
+def memory_usage_snapshot(
+    config: dict[str, Any] | None = None,
+    *,
+    process_id: int | None = None,
+    child_limit: int = 200,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    selected_pid = max(1, int(process_id or os.getpid()))
+    clean_child_limit = max(0, min(1000, int(child_limit)))
+    sampled_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    try:
+        virtual = psutil.virtual_memory()
+        total_system = max(0, int(virtual.total))
+        available_system = max(0, min(total_system, int(virtual.available)))
+        used_system = max(0, total_system - available_system)
+        process = psutil.Process(selected_pid)
+        application_bytes = max(0, int(process.memory_info().rss))
+        children: list[dict[str, Any]] = []
+        inaccessible_children = 0
+        for child in process.children(recursive=True):
+            try:
+                children.append(
+                    {
+                        "pid": int(child.pid),
+                        "parentPid": int(child.ppid()),
+                        "name": str(child.name()),
+                        "status": str(child.status()),
+                        "rssBytes": max(0, int(child.memory_info().rss)),
+                    }
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                inaccessible_children += 1
+        children.sort(key=lambda item: (-int(item["rssBytes"]), int(item["pid"])))
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError) as error:
+        return {
+            "ok": False,
+            "displayEnabled": bool(source["memoryDisplayEnabled"]),
+            "processId": selected_pid,
+            "sampledAt": sampled_at,
+            "error": str(error),
+        }
+    child_bytes = sum(int(item["rssBytes"]) for item in children)
+    combined_bytes = application_bytes + child_bytes
+    system_percent = (
+        round((used_system / total_system) * 100, 1) if total_system else 0.0
+    )
+    application_percent = (
+        round((combined_bytes / total_system) * 100, 2) if total_system else 0.0
+    )
+    severity = (
+        "critical"
+        if system_percent >= 90
+        else "warning"
+        if system_percent >= 80
+        else "normal"
+    )
+    visible_children = children[:clean_child_limit]
+    return {
+        "ok": True,
+        "displayEnabled": bool(source["memoryDisplayEnabled"]),
+        "processId": selected_pid,
+        "sampledAt": sampled_at,
+        "application": {
+            "ownRssBytes": application_bytes,
+            "childRssBytes": child_bytes,
+            "combinedRssBytes": combined_bytes,
+            "percentOfSystem": application_percent,
+            "childProcessCount": len(children),
+            "inaccessibleChildCount": inaccessible_children,
+            "children": visible_children,
+            "childrenTruncated": len(children) > len(visible_children),
+        },
+        "system": {
+            "totalBytes": total_system,
+            "availableBytes": available_system,
+            "usedBytes": used_system,
+            "percent": system_percent,
+        },
+        "display": {
+            "percent": max(0, min(100, int(round(system_percent)))),
+            "severity": severity,
+        },
     }
 
 
