@@ -550,6 +550,14 @@ status|set|evaluate`, GUI 여러 줄 편집기와 `status --json`을 연결하�
 `logs/hitomi-excluded-tags-settings.png`에 보존했으며 외부 요청은 수행하지 않았다.
 Python 222건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
+2026-08-07 Hitomi 일본어 제목 우선: 설정 스키마 v20에 기본 꺼짐 정책을 추가하고 공용
+서비스가 기본·일본어 제목의 선택 필드와 폴백 여부를 반환하도록 했다. `hitomi title
+status|set|select`, GUI 공급자 체크박스·메타데이터 결과·`status --json`을 연결하고 CLI로
+실행 중 설정을 켜 로컬 픽스처의 일본어 선택을 확인한 뒤 기본값으로 복원했다. 화면은
+`logs/hitomi-japanese-title-settings.png`, `logs/hitomi-japanese-title-selection.png`에
+보존했으며 외부 요청은 수행하지 않았다.
+Python 225건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

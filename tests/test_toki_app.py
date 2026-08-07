@@ -16,6 +16,63 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_hitomi_title_cli_selects_from_local_metadata(self) -> None:
+        status_args = build_parser().parse_args(
+            ["hitomi", "title", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        self.assertFalse(json.loads(stdout.getvalue())["preferJapanese"])
+
+        set_args = build_parser().parse_args(
+            ["hitomi", "title", "set", "--prefer-japanese", "on", "--json"]
+        )
+        saved = {**default_config(), "hitomiPreferJapaneseTitle": True}
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", side_effect=[default_config(), saved]) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {
+                "action": "set_settings",
+                "updates": {"hitomiPreferJapaneseTitle": True},
+                "reset": False,
+            },
+        )
+
+        fixture = Path(__file__).parent / "fixtures" / "hitomi" / "galleryinfo_1234567.js"
+        select_args = build_parser().parse_args(
+            [
+                "hitomi",
+                "title",
+                "select",
+                "--input",
+                "1234567",
+                "--fixture",
+                str(fixture),
+                "--prefer-japanese",
+                "on",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(select_args), 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["selectedTitle"], "日本語タイトル")
+        self.assertEqual(result["selectedField"], "japaneseTitle")
+        self.assertFalse(result["networkRequested"])
+
     def test_hitomi_excluded_tag_cli_uses_shared_offline_policy(self) -> None:
         status_args = build_parser().parse_args(
             ["hitomi", "tags", "status", "--json"]

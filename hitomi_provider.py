@@ -86,6 +86,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "metadata": True,
         "imageFilenamePolicy": True,
         "excludedTagPolicy": True,
+        "japaneseTitlePolicy": True,
         "metadataExternalRequestRequiresConfirmation": True,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
@@ -97,6 +98,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
             "메타데이터 요청은 명시적 확인 뒤에만 실행하며 다운로드는 아직 활성화되지 않았습니다.",
             "이미지 파일명 계획은 로컬 메타데이터만 사용하며 Windows 충돌을 방지합니다.",
             "제외 태그 판정은 정규화한 로컬 메타데이터에만 적용합니다.",
+            "표시 제목은 일본어 우선 여부와 명시적 폴백 근거를 함께 반환합니다.",
         ],
     }
 
@@ -363,6 +365,65 @@ def evaluate_hitomi_excluded_tags(
         "matchedCount": len(matches),
         "matches": matches,
         "decision": "exclude" if matches else "continue",
+    }
+
+
+def hitomi_title_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    value = source.get("hitomiPreferJapaneseTitle", False)
+    prefer_japanese = value if isinstance(value, bool) else False
+    return {
+        "ok": True,
+        "preferJapanese": prefer_japanese,
+        "primaryField": "japaneseTitle" if prefer_japanese else "title",
+        "fallbackField": "title" if prefer_japanese else "japaneseTitle",
+        "networkRequested": False,
+    }
+
+
+def select_hitomi_display_title(
+    metadata: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    prefer_japanese: bool | None = None,
+) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise HitomiReferenceError(
+            "hitomi.title_metadata_invalid",
+            "제목 선택에는 공통 갤러리 메타데이터 객체가 필요합니다.",
+        )
+    if prefer_japanese is not None and not isinstance(prefer_japanese, bool):
+        raise ValueError("일본어 제목 우선 설정은 true 또는 false여야 합니다.")
+    policy = hitomi_title_policy_snapshot(
+        {"hitomiPreferJapaneseTitle": prefer_japanese}
+        if prefer_japanese is not None
+        else config
+    )
+    title = str(metadata.get("title") or "").strip()
+    japanese_title = str(metadata.get("japaneseTitle") or "").strip()
+    ordered = (
+        (("japaneseTitle", japanese_title), ("title", title))
+        if policy["preferJapanese"]
+        else (("title", title), ("japaneseTitle", japanese_title))
+    )
+    selected = next(((field, value) for field, value in ordered if value), None)
+    if not selected:
+        raise HitomiReferenceError(
+            "hitomi.title_missing",
+            "갤러리 메타데이터에 선택할 제목이 없습니다.",
+        )
+    selected_field, selected_title = selected
+    return {
+        **policy,
+        "galleryId": str(metadata.get("galleryId") or ""),
+        "workKey": str(metadata.get("workKey") or ""),
+        "title": title,
+        "japaneseTitle": japanese_title,
+        "selectedTitle": selected_title,
+        "selectedField": selected_field,
+        "usedFallback": selected_field != policy["primaryField"],
     }
 
 

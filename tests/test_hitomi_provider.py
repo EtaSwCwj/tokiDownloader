@@ -15,6 +15,7 @@ from hitomi_provider import (
     hitomi_metadata_policy_snapshot,
     hitomi_metadata_request_plan,
     hitomi_server_policy_snapshot,
+    hitomi_title_policy_snapshot,
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
     normalize_hitomi_server_priority,
@@ -22,6 +23,7 @@ from hitomi_provider import (
     plan_hitomi_image_filenames,
     parse_hitomi_metadata_payload,
     plan_hitomi_server,
+    select_hitomi_display_title,
 )
 from toki_core import default_config, normalize_config, validate_app_setting_updates
 
@@ -363,6 +365,35 @@ class HitomiReferenceTests(unittest.TestCase):
             validate_app_setting_updates({"hitomiExcludedTags": [":broken"]})
         migrated = normalize_config({"configVersion": 18})
         self.assertEqual(migrated["hitomiExcludedTags"], [])
+
+    def test_japanese_title_preference_selects_and_reports_fallback(self) -> None:
+        metadata = load_hitomi_metadata_fixture(
+            "1234567", FIXTURE_DIR / "galleryinfo_1234567.js"
+        )
+        self.assertFalse(default_config()["hitomiPreferJapaneseTitle"])
+        default_policy = hitomi_title_policy_snapshot(default_config())
+        self.assertEqual(default_policy["primaryField"], "title")
+        default_title = select_hitomi_display_title(metadata)
+        self.assertEqual(default_title["selectedTitle"], "Romanized Title")
+        self.assertFalse(default_title["usedFallback"])
+
+        japanese = select_hitomi_display_title(metadata, prefer_japanese=True)
+        self.assertEqual(japanese["selectedTitle"], "日本語タイトル")
+        self.assertEqual(japanese["selectedField"], "japaneseTitle")
+        self.assertFalse(japanese["networkRequested"])
+
+        fallback = select_hitomi_display_title(
+            {**metadata, "japaneseTitle": ""}, prefer_japanese=True
+        )
+        self.assertEqual(fallback["selectedTitle"], "Romanized Title")
+        self.assertTrue(fallback["usedFallback"])
+        with self.assertRaises(HitomiReferenceError) as caught:
+            select_hitomi_display_title({"title": "", "japaneseTitle": ""})
+        self.assertEqual(caught.exception.code, "hitomi.title_missing")
+        with self.assertRaises(ValueError):
+            validate_app_setting_updates({"hitomiPreferJapaneseTitle": "yes"})
+        migrated = normalize_config({"configVersion": 19})
+        self.assertFalse(migrated["hitomiPreferJapaneseTitle"])
 
 
 if __name__ == "__main__":

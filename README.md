@@ -146,6 +146,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi tags set --tags "guro,female:full color" --json
 .\toki-cli.cmd hitomi tags evaluate --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
 .\toki-cli.cmd hitomi tags set --clear --json
+.\toki-cli.cmd hitomi title status --json
+.\toki-cli.cmd hitomi title set --prefer-japanese on --json
+.\toki-cli.cmd hitomi title select --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
 .\toki-cli.cmd hitomi close --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
@@ -729,7 +732,7 @@ ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에
 힌트만 표시합니다. `--show-gui`로 같은 분석기를 GUI 대화상자에서 열고 `hitomi close`로
 닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
 false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`,
-`excludedTagPolicy: true`로 구현 범위를 명확히 표시합니다.
+`excludedTagPolicy: true`, `japaneseTitlePolicy: true`로 구현 범위를 명확히 표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
@@ -778,6 +781,15 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 없이 공통 메타데이터의 `exclude` 또는 `continue` 결정과 일치 규칙을 반환합니다. 실제 GUI에
 CLI 규칙을 적용하고 다시 빈 기본 목록으로 복원했으며 검증 화면은
 `logs\hitomi-excluded-tags-settings.png`에 있습니다.
+
+설정 스키마 v20은 `hitomiPreferJapaneseTitle`을 기본 꺼짐으로 저장합니다. 켜면
+`japaneseTitle`을 먼저 사용하고 값이 없을 때만 기존 `title`로 폴백하며, 끄면 반대 순서를
+사용합니다. 두 필드가 모두 비었으면 `hitomi.title_missing`으로 거부합니다. `hitomi title
+status|set|select`, 공급자 설정의 체크박스, 메타데이터 대화상자의 `선택 제목`, `status
+--json`이 같은 서비스를 사용하고 선택 필드와 폴백 여부를 함께 반환합니다. CLI로 실행 중
+GUI 설정을 켜 로컬 픽스처의 `日本語タイトル` 선택을 확인한 뒤 기본 꺼짐으로 복원했습니다.
+검증 화면은 `logs\hitomi-japanese-title-settings.png`와
+`logs\hitomi-japanese-title-selection.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

@@ -31,10 +31,12 @@ from hitomi_provider import (
     hitomi_metadata_request_plan,
     hitomi_provider_capabilities,
     hitomi_server_policy_snapshot,
+    hitomi_title_policy_snapshot,
     inspect_hitomi_reference,
     load_hitomi_metadata_fixture,
     plan_hitomi_image_filenames,
     plan_hitomi_server,
+    select_hitomi_display_title,
 )
 from toki_core import (
     APP_VERSION,
@@ -975,6 +977,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--tags", help="저장 설정 대신 이 판정에만 적용할 규칙"
     )
     hitomi_tag_evaluate.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_title = hitomi_commands.add_parser(
+        "title", help="Hitomi 기본·일본어 제목 선택 정책"
+    )
+    hitomi_title_commands = hitomi_title.add_subparsers(
+        dest="hitomi_title_command", required=True
+    )
+    hitomi_title_status = hitomi_title_commands.add_parser(
+        "status", help="현재 일본어 제목 우선 정책 조회"
+    )
+    hitomi_title_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_title_set = hitomi_title_commands.add_parser(
+        "set", help="일본어 제목 우선 사용 설정"
+    )
+    hitomi_title_set.add_argument("--prefer-japanese", choices=("on", "off"), required=True)
+    hitomi_title_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    hitomi_title_select = hitomi_title_commands.add_parser(
+        "select", help="로컬 메타데이터 픽스처에서 표시 제목 선택"
+    )
+    hitomi_title_select.add_argument("--input", required=True, help="URL 또는 갤러리 ID")
+    hitomi_title_select.add_argument(
+        "--provider", choices=("auto", "hitomi", "exhentai"), default="auto"
+    )
+    hitomi_title_select.add_argument("--fixture", required=True, help="로컬 JS/JSON 픽스처 경로")
+    hitomi_title_select.add_argument(
+        "--prefer-japanese", choices=("on", "off"),
+        help="저장 설정 대신 이 선택에만 적용",
+    )
+    hitomi_title_select.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -2536,6 +2566,45 @@ def run_cli(args: argparse.Namespace) -> int:
                         metadata,
                         config=current,
                         rules=args.tags,
+                    )
+                except HitomiReferenceError as error:
+                    result = error.to_dict()
+        elif args.hitomi_command == "title":
+            current = (
+                control_request({"action": "settings"})
+                if gui_is_running()
+                else settings_snapshot()
+            )
+            subcommand = args.hitomi_title_command
+            if subcommand == "status":
+                result = hitomi_title_policy_snapshot(current)
+            elif subcommand == "set":
+                updates = {
+                    "hitomiPreferJapaneseTitle": args.prefer_japanese == "on"
+                }
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(updates)
+                )
+                result = {"saved": True, **hitomi_title_policy_snapshot(saved)}
+            else:
+                try:
+                    metadata = load_hitomi_metadata_fixture(
+                        args.input,
+                        Path(args.fixture),
+                        provider_hint=args.provider,
+                    )
+                    result = select_hitomi_display_title(
+                        metadata,
+                        config=current,
+                        prefer_japanese=(
+                            None
+                            if args.prefer_japanese is None
+                            else args.prefer_japanese == "on"
+                        ),
                     )
                 except HitomiReferenceError as error:
                     result = error.to_dict()

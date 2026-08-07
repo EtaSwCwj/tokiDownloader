@@ -548,7 +548,7 @@ memory 200, `remove_record` 403과 CLI 종료 코드 2를 확인했으며 외부
 - [ ] 갤러리 메타데이터 모드
 - [x] 원본/숫자/숫자+원본 파일명
 - [x] 제외 태그 관리
-- [ ] 일본어 제목 우선
+- [x] 일본어 제목 우선
 - [ ] info.txt 또는 공통 metadata.json 생성
 - [ ] 원본 이미지 선택
 - [ ] 인증이 필요한 사이트의 사용자 소유 쿠키 처리
@@ -611,6 +611,16 @@ Python 219건, Node 16건, 자체 점검 6/6을 통과했다.
 빈 기본 목록으로 복원했다. `logs/hitomi-excluded-tags-settings.png`에서 여러 줄 스크롤 입력,
 한글·대비를 검토했으며 외부 요청이나 다운로드는 없었다.
 Python 222건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 일본어 제목 우선 구현: 설정 스키마 v20에 기본 꺼짐 선택을 추가했다. 공용
+서비스는 설정에 따라 `title`과 `japaneseTitle` 순서를 바꾸고 첫 번째가 비었을 때만 두 번째로
+폴백하며 선택 필드와 폴백 여부를 반환한다. 두 값이 모두 비면 안정 오류로 거부한다. `hitomi
+title status|set|select`, GUI 공급자 체크박스, 메타데이터 결과의 `선택 제목`, `status
+--json`을 같은 정책에 연결했다. CLI로 실행 중 설정을 켠 뒤 로컬 픽스처에서
+`日本語タイトル · japaneseTitle`을 상태와 화면으로 확인하고 기본 꺼짐으로 복원했다.
+`logs/hitomi-japanese-title-settings.png`, `logs/hitomi-japanese-title-selection.png`에서
+한글·일본어 글꼴과 대비를 검토했으며 외부 요청은 없었다.
+Python 225건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ### 단계 H. YouTube 선택형 공급자
 

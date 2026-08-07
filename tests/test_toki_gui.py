@@ -15,6 +15,7 @@ from toki_core import (
     default_config,
 )
 from toki_gui import (
+    HitomiMetadataDialog,
     ImageConversionProcessContext,
     JobListModel,
     MainWindow,
@@ -757,6 +758,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("갤러리 정보"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("이미지 파일명 원본 숫자"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("제외 태그 규칙"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("일본어 제목 우선"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
         self.assertEqual(
@@ -894,6 +896,37 @@ class WorkSchedulerTests(unittest.TestCase):
             calls,
             [("show", "42", "hitomi", "fixture.js"), ("close",)],
         )
+
+    def test_hitomi_metadata_state_reports_selected_japanese_title(self) -> None:
+        text_stub = type("TextStub", (), {"text": lambda self: "1234567"})()
+        owner = type(
+            "OwnerStub",
+            (),
+            {"config": {**default_config(), "hitomiPreferJapaneseTitle": True}},
+        )()
+        harness = type(
+            "MetadataStateHarness",
+            (),
+            {
+                "owner": owner,
+                "last_result": {
+                    "ok": True,
+                    "galleryId": "1234567",
+                    "workKey": "hitomi:1234567",
+                    "title": "Romanized Title",
+                    "japaneseTitle": "日本語タイトル",
+                },
+                "reference_edit": text_stub,
+                "fixture_path": "fixture.js",
+                "fetch_task": None,
+                "isVisible": lambda self: True,
+                "_provider": lambda self: "hitomi",
+            },
+        )()
+        snapshot = HitomiMetadataDialog.state_snapshot(harness)
+        self.assertEqual(snapshot["titleSelection"]["selectedTitle"], "日本語タイトル")
+        self.assertEqual(snapshot["titleSelection"]["selectedField"], "japaneseTitle")
+        self.assertFalse(snapshot["titleSelection"]["usedFallback"])
 
     def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:
         calls = []
