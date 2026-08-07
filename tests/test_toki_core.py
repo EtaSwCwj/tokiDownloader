@@ -64,6 +64,7 @@ from toki_core import (
     load_job_by_work_key,
     load_jobs_page,
     list_job_episode_images,
+    list_performance_policy_snapshot,
     load_run,
     load_runs_page,
     mark_job_cancelled,
@@ -534,6 +535,44 @@ class CoreContractTests(unittest.TestCase):
                 updated = persistence_policy_snapshot(saved)
                 self.assertEqual(updated["autosaveIntervalSeconds"], 12)
                 self.assertFalse(updated["startupRecoveryEnabled"])
+
+    def test_list_performance_policy_preserves_config_and_bounds_low_spec_cost(self) -> None:
+        normal = default_config()
+        normal.update(
+            {
+                "listPageSize": 800,
+                "listLoadedLimit": 5000,
+                "listScrollLines": 20,
+                "listLazyLoading": False,
+                "lowSpecMode": False,
+                "thumbnailsVisible": True,
+            }
+        )
+        normal_policy = list_performance_policy_snapshot(normal)
+        self.assertEqual(normal_policy["effective"]["pageSize"], 800)
+        self.assertEqual(normal_policy["effective"]["loadedLimit"], 5000)
+        self.assertFalse(normal_policy["effective"]["lazyLoading"])
+        self.assertTrue(normal_policy["effective"]["thumbnailsVisible"])
+        self.assertTrue(normal_policy["eagerLoadingOptIn"])
+
+        low = {**normal, "lowSpecMode": True}
+        low_policy = list_performance_policy_snapshot(low)
+        self.assertEqual(low_policy["configured"]["pageSize"], 800)
+        self.assertEqual(low_policy["configured"]["loadedLimit"], 5000)
+        self.assertEqual(low_policy["effective"]["pageSize"], 100)
+        self.assertEqual(low_policy["effective"]["loadedLimit"], 500)
+        self.assertEqual(low_policy["effective"]["scrollLines"], 3)
+        self.assertTrue(low_policy["effective"]["lazyLoading"])
+        self.assertFalse(low_policy["effective"]["thumbnailsVisible"])
+        self.assertEqual(low_policy["effective"]["thumbnailCacheEntries"], 32)
+        self.assertFalse(low_policy["eagerLoadingOptIn"])
+        self.assertTrue(low_policy["visibleOnlyThumbnailDecode"])
+        with self.assertRaisesRegex(ValueError, "25~1000"):
+            toki_core.normalize_list_page_size(24)
+        with self.assertRaisesRegex(ValueError, "100~5000"):
+            toki_core.normalize_list_loaded_limit(99)
+        with self.assertRaisesRegex(ValueError, "1~20"):
+            toki_core.normalize_list_scroll_lines(21)
 
     def test_settings_export_import_preview_apply_and_reset_are_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

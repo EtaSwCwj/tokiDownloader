@@ -375,6 +375,31 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertIn("disk busy", harness.last_autosave["error"])
         self.assertEqual(len(logs), 1)
 
+    def test_list_performance_ipc_and_lazy_load_policy_are_cli_visible(self) -> None:
+        harness = type("ListPerformanceHarness", (), {})()
+        harness.list_performance_status_snapshot = lambda: {
+            "ok": True,
+            "effective": {"pageSize": 100, "loadedLimit": 500},
+        }
+        result = MainWindow._handle_control_action(
+            harness, {"action": "list_performance_status"}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["effective"]["loadedLimit"], 500)
+
+        policy_harness = type("ListPolicyHarness", (), {})()
+        policy_harness.list_performance_policy = {
+            "effective": {
+                "pageSize": 80,
+                "loadedLimit": 400,
+                "lazyLoading": True,
+            }
+        }
+        self.assertEqual(MainWindow._initial_history_load_limit(policy_harness), 80)
+        policy_harness.list_performance_policy["effective"]["lazyLoading"] = False
+        self.assertEqual(MainWindow._initial_history_load_limit(policy_harness), 400)
+        MainWindow._maybe_load_more_history(policy_harness, 999)
+
     def test_group_ipc_routes_all_manager_and_assignment_actions(self) -> None:
         calls = []
         harness = type("GroupHarness", (), {})()
@@ -482,6 +507,9 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("압축 연결 프로그램"), [3])
         self.assertEqual(SettingsDialog.matching_tab_indexes("자동 저장 복구"), [3])
+        self.assertEqual(
+            SettingsDialog.matching_tab_indexes("페이지 스크롤 지연 저사양"), [3]
+        )
         self.assertEqual(SettingsDialog.matching_tab_indexes("존재하지않음"), [])
         self.assertEqual(SettingsDialog.matching_tab_indexes(""), [0, 1, 2, 3, 4])
 

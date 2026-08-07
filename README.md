@@ -115,6 +115,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd persistence recover --show-gui
 .\toki-cli.cmd persistence recover --execute --yes --json
 .\toki-cli.cmd persistence recover --close
+.\toki-cli.cmd list-performance status --json
+.\toki-cli.cmd list-performance set --page-size 200 --loaded-limit 2000 --scroll-lines 3 --lazy-loading on --low-spec off --json
 .\toki-cli.cmd duplicates works --json
 .\toki-cli.cmd duplicates works --show-gui
 .\toki-cli.cmd duplicates works --close
@@ -641,6 +643,16 @@ GUI가 비정상 종료된 뒤 다시 시작하면 SQLite 전체의 `대기`, `�
 고급 설정 또는 `persistence set --startup-recovery on|off`로 제어합니다. 수동
 `persistence recover`는 기본 읽기 전용 미리보기이고 실제 DB 상태 변경에는 `--execute
 --yes`가 모두 필요합니다. 현재 GUI에 실행·대기 작업이 있으면 수동 복구를 차단합니다.
+
+작품 목록은 SQLite에서 페이지 단위로 조회하고 화면에 보이는 표지만 디코딩합니다. 고급
+설정과 `list-performance set`에서 페이지 크기(25~1,000개), 메모리 내 작품 상한
+(100~5,000개), 휠 스크롤 속도(1~20단계), 지연 로딩과 저사양 모드를 바꿀 수 있으며 실행
+중인 GUI에도 즉시 반영됩니다. 지연 로딩을 끄면 설정한 메모리 상한까지 처음부터 읽는
+명시적 eager 모드가 됩니다. 저사양 모드는 저장된 사용자 값을 덮어쓰지 않고 실행 중
+유효값만 페이지 100개·메모리 500개·스크롤 3단계·지연 로딩 켜짐으로 제한하고 썸네일을
+숨긴 뒤 메모리 썸네일 캐시도 32개로 줄입니다. 모드를 끄면 원래 설정으로 돌아갑니다.
+`list-performance status --json`과 `status --json`의 `listPerformance`에서 설정값,
+유효값, 현재 적재 수와 픽셀 스크롤 단계를 함께 확인할 수 있습니다.
 
 `set-retry-policy --count N --backoff S`는 프로세스 실패 후 자동 재시도 횟수와
 기본 대기 초를 설정합니다. 기본값은 2회·2초이고, 대기는 2초→4초→8초처럼 2배씩

@@ -757,6 +757,74 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(show_args), 0)
         request.assert_called_once_with({"action": "show_recovery_dialog"})
 
+    def test_list_performance_cli_reports_and_updates_live_policy(self) -> None:
+        policy = {
+            "ok": True,
+            "configured": {
+                "pageSize": 100,
+                "loadedLimit": 500,
+                "scrollLines": 2,
+                "lazyLoading": True,
+                "lowSpecMode": True,
+            },
+            "effective": {"pageSize": 100, "loadedLimit": 500},
+        }
+        status_args = build_parser().parse_args(
+            ["list-performance", "status", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch("toki_app.control_request", return_value=policy) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(status_args), 0)
+        request.assert_called_once_with({"action": "list_performance_status"})
+
+        set_args = build_parser().parse_args(
+            [
+                "list-performance",
+                "set",
+                "--page-size",
+                "100",
+                "--loaded-limit",
+                "500",
+                "--scroll-lines",
+                "2",
+                "--lazy-loading",
+                "on",
+                "--low-spec",
+                "on",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=True),
+            patch(
+                "toki_app.control_request",
+                side_effect=[{"ok": True}, policy],
+            ) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        self.assertEqual(
+            request.call_args_list[0].args[0],
+            {
+                "action": "set_settings",
+                "updates": {
+                    "listPageSize": 100,
+                    "listLoadedLimit": 500,
+                    "listScrollLines": 2,
+                    "listLazyLoading": True,
+                    "lowSpecMode": True,
+                },
+                "reset": False,
+            },
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[0],
+            {"action": "list_performance_status"},
+        )
+
     def test_group_cli_routes_service_and_gui_management_contracts(self) -> None:
         create_args = build_parser().parse_args(
             ["group", "create", "--name", "나중에 읽기", "--json"]

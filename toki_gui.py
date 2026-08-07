@@ -73,6 +73,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QStatusBar,
@@ -174,6 +175,7 @@ from toki_core import (
     load_job_by_work_key,
     load_jobs_page,
     list_job_episode_images,
+    list_performance_policy_snapshot,
     list_work_collections,
     log_retention_status,
     load_run,
@@ -2586,7 +2588,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
 
@@ -2595,7 +2597,7 @@ class SettingsDialog(QDialog):
         self.owner = owner
         self.strings = load_ui_strings(owner.config.get("uiLanguage"))
         self.setWindowTitle(self.strings["settings.title"])
-        self.resize(680, 520)
+        self.resize(760, 700)
         layout = QVBoxLayout(self)
         heading = QLabel(self.strings["settings.heading"])
         heading.setObjectName("sectionTitle")
@@ -2903,16 +2905,60 @@ class SettingsDialog(QDialog):
         recovery_preview_button.setToolTip("CLI: persistence recover --show-gui")
         recovery_preview_button.clicked.connect(owner.show_recovery_dialog)
         advanced_form.addRow("복구 확인", recovery_preview_button)
+        self.list_page_size_spin = QSpinBox()
+        self.list_page_size_spin.setRange(25, 1000)
+        self.list_page_size_spin.setSingleStep(25)
+        self.list_page_size_spin.setSuffix("개")
+        self.list_page_size_spin.setToolTip(
+            "CLI: list-performance set --page-size N"
+        )
+        advanced_form.addRow("목록 페이지 크기", self.list_page_size_spin)
+        self.list_loaded_limit_spin = QSpinBox()
+        self.list_loaded_limit_spin.setRange(100, 5000)
+        self.list_loaded_limit_spin.setSingleStep(100)
+        self.list_loaded_limit_spin.setSuffix("개")
+        self.list_loaded_limit_spin.setToolTip(
+            "CLI: list-performance set --loaded-limit N"
+        )
+        advanced_form.addRow("메모리 내 작품 상한", self.list_loaded_limit_spin)
+        self.list_scroll_lines_spin = QSpinBox()
+        self.list_scroll_lines_spin.setRange(1, 20)
+        self.list_scroll_lines_spin.setSuffix("단계")
+        self.list_scroll_lines_spin.setToolTip(
+            "CLI: list-performance set --scroll-lines N"
+        )
+        advanced_form.addRow("목록 스크롤 속도", self.list_scroll_lines_spin)
+        self.list_lazy_loading_check = QCheckBox(
+            "목록 하단에 도달할 때 다음 SQLite 페이지 로딩"
+        )
+        self.list_lazy_loading_check.setToolTip(
+            "CLI: list-performance set --lazy-loading on|off"
+        )
+        advanced_form.addRow("지연 로딩", self.list_lazy_loading_check)
+        self.low_spec_mode_check = QCheckBox(
+            "페이지 100·로딩 500·썸네일 숨김·작은 캐시 적용"
+        )
+        self.low_spec_mode_check.setToolTip(
+            "CLI: list-performance set --low-spec on|off"
+        )
+        advanced_form.addRow("저사양 모드", self.low_spec_mode_check)
         advanced_note = QLabel(
             "로그는 최대 크기를 넘으면 순환 보존합니다. 알림 미리보기는 현재 저장된 설정을 "
             "사용하며 메시지 상자는 작업을 막지 않습니다. 압축 파일 설정은 이 앱에서 여는 "
             "방법만 정하며 Windows 시스템 연결은 변경하지 않습니다. 자동 저장은 변경된 작업만 "
-            "묶어서 저장하고 복구는 다운로드 파일을 수정하지 않습니다."
+            "묶어서 저장하고 복구는 다운로드 파일을 수정하지 않습니다. 저사양 모드는 원래 "
+            "설정값을 지우지 않고 실행 중 유효 상한과 썸네일 비용만 낮춥니다."
         )
         advanced_note.setObjectName("mutedLabel")
         advanced_note.setWordWrap(True)
         advanced_form.addRow("", advanced_note)
-        self.tabs.addTab(advanced_page, self.strings["settings.tab.advanced"])
+        self.advanced_scroll = QScrollArea()
+        self.advanced_scroll.setWidgetResizable(True)
+        self.advanced_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.advanced_scroll.setWidget(advanced_page)
+        self.tabs.addTab(
+            self.advanced_scroll, self.strings["settings.tab.advanced"]
+        )
 
         provider_page = QWidget()
         provider_page.setObjectName("settingsPage")
@@ -3007,6 +3053,32 @@ class SettingsDialog(QDialog):
         )
         if matches and self.tabs.currentIndex() not in matches:
             self.tabs.setCurrentIndex(matches[0])
+        if 3 in matches and words:
+            QTimer.singleShot(0, lambda: self._scroll_advanced_search(query))
+
+    def _scroll_advanced_search(self, query: str) -> None:
+        lowered = str(query or "").casefold()
+        targets = (
+            (("저사양",), self.low_spec_mode_check),
+            (("지연",), self.list_lazy_loading_check),
+            (("스크롤",), self.list_scroll_lines_spin),
+            (("상한",), self.list_loaded_limit_spin),
+            (("페이지",), self.list_page_size_spin),
+            (("자동", "복구"), self.autosave_interval_spin),
+            (("압축", "연결", "뷰어"), self.archive_viewer_mode_combo),
+            (("이미지", "리사이즈", "제외"), self.image_resize_width_spin),
+            (("알림", "소리", "메시지"), self.notification_sound_check),
+        )
+        target = next(
+            (
+                widget
+                for words, widget in targets
+                if any(word.casefold() in lowered for word in words)
+            ),
+            None,
+        )
+        if target is not None:
+            self.advanced_scroll.ensureWidgetVisible(target, 20, 40)
 
     def state_snapshot(self) -> dict[str, Any]:
         index = self.tabs.currentIndex()
@@ -3078,6 +3150,11 @@ class SettingsDialog(QDialog):
         self.startup_recovery_check.setChecked(
             bool(values["recoverInterruptedOnStartup"])
         )
+        self.list_page_size_spin.setValue(int(values["listPageSize"]))
+        self.list_loaded_limit_spin.setValue(int(values["listLoadedLimit"]))
+        self.list_scroll_lines_spin.setValue(int(values["listScrollLines"]))
+        self.list_lazy_loading_check.setChecked(bool(values["listLazyLoading"]))
+        self.low_spec_mode_check.setChecked(bool(values["lowSpecMode"]))
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -3262,6 +3339,11 @@ class SettingsDialog(QDialog):
             "archiveViewerPath": self.archive_viewer_path_edit.text(),
             "autosaveIntervalSeconds": self.autosave_interval_spin.value(),
             "recoverInterruptedOnStartup": self.startup_recovery_check.isChecked(),
+            "listPageSize": self.list_page_size_spin.value(),
+            "listLoadedLimit": self.list_loaded_limit_spin.value(),
+            "listScrollLines": self.list_scroll_lines_spin.value(),
+            "listLazyLoading": self.list_lazy_loading_check.isChecked(),
+            "lowSpecMode": self.low_spec_mode_check.isChecked(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -3627,7 +3709,10 @@ class MainWindow(QMainWindow):
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self.jobs: dict[str, DownloadJob] = {}
         self.jobs_by_work: dict[str, DownloadJob] = {}
-        self.history_page_size = 200
+        self.list_performance_policy = list_performance_policy_snapshot(self.config)
+        self.history_page_size = int(
+            self.list_performance_policy["effective"]["pageSize"]
+        )
         self.history_loaded = 0
         self.history_total = 0
         self.history_all_total = 0
@@ -3646,6 +3731,9 @@ class MainWindow(QMainWindow):
         self.performance_benchmark_process: QProcess | HiddenProcess | None = None
         self.stability_test_process: QProcess | HiddenProcess | None = None
         self.resource_limits = resource_budget()
+        self.resource_limits["maxLoadedJobs"] = int(
+            self.list_performance_policy["effective"]["loadedLimit"]
+        )
         self.file_verify_processes: dict[str, ServiceTask] = {}
         self.image_preview_processes: dict[str, ServiceTask] = {}
         self.image_conversion_processes: dict[str, ImageConversionProcessContext] = {}
@@ -4757,7 +4845,7 @@ class MainWindow(QMainWindow):
             self.history_all_total = count_jobs()
             self.history_total = count_jobs(self.history_query, self.history_state)
             page = load_jobs_page(
-                self.history_page_size,
+                self._initial_history_load_limit(),
                 0,
                 self.history_query,
                 self.history_state,
@@ -4814,7 +4902,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         try:
             page = load_jobs_page(
-                self.history_page_size,
+                self._initial_history_load_limit(),
                 0,
                 self.history_query,
                 self.history_state,
@@ -4931,6 +5019,8 @@ class MainWindow(QMainWindow):
         }
 
     def _maybe_load_more_history(self, value: int) -> None:
+        if not self.list_performance_policy["effective"]["lazyLoading"]:
+            return
         scrollbar = self.task_list.verticalScrollBar()
         if scrollbar.maximum() <= 0 or value < scrollbar.maximum() - 24:
             return
@@ -6043,6 +6133,23 @@ class MainWindow(QMainWindow):
             "guiRunning": True,
         }
 
+    def list_performance_status_snapshot(self) -> dict[str, Any]:
+        policy = list_performance_policy_snapshot(self.config)
+        return {
+            "ok": True,
+            **policy,
+            "live": {
+                "pageSize": self.history_page_size,
+                "loadedLimit": int(self.resource_limits["maxLoadedJobs"]),
+                "loadedJobs": self.task_model.rowCount(),
+                "catalogTotal": self.history_total,
+                "lazyLoading": bool(
+                    self.list_performance_policy["effective"]["lazyLoading"]
+                ),
+                "scrollPixelStep": self.task_list.verticalScrollBar().singleStep(),
+            },
+        }
+
     def show_recovery_dialog(self) -> bool:
         result = self.recover_interrupted_records(execute=False)
         if self.active_recovery_dialog:
@@ -6377,6 +6484,16 @@ class MainWindow(QMainWindow):
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self._apply_style()
         self._apply_display_preferences(result)
+        if {
+            "listPageSize",
+            "listLoadedLimit",
+            "listScrollLines",
+            "listLazyLoading",
+            "lowSpecMode",
+        } & set(updates):
+            reload_list = getattr(self, "apply_history_filters", None)
+            if callable(reload_list):
+                QTimer.singleShot(0, reload_list)
         self._apply_keyboard_shortcuts()
         persist_timer = getattr(self, "persist_timer", None)
         if persist_timer is not None:
@@ -6483,12 +6600,26 @@ class MainWindow(QMainWindow):
             application.setFont(font)
         mode = str(values.get("listViewMode") or "list")
         size = str(values.get("thumbnailSize") or "medium")
-        visible = bool(values.get("thumbnailsVisible", True))
+        policy = list_performance_policy_snapshot(values)
+        self.list_performance_policy = policy
+        effective = policy["effective"]
+        self.history_page_size = int(effective["pageSize"])
+        self.resource_limits["maxLoadedJobs"] = int(effective["loadedLimit"])
+        visible = bool(effective["thumbnailsVisible"])
         delegate = self.task_list.itemDelegate()
         if isinstance(delegate, JobItemDelegate):
             delegate.set_view_preferences(mode, visible, size)
+            delegate.cache_limit = int(effective["thumbnailCacheEntries"])
+            while len(delegate.cover_cache) > delegate.cache_limit:
+                delegate.cover_cache.popitem(last=False)
         self.task_list.setLayoutMode(QListView.LayoutMode.Batched)
-        self.task_list.setBatchSize(100)
+        self.task_list.setBatchSize(min(100, self.history_page_size))
+        self.task_list.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.task_list.verticalScrollBar().setSingleStep(
+            int(effective["scrollLines"]) * 12
+        )
         if mode == "icon":
             dimensions = {
                 "small": QSize(112, 120),
@@ -6523,6 +6654,14 @@ class MainWindow(QMainWindow):
                 self.show()
         self.setWindowOpacity(max(0.5, min(1.0, int(values.get("windowOpacity", 100)) / 100)))
         self._rebuild_quick_action_bar(values.get("quickActions") or [])
+
+    def _initial_history_load_limit(self) -> int:
+        effective = self.list_performance_policy["effective"]
+        return (
+            int(effective["pageSize"])
+            if effective["lazyLoading"]
+            else int(effective["loadedLimit"])
+        )
 
     def _rebuild_quick_action_bar(self, action_ids: list[str]) -> None:
         if not hasattr(self, "quick_action_layout"):
@@ -8430,6 +8569,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd local inspect [--path ARCHIVE --json|--show-gui|--close]\n"
             "toki-cli.cmd archive-viewer status|set|open [options]\n"
             "toki-cli.cmd persistence status|set|recover [options]\n"
+            "toki-cli.cmd list-performance status|set [options]\n"
             "toki-cli.cmd duplicates works [--json|--show-gui|--close]\n"
             "toki-cli.cmd duplicates images --job ID [--algorithm sha256|phash --json|--show-gui|--close]\n"
             "toki-cli.cmd set-settings [--output PATH --works N --images N --show-browser on|off --row-density MODE --theme MODE]\n"
@@ -8594,13 +8734,23 @@ class MainWindow(QMainWindow):
             "settings": settings_snapshot(self.config),
             "view": {
                 "mode": str(self.config.get("listViewMode") or "list"),
-                "thumbnailsVisible": bool(self.config.get("thumbnailsVisible", True)),
+                "thumbnailsVisible": bool(
+                    self.list_performance_policy["effective"]["thumbnailsVisible"]
+                ),
+                "configuredThumbnailsVisible": bool(
+                    self.config.get("thumbnailsVisible", True)
+                ),
                 "thumbnailSize": str(self.config.get("thumbnailSize") or "medium"),
                 "alwaysOnTop": bool(self.config.get("alwaysOnTop", False)),
                 "windowOpacity": int(self.config.get("windowOpacity", 100)),
                 "loadedLimit": int(self.resource_limits["maxLoadedJobs"]),
-                "batchSize": 100,
+                "batchSize": min(100, self.history_page_size),
+                "lazyLoading": bool(
+                    self.list_performance_policy["effective"]["lazyLoading"]
+                ),
+                "lowSpecMode": bool(self.config.get("lowSpecMode", False)),
             },
+            "listPerformance": self.list_performance_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),
             "clipboard": {
@@ -9101,6 +9251,8 @@ class MainWindow(QMainWindow):
             return archive_viewer_policy_snapshot(self.config)
         if action == "persistence_status":
             return self.persistence_status_snapshot()
+        if action == "list_performance_status":
+            return self.list_performance_status_snapshot()
         if action == "recover_interrupted":
             return self.recover_interrupted_records(
                 execute=bool(request.get("execute"))

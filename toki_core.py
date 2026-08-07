@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 10
+CONFIG_SCHEMA_VERSION = 11
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -119,6 +119,11 @@ SETTING_KEYS = frozenset(
         "archiveViewerPath",
         "autosaveIntervalSeconds",
         "recoverInterruptedOnStartup",
+        "listPageSize",
+        "listLoadedLimit",
+        "listScrollLines",
+        "listLazyLoading",
+        "lowSpecMode",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -406,6 +411,11 @@ def default_config() -> dict[str, Any]:
         "archiveViewerPath": "",
         "autosaveIntervalSeconds": 1,
         "recoverInterruptedOnStartup": True,
+        "listPageSize": 200,
+        "listLoadedLimit": 2_000,
+        "listScrollLines": 3,
+        "listLazyLoading": True,
+        "lowSpecMode": False,
     }
 
 
@@ -1276,6 +1286,27 @@ def normalize_autosave_interval_seconds(value: int | None) -> int:
     return normalized
 
 
+def normalize_list_page_size(value: int | None) -> int:
+    normalized = 200 if value is None else int(value)
+    if not 25 <= normalized <= 1_000:
+        raise ValueError("목록 페이지 크기는 25~1000개여야 합니다.")
+    return normalized
+
+
+def normalize_list_loaded_limit(value: int | None) -> int:
+    normalized = 2_000 if value is None else int(value)
+    if not 100 <= normalized <= 5_000:
+        raise ValueError("메모리 내 작품 상한은 100~5000개여야 합니다.")
+    return normalized
+
+
+def normalize_list_scroll_lines(value: int | None) -> int:
+    normalized = 3 if value is None else int(value)
+    if not 1 <= normalized <= 20:
+        raise ValueError("목록 스크롤 속도는 1~20단계여야 합니다.")
+    return normalized
+
+
 def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_config()
     source = config if isinstance(config, dict) else {}
@@ -1348,6 +1379,8 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "alwaysOnTop",
         "clipboardMonitor",
         "recoverInterruptedOnStartup",
+        "listLazyLoading",
+        "lowSpecMode",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -1460,6 +1493,21 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_autosave_interval_seconds,
         source.get("autosaveIntervalSeconds"),
         defaults["autosaveIntervalSeconds"],
+    )
+    normalized["listPageSize"] = _safe_normalize(
+        normalize_list_page_size,
+        source.get("listPageSize"),
+        defaults["listPageSize"],
+    )
+    normalized["listLoadedLimit"] = _safe_normalize(
+        normalize_list_loaded_limit,
+        source.get("listLoadedLimit"),
+        defaults["listLoadedLimit"],
+    )
+    normalized["listScrollLines"] = _safe_normalize(
+        normalize_list_scroll_lines,
+        source.get("listScrollLines"),
+        defaults["listScrollLines"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -1614,6 +1662,8 @@ def validate_app_setting_updates(
         "alwaysOnTop",
         "clipboardMonitor",
         "recoverInterruptedOnStartup",
+        "listLazyLoading",
+        "lowSpecMode",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -1650,6 +1700,9 @@ def validate_app_setting_updates(
         "archiveViewerMode": normalize_archive_viewer_mode,
         "archiveViewerPath": normalize_archive_viewer_path,
         "autosaveIntervalSeconds": normalize_autosave_interval_seconds,
+        "listPageSize": normalize_list_page_size,
+        "listLoadedLimit": normalize_list_loaded_limit,
+        "listScrollLines": normalize_list_scroll_lines,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
@@ -2032,8 +2085,53 @@ def resource_budget(
         "maxIoTasks": io_threads * 4,
         "cpuProcesses": cpu_processes,
         "maxPendingDownloads": 1_000,
-        "maxLoadedJobs": 2_000,
+        "maxLoadedJobs": 5_000,
         "maxProcessOutputBytes": 2 * 1024 * 1024,
+    }
+
+
+def list_performance_policy_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    low_spec = bool(source["lowSpecMode"])
+    configured_page_size = int(source["listPageSize"])
+    configured_loaded_limit = int(source["listLoadedLimit"])
+    configured_scroll_lines = int(source["listScrollLines"])
+    configured_lazy = bool(source["listLazyLoading"])
+    return {
+        "configured": {
+            "pageSize": configured_page_size,
+            "loadedLimit": configured_loaded_limit,
+            "scrollLines": configured_scroll_lines,
+            "lazyLoading": configured_lazy,
+            "lowSpecMode": low_spec,
+        },
+        "effective": {
+            "pageSize": (
+                min(configured_page_size, 100)
+                if low_spec
+                else configured_page_size
+            ),
+            "loadedLimit": (
+                min(configured_loaded_limit, 500)
+                if low_spec
+                else configured_loaded_limit
+            ),
+            "scrollLines": (
+                min(configured_scroll_lines, 3)
+                if low_spec
+                else configured_scroll_lines
+            ),
+            "lazyLoading": True if low_spec else configured_lazy,
+            "thumbnailsVisible": (
+                False if low_spec else bool(source["thumbnailsVisible"])
+            ),
+            "thumbnailCacheEntries": 32 if low_spec else 128,
+        },
+        "databasePagination": True,
+        "visibleOnlyThumbnailDecode": True,
+        "eagerLoadingOptIn": not configured_lazy and not low_spec,
     }
 
 

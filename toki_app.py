@@ -81,6 +81,7 @@ from toki_core import (
     load_jobs_page,
     log_retention_status,
     list_job_episode_images,
+    list_performance_policy_snapshot,
     list_work_collections,
     load_run,
     load_runs_page,
@@ -612,6 +613,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     persistence_recover.add_argument("--yes", action="store_true", help="실제 복구 확인")
     persistence_recover.add_argument("--json", action="store_true", help="JSON으로 출력")
+    list_performance = subparsers.add_parser(
+        "list-performance", help="대규모 작품 목록 페이지·스크롤·지연 로딩 정책"
+    )
+    list_performance_commands = list_performance.add_subparsers(
+        dest="list_performance_command", required=True
+    )
+    list_performance_status = list_performance_commands.add_parser(
+        "status", help="현재 목록 성능 정책 조회"
+    )
+    list_performance_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    list_performance_set = list_performance_commands.add_parser(
+        "set", help="목록 성능 정책 변경"
+    )
+    list_performance_set.add_argument(
+        "--page-size", type=int, help="SQLite 페이지당 작품 수(25~1000)"
+    )
+    list_performance_set.add_argument(
+        "--loaded-limit", type=int, help="메모리 내 작품 상한(100~5000)"
+    )
+    list_performance_set.add_argument(
+        "--scroll-lines", type=int, help="휠 스크롤 속도(1~20단계)"
+    )
+    list_performance_set.add_argument(
+        "--lazy-loading", choices=("on", "off"), help="하단 도달 시 다음 페이지 로딩"
+    )
+    list_performance_set.add_argument(
+        "--low-spec", choices=("on", "off"), help="저사양 목록 프로필"
+    )
+    list_performance_set.add_argument("--json", action="store_true", help="JSON으로 출력")
     duplicates_parser = subparsers.add_parser("duplicates", help="작품·이미지 중복 검사")
     duplicates_commands = duplicates_parser.add_subparsers(
         dest="duplicates_command", required=True
@@ -1851,6 +1881,42 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"{'복구 완료' if result.get('executed') else '복구 미리보기'} | "
                 f"작품 {result.get('jobCount', 0)} | 실행 {result.get('runCount', 0)}"
             )
+        return 0 if result.get("ok", True) else 2
+    if command == "list-performance":
+        if args.list_performance_command == "status":
+            result = (
+                control_request({"action": "list_performance_status"})
+                if gui_is_running()
+                else {"ok": True, **list_performance_policy_snapshot()}
+            )
+        else:
+            updates: dict[str, Any] = {}
+            mappings = (
+                ("listPageSize", args.page_size),
+                ("listLoadedLimit", args.loaded_limit),
+                ("listScrollLines", args.scroll_lines),
+            )
+            for key, value in mappings:
+                if value is not None:
+                    updates[key] = value
+            if args.lazy_loading is not None:
+                updates["listLazyLoading"] = args.lazy_loading == "on"
+            if args.low_spec is not None:
+                updates["lowSpecMode"] = args.low_spec == "on"
+            if not updates:
+                raise ValueError(
+                    "--page-size, --loaded-limit, --scroll-lines, --lazy-loading 또는 "
+                    "--low-spec 중 하나를 지정하세요."
+                )
+            if gui_is_running():
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                result = control_request({"action": "list_performance_status"})
+            else:
+                saved = update_app_settings(updates)
+                result = {"ok": True, **list_performance_policy_snapshot(saved)}
+        print_json(result)
         return 0 if result.get("ok", True) else 2
     if command == "duplicates":
         if args.close:
