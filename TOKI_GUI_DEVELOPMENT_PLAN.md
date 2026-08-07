@@ -522,7 +522,7 @@ PyQt6, psutil, Node.js, npm, Puppeteer 및 Pillow·FFmpeg·yt-dlp·PyInstaller�
 CMD 전달 경로를 통과했으며 Python 110건을 통과했다.
 
 2026-08-07 버전·마이그레이션: 설정은 `configVersion` v1, 작업 DB는 SQLite
-`user_version` v3와 `schema_migrations` 이력으로 관리한다. 지원 버전보다 새 파일은 쓰기
+`user_version` v4와 `schema_migrations` 이력으로 관리한다. 지원 버전보다 새 파일은 쓰기
 전에 거부하고 이전 버전은 기존 파일의 SQLite 온라인 백업 또는 config 복사본을 만든 뒤
 순차 버전을 기록한다. `migrate status|apply --json`으로 같은 경로를 점검·실행하며 doctor
 GUI에도 설정·DB 현재/지원 버전을 표시한다. 실제 설정 v0→v1, DB v0→v2를 적용한 뒤 작품

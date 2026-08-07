@@ -749,6 +749,27 @@ class CoreContractTests(unittest.TestCase):
 
 
 class JobRepositoryTests(unittest.TestCase):
+    def test_integrated_search_scans_ten_thousand_records_with_bounded_page(self) -> None:
+        jobs = [
+            DownloadJob(
+                job_id=f"search-{index}",
+                url=f"https://newtoki1.org/manhwa/{50000 + index}",
+                output_dir=r"C:\Manga",
+                title=f"대량 작품 {index}",
+                author="유일작가" if index == 9876 else f"작가 {index % 100}",
+                group=f"메타그룹 {index % 20}",
+            )
+            for index in range(10_000)
+        ]
+        save_jobs(jobs)
+        started = time.perf_counter()
+        result = load_jobs_page(query="유일작가", limit=50)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+
+        self.assertEqual([job.job_id for job in result], ["search-9876"])
+        self.assertEqual(count_jobs(query="유일작가"), 1)
+        self.assertLess(elapsed_ms, 2_000)
+
     def test_work_collections_create_rename_assign_and_unassign_without_file_changes(self) -> None:
         job = DownloadJob(
             job_id="group-job",
@@ -1076,7 +1097,7 @@ class JobRepositoryTests(unittest.TestCase):
         schema = toki_core.database_schema_status(self.database_path)
         self.assertEqual(schema["version"], toki_core.JOB_DB_SCHEMA_VERSION)
         self.assertEqual(
-            [item["version"] for item in schema["migrations"]], [1, 2, 3]
+            [item["version"] for item in schema["migrations"]], [1, 2, 3, 4]
         )
         self.assertTrue(Path(schema["lastMigration"]["backupPath"]).is_file())
 
@@ -1201,7 +1222,9 @@ class JobRepositoryTests(unittest.TestCase):
                 job_id="alpha",
                 url="https://newtoki1.org/manhwa/2001",
                 output_dir=r"C:\Manga",
-                title="[작가A][그룹A] 알파 작품",
+                title="알파 작품",
+                author="작가A",
+                group="그룹A",
                 state="완료",
                 progress=100,
             ),
@@ -1209,7 +1232,9 @@ class JobRepositoryTests(unittest.TestCase):
                 job_id="beta",
                 url="https://newtoki1.org/manhwa/2002",
                 output_dir=r"C:\Manga",
-                title="[작가B][그룹B] 베타 작품",
+                title="베타 작품",
+                author="작가B",
+                group="그룹B",
                 state="오류",
                 progress=40,
             ),
@@ -1217,6 +1242,10 @@ class JobRepositoryTests(unittest.TestCase):
         save_jobs(jobs)
         self.assertEqual(count_jobs(query="작가B"), 1)
         self.assertEqual(load_jobs_page(query="그룹B")[0].job_id, "beta")
+        self.assertEqual(load_jobs_page(query="beta")[0].job_id, "beta")
+        collection = create_work_collection("보관 작품")
+        assign_job_to_collection("beta", collection["groupId"])
+        self.assertEqual(load_jobs_page(query="보관 작품")[0].job_id, "beta")
         self.assertEqual(load_jobs_page(state="완료")[0].job_id, "alpha")
         sorted_jobs = load_jobs_page(sort="progress")
         self.assertEqual([job.job_id for job in sorted_jobs], ["alpha", "beta"])

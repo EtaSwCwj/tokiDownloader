@@ -40,11 +40,12 @@ CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
 CONFIG_SCHEMA_VERSION = 1
-JOB_DB_SCHEMA_VERSION = 3
+JOB_DB_SCHEMA_VERSION = 4
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
     2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
     3: "작품 정리 그룹과 작품별 그룹 멤버십",
+    4: "작가·메타데이터 그룹·작업 ID 통합 검색 열과 인덱스",
 }
 _DATABASE_MIGRATION_REPORTS: dict[str, dict[str, Any]] = {}
 TAG_COLORS = {
@@ -1430,6 +1431,8 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
             state TEXT NOT NULL DEFAULT '',
             progress INTEGER NOT NULL DEFAULT 0,
             url TEXT NOT NULL DEFAULT '',
+            author TEXT NOT NULL DEFAULT '',
+            metadata_group TEXT NOT NULL DEFAULT '',
             pinned INTEGER NOT NULL DEFAULT 0,
             tag_color TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -1466,6 +1469,8 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
             ("state", "TEXT NOT NULL DEFAULT ''"),
             ("progress", "INTEGER NOT NULL DEFAULT 0"),
             ("url", "TEXT NOT NULL DEFAULT ''"),
+            ("author", "TEXT NOT NULL DEFAULT ''"),
+            ("metadata_group", "TEXT NOT NULL DEFAULT ''"),
             ("pinned", "INTEGER NOT NULL DEFAULT 0"),
             ("tag_color", "TEXT NOT NULL DEFAULT ''"),
         ):
@@ -1490,7 +1495,7 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
                 """
                 UPDATE jobs
                 SET work_key = ?, title = ?, state = ?, progress = ?, url = ?,
-                    pinned = ?, tag_color = ?, payload = ?
+                    author = ?, metadata_group = ?, pinned = ?, tag_color = ?, payload = ?
                 WHERE job_id = ?
                 """,
                 (
@@ -1499,6 +1504,8 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
                     str(data.get("state") or ""),
                     int(data.get("progress") or 0),
                     str(data.get("url") or ""),
+                    str(data.get("author") or ""),
+                    str(data.get("group") or ""),
                     int(bool(data.get("pinned", False))),
                     str(data.get("tag_color") or ""),
                     json.dumps(data, ensure_ascii=False),
@@ -1547,6 +1554,13 @@ def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_title ON jobs(title COLLATE NOCASE)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_author ON jobs(author COLLATE NOCASE)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_metadata_group "
+        "ON jobs(metadata_group COLLATE NOCASE)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_jobs_state_updated ON jobs(state, updated_at DESC)"
@@ -1698,6 +1712,8 @@ def save_jobs(
             job.state,
             job.progress,
             job.url,
+            job.author,
+            job.group,
             int(job.pinned),
             job.tag_color,
             job.created_at,
@@ -1712,16 +1728,19 @@ def save_jobs(
             connection.executemany(
                 """
             INSERT INTO jobs(
-                job_id, work_key, title, state, progress, url, pinned, tag_color,
+                job_id, work_key, title, state, progress, url, author, metadata_group,
+                pinned, tag_color,
                 created_at, updated_at, payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_key) DO UPDATE SET
                 job_id=excluded.job_id,
                 title=excluded.title,
                 state=excluded.state,
                 progress=excluded.progress,
                 url=excluded.url,
+                author=excluded.author,
+                metadata_group=excluded.metadata_group,
                 pinned=excluded.pinned,
                 tag_color=excluded.tag_color,
                 created_at=excluded.created_at,
@@ -1975,10 +1994,15 @@ def _job_filter_clause(query: str = "", state: str = "") -> tuple[str, list[Any]
     if clean_query:
         pattern = f"%{clean_query}%"
         clauses.append(
-            "(title LIKE ? COLLATE NOCASE OR work_key LIKE ? COLLATE NOCASE "
-            "OR url LIKE ? COLLATE NOCASE)"
+            "(title LIKE ? COLLATE NOCASE OR author LIKE ? COLLATE NOCASE "
+            "OR metadata_group LIKE ? COLLATE NOCASE OR job_id LIKE ? COLLATE NOCASE "
+            "OR work_key LIKE ? COLLATE NOCASE OR url LIKE ? COLLATE NOCASE "
+            "OR EXISTS ("
+            "SELECT 1 FROM work_collection_memberships AS m "
+            "JOIN work_collections AS c ON c.collection_id = m.collection_id "
+            "WHERE m.work_key = jobs.work_key AND c.name LIKE ? COLLATE NOCASE))"
         )
-        parameters.extend([pattern, pattern, pattern])
+        parameters.extend([pattern] * 7)
     if clean_state:
         clauses.append("state = ?")
         parameters.append(clean_state)
