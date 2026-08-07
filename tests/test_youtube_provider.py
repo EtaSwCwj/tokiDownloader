@@ -15,13 +15,18 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 25)
+        self.assertEqual(config["configVersion"], 26)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)
         self.assertEqual(policy["container"], "auto")
         self.assertFalse(policy["networkRequested"])
         self.assertFalse(policy["downloadExecuted"])
+        self.assertFalse(policy["writeThumbnail"])
+        self.assertFalse(policy["embedThumbnail"])
+        self.assertFalse(policy["writeInfoJson"])
+        self.assertFalse(policy["writeDescription"])
+        self.assertFalse(policy["embedMetadata"])
 
     def test_filename_template_is_windows_safe_and_rejects_arbitrary_expressions(self) -> None:
         preview = preview_youtube_filename(
@@ -92,6 +97,39 @@ class YouTubeProviderTests(unittest.TestCase):
         self.assertTrue(plan["requiresFfmpeg"])
         self.assertFalse(plan["networkRequested"])
 
+    def test_thumbnail_and_metadata_plan_is_explicit_private_and_chapter_independent(self) -> None:
+        plan = plan_youtube_format(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            {
+                **default_config(),
+                "youtubeWriteThumbnail": True,
+                "youtubeEmbedThumbnail": True,
+                "youtubeWriteInfoJson": True,
+                "youtubeWriteDescription": True,
+                "youtubeEmbedMetadata": True,
+            },
+        )
+        for option in (
+            "--write-thumbnail",
+            "--embed-thumbnail",
+            "--write-info-json",
+            "--clean-info-json",
+            "--no-write-comments",
+            "--write-description",
+            "--no-write-playlist-metafiles",
+            "--embed-metadata",
+            "--no-embed-chapters",
+            "--no-embed-info-json",
+        ):
+            self.assertIn(option, plan["arguments"])
+        self.assertTrue(plan["infoJsonMayContainPersonalInformation"])
+        self.assertFalse(plan["requestComments"])
+        self.assertTrue(plan["commentsMayBePresent"])
+        self.assertTrue(plan["postProcessingRequired"])
+        self.assertTrue(plan["requiresFfmpeg"])
+        self.assertFalse(plan["networkRequested"])
+        self.assertFalse(plan["downloadExecuted"])
+
     def test_invalid_urls_and_config_values_are_rejected_or_migrated(self) -> None:
         with self.assertRaises(YouTubePolicyError) as caught:
             inspect_youtube_url("https://example.com/watch?v=abc")
@@ -103,6 +141,11 @@ class YouTubeProviderTests(unittest.TestCase):
                 "youtubeContainer": "avi",
                 "youtubeVideoCodec": "mpeg2",
                 "youtubeAudioCodec": "wav",
+                "youtubeWriteThumbnail": "yes",
+                "youtubeEmbedThumbnail": 1,
+                "youtubeWriteInfoJson": [],
+                "youtubeWriteDescription": "false",
+                "youtubeEmbedMetadata": "on",
             }
         )
         defaults = default_config()
@@ -118,5 +161,10 @@ class YouTubeProviderTests(unittest.TestCase):
             "youtubeSubtitleFormat",
             "youtubeEmbedSubtitles",
             "youtubeAudioTrackMode",
+            "youtubeWriteThumbnail",
+            "youtubeEmbedThumbnail",
+            "youtubeWriteInfoJson",
+            "youtubeWriteDescription",
+            "youtubeEmbedMetadata",
         ):
             self.assertEqual(normalized[key], defaults[key])

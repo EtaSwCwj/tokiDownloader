@@ -56,6 +56,7 @@ from youtube_provider import (
     plan_youtube_format,
     preview_youtube_filename,
     youtube_format_policy_snapshot,
+    youtube_metadata_policy_snapshot,
 )
 from toki_core import (
     APP_VERSION,
@@ -989,6 +990,29 @@ def build_parser() -> argparse.ArgumentParser:
         track_command.add_argument("--embed-subtitles", choices=("on", "off"))
         track_command.add_argument("--audio-tracks", choices=YOUTUBE_AUDIO_TRACK_MODES)
         track_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_metadata = youtube_commands.add_parser(
+        "metadata", help="썸네일·설명·정보 JSON·미디어 메타데이터"
+    )
+    youtube_metadata_commands = youtube_metadata.add_subparsers(
+        dest="youtube_metadata_command", required=True
+    )
+    youtube_metadata_status = youtube_metadata_commands.add_parser(
+        "status", help="현재 썸네일·메타데이터 정책"
+    )
+    youtube_metadata_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name in ("set", "plan"):
+        metadata_command = youtube_metadata_commands.add_parser(
+            name,
+            help="썸네일·메타데이터 정책 저장" if name == "set" else "오프라인 인자 계획",
+        )
+        if name == "plan":
+            metadata_command.add_argument("--input", required=True)
+        metadata_command.add_argument("--write-thumbnail", choices=("on", "off"))
+        metadata_command.add_argument("--embed-thumbnail", choices=("on", "off"))
+        metadata_command.add_argument("--write-info-json", choices=("on", "off"))
+        metadata_command.add_argument("--write-description", choices=("on", "off"))
+        metadata_command.add_argument("--embed-metadata", choices=("on", "off"))
+        metadata_command.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2875,6 +2899,35 @@ def run_cli(args: argparse.Namespace) -> int:
             if gui_is_running()
             else settings_snapshot()
         )
+        if args.youtube_command == "metadata":
+            metadata_updates = {
+                key: value == "on"
+                for key, value in {
+                    "youtubeWriteThumbnail": args.write_thumbnail,
+                    "youtubeEmbedThumbnail": args.embed_thumbnail,
+                    "youtubeWriteInfoJson": args.write_info_json,
+                    "youtubeWriteDescription": args.write_description,
+                    "youtubeEmbedMetadata": args.embed_metadata,
+                }.items()
+                if value is not None
+            } if args.youtube_metadata_command != "status" else {}
+            if args.youtube_metadata_command == "status":
+                result = youtube_metadata_policy_snapshot(current)
+            elif args.youtube_metadata_command == "set":
+                if not metadata_updates:
+                    raise ValueError("저장할 YouTube 썸네일·메타데이터 설정을 하나 이상 지정하세요.")
+                saved = (
+                    control_request(
+                        {"action": "set_settings", "updates": metadata_updates, "reset": False}
+                    )
+                    if gui_is_running()
+                    else update_app_settings(metadata_updates)
+                )
+                result = {"saved": True, **youtube_metadata_policy_snapshot(saved)}
+            else:
+                result = plan_youtube_format(args.input, {**current, **metadata_updates})
+            print_json(result)
+            return 0
         if args.youtube_command == "tracks":
             track_updates = {
                 key: value

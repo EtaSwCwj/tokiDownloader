@@ -167,6 +167,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd youtube tracks status --json
 .\toki-cli.cmd youtube tracks set --languages ko,en,ja --subtitles manual_auto --subtitle-format srt --embed-subtitles on --audio-tracks all --json
 .\toki-cli.cmd youtube tracks plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
+.\toki-cli.cmd youtube metadata status --json
+.\toki-cli.cmd youtube metadata set --write-thumbnail on --embed-thumbnail on --write-info-json on --write-description on --embed-metadata on --json
+.\toki-cli.cmd youtube metadata plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -863,6 +866,17 @@ YouTube 언어·자막·오디오 정책의 기본값은 선호 언어 `ko,en,ja
 정책을 사용하고 `plan`은 URL과 실행 예정 인자만 오프라인으로 계산합니다. 실제 네트워크
 요청과 YouTube 다운로드 실행은 아직 활성화하지 않았습니다. 화면은
 `logs\youtube-language-subtitle-audio.png`에 있습니다.
+
+YouTube 썸네일·메타데이터 부가 산출물은 기본적으로 모두 꺼져 있습니다. 필요할 때 대표
+썸네일 파일 저장, 미디어 표지 포함, 정리된 `.info.json`, `.description`, 제목·업로더 등의
+미디어 태그 포함을 각각 켤 수 있습니다. 정보 JSON에는 개인 정보가 포함될 수 있으므로
+`--clean-info-json`과 `--no-write-comments`를 명시하고 별도 댓글 수집은 요청하지 않지만,
+추출기가 즉시 제공하는 댓글은 남을 수 있습니다. 영상별 산출물만 예측 가능하게 만들도록
+재생목록 메타파일은 쓰지 않습니다. 미디어 태그 포함은 다음 단계의 챕터·infojson 첨부와
+섞이지 않도록 `--no-embed-chapters`, `--no-embed-info-json`도 명시합니다. 포함 작업은
+후처리가 필요하며 현재 계획에서는 FFmpeg 필요로 표시합니다. `youtube metadata
+status|set|plan`과 GUI가 같은 정책을 사용하고 `plan`은 외부 요청 없이 인자만 계산합니다.
+화면은 `logs\youtube-thumbnail-metadata.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

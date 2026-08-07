@@ -131,6 +131,48 @@ def normalize_youtube_audio_track_mode(value: Any) -> str:
     return _normalize_choice(value, YOUTUBE_AUDIO_TRACK_MODES, "YouTube 오디오 트랙 방식")
 
 
+def _normalize_youtube_boolean(value: Any, label: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{label}은(는) true 또는 false여야 합니다.")
+    return value
+
+
+def youtube_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = config if isinstance(config, dict) else {}
+    write_thumbnail = _normalize_youtube_boolean(
+        source.get("youtubeWriteThumbnail"), "YouTube 썸네일 파일 저장"
+    )
+    embed_thumbnail = _normalize_youtube_boolean(
+        source.get("youtubeEmbedThumbnail"), "YouTube 썸네일 포함"
+    )
+    write_info_json = _normalize_youtube_boolean(
+        source.get("youtubeWriteInfoJson"), "YouTube 정보 JSON 저장"
+    )
+    write_description = _normalize_youtube_boolean(
+        source.get("youtubeWriteDescription"), "YouTube 설명 파일 저장"
+    )
+    embed_metadata = _normalize_youtube_boolean(
+        source.get("youtubeEmbedMetadata"), "YouTube 미디어 메타데이터 포함"
+    )
+    return {
+        "ok": True,
+        "writeThumbnail": write_thumbnail,
+        "embedThumbnail": embed_thumbnail,
+        "writeInfoJson": write_info_json,
+        "writeDescription": write_description,
+        "embedMetadata": embed_metadata,
+        "cleanInfoJson": True,
+        "requestComments": False,
+        "commentsMayBePresent": write_info_json,
+        "writePlaylistMetafiles": False,
+        "infoJsonMayContainPersonalInformation": write_info_json,
+        "networkRequested": False,
+        "downloadExecuted": False,
+    }
+
+
 def preview_youtube_filename(
     template: str,
     metadata: dict[str, Any] | None = None,
@@ -204,6 +246,7 @@ def inspect_youtube_url(url: str) -> dict[str, Any]:
 
 def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
+    metadata_policy = youtube_metadata_policy_snapshot(source)
     return {
         "ok": True,
         "mode": normalize_youtube_format_mode(source.get("youtubeFormatMode")),
@@ -223,10 +266,24 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
         "subtitleFormat": normalize_youtube_subtitle_format(
             source.get("youtubeSubtitleFormat", "best")
         ),
-        "embedSubtitles": bool(source.get("youtubeEmbedSubtitles", False)),
+        "embedSubtitles": _normalize_youtube_boolean(
+            source.get("youtubeEmbedSubtitles"), "YouTube 자막 포함"
+        ),
         "audioTrackMode": normalize_youtube_audio_track_mode(
             source.get("youtubeAudioTrackMode", "preferred_single")
         ),
+        "writeThumbnail": metadata_policy["writeThumbnail"],
+        "embedThumbnail": metadata_policy["embedThumbnail"],
+        "writeInfoJson": metadata_policy["writeInfoJson"],
+        "writeDescription": metadata_policy["writeDescription"],
+        "embedMetadata": metadata_policy["embedMetadata"],
+        "cleanInfoJson": metadata_policy["cleanInfoJson"],
+        "requestComments": metadata_policy["requestComments"],
+        "commentsMayBePresent": metadata_policy["commentsMayBePresent"],
+        "writePlaylistMetafiles": metadata_policy["writePlaylistMetafiles"],
+        "infoJsonMayContainPersonalInformation": metadata_policy[
+            "infoJsonMayContainPersonalInformation"
+        ],
         "codecSelection": "preference_with_fallback",
         "networkRequested": False,
         "downloadExecuted": False,
@@ -280,6 +337,25 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         if policy["embedSubtitles"]:
             arguments.append("--embed-subs")
             requires_ffmpeg = True
+    sidecar_metadata = (
+        policy["writeThumbnail"]
+        or policy["writeInfoJson"]
+        or policy["writeDescription"]
+    )
+    if policy["writeThumbnail"]:
+        arguments.append("--write-thumbnail")
+    if policy["embedThumbnail"]:
+        arguments.append("--embed-thumbnail")
+        requires_ffmpeg = True
+    if policy["writeInfoJson"]:
+        arguments.extend(("--write-info-json", "--clean-info-json", "--no-write-comments"))
+    if policy["writeDescription"]:
+        arguments.append("--write-description")
+    if sidecar_metadata:
+        arguments.append("--no-write-playlist-metafiles")
+    if policy["embedMetadata"]:
+        arguments.extend(("--embed-metadata", "--no-embed-chapters", "--no-embed-info-json"))
+        requires_ffmpeg = True
     if policy["container"] != "auto" and policy["mode"] != "audio_only":
         arguments.extend(("--merge-output-format", policy["container"]))
         arguments.extend(("--remux-video", policy["container"]))
@@ -294,6 +370,9 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
         "arguments": arguments,
         "requiresYtDlp": True,
         "requiresFfmpeg": requires_ffmpeg,
+        "postProcessingRequired": bool(
+            policy["embedThumbnail"] or policy["embedMetadata"]
+        ),
         "externalRequestRequiresConfirmation": True,
         "networkRequested": False,
         "downloadExecuted": False,

@@ -750,6 +750,7 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertEqual(SettingsDialog.matching_tab_indexes("프록시 속도 공급자"), [1])
         self.assertEqual(SettingsDialog.matching_tab_indexes("yt-dlp"), [4])
         self.assertEqual(SettingsDialog.matching_tab_indexes("비디오 코덱"), [4])
+        self.assertEqual(SettingsDialog.matching_tab_indexes("썸네일 정보 json"), [4])
         self.assertEqual(
             SettingsDialog.matching_tab_indexes("서버 자동 수동 우선순위"), [4]
         )

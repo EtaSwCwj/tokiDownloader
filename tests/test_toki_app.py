@@ -1185,6 +1185,39 @@ class CliParserTests(unittest.TestCase):
         self.assertIn("--embed-subs", payload["arguments"])
         self.assertFalse(payload["downloadExecuted"])
 
+        metadata = build_parser().parse_args(
+            [
+                "youtube", "metadata", "plan", "--input",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "--write-thumbnail", "on", "--embed-thumbnail", "on",
+                "--write-info-json", "on", "--write-description", "on",
+                "--embed-metadata", "on", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(metadata), 0)
+        payload = json.loads(output.getvalue())
+        self.assertIn("--write-info-json", payload["arguments"])
+        self.assertIn("--embed-thumbnail", payload["arguments"])
+        self.assertIn("--no-embed-chapters", payload["arguments"])
+        self.assertFalse(payload["downloadExecuted"])
+
+        metadata_set = build_parser().parse_args(
+            ["youtube", "metadata", "set", "--write-thumbnail", "on", "--json"]
+        )
+        expected = {**default_config(), "youtubeWriteThumbnail": True}
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value=expected) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(metadata_set), 0)
+        update.assert_called_once_with({"youtubeWriteThumbnail": True})
+
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (
