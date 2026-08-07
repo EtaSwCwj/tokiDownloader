@@ -161,6 +161,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd youtube format status --json
 .\toki-cli.cmd youtube format set --mode video_audio --max-height 1080 --container mp4 --video-codec h264 --audio-codec aac --json
 .\toki-cli.cmd youtube format plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
+.\toki-cli.cmd youtube filename status --json
+.\toki-cli.cmd youtube filename set --template "%(upload_date)s - %(title)s [%(id)s].%(ext)s" --json
+.\toki-cli.cmd youtube filename preview --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -841,6 +844,12 @@ GUI 설정을 켜 로컬 픽스처의 `日本語タイトル` 선택을 확인�
 은 HTTPS YouTube 주소와 동영상/재생목록 ID를 로컬에서만 검사하고 실행 예정 인자를 보여줄
 뿐 외부 요청이나 다운로드를 하지 않습니다. 실제 YouTube 다운로드 실행은 아직 활성화하지
 않았습니다. 화면은 `logs\youtube-format-settings.png`에 있습니다.
+
+YouTube 파일명은 기본 `%(title)s [%(id)s].%(ext)s`이며 `title`, `id`, `uploader`, `channel`,
+`upload_date`, `playlist`, `playlist_index`, `ext` 변수만 허용합니다. 경로 구분자, Windows 금지
+문자, 임의 yt-dlp 표현식은 저장 전에 거부하고 `youtube filename preview`와 GUI가 같은 한글
+예시 파일명을 오프라인으로 보여줍니다. `%(ext)s`와 제목 또는 ID가 반드시 포함되어야 하므로
+확장자와 작품 식별자를 잃지 않습니다. 화면은 `logs\youtube-filename-template.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

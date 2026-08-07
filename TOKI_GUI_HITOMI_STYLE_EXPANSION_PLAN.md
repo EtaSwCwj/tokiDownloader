@@ -666,7 +666,7 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 
 - [x] `yt-dlp`와 FFmpeg 설치 검사
 - [x] 형식, 해상도, 비디오·오디오 코덱
-- [ ] 파일명 템플릿
+- [x] 파일명 템플릿
 - [ ] 선호 언어, 자막, 오디오 트랙
 - [ ] 썸네일과 메타데이터
 - [ ] 채널/재생목록 순서
@@ -687,6 +687,14 @@ YouTube 공급자는 별도 optional dependency이며 기본 toki 설치와 테�
 실행하지 않는다. 영상 URL은 `--no-playlist`, 재생목록 전용 URL은 `--yes-playlist`를 명시해
 의도하지 않은 범위 확장을 막는다. GUI 검증 화면은 `logs/youtube-format-settings.png`에
 보존했다. Python 238건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
+
+2026-08-07 YouTube 파일명 템플릿 구현: 설정 스키마 v24에 기본
+`%(title)s [%(id)s].%(ext)s`를 추가하고 title/id/uploader/channel/upload_date/playlist/
+playlist_index/ext만 허용했다. 경로 구분자·Windows 금지 문자·임의 yt-dlp 표현식을 거부하고
+확장자와 제목 또는 ID가 빠진 템플릿도 저장하지 않는다. `youtube filename status|set|preview`,
+형식 계획의 `--output`, GUI 편집기·즉시 한글 미리보기가 같은 서비스를 사용하며 외부 요청과
+파일 생성은 없다. 화면은 `logs/youtube-filename-template.png`에 보존했다.
+Python 239건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ## 6. 기능별 안전 경계
 

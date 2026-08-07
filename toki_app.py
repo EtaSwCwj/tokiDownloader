@@ -51,6 +51,7 @@ from youtube_provider import (
     YOUTUBE_VIDEO_CODECS,
     YouTubePolicyError,
     plan_youtube_format,
+    preview_youtube_filename,
     youtube_format_policy_snapshot,
 )
 from toki_core import (
@@ -959,6 +960,18 @@ def build_parser() -> argparse.ArgumentParser:
         youtube_format_command.add_argument("--video-codec", choices=YOUTUBE_VIDEO_CODECS)
         youtube_format_command.add_argument("--audio-codec", choices=YOUTUBE_AUDIO_CODECS)
         youtube_format_command.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_filename = youtube_commands.add_parser("filename", help="안전한 출력 파일명 템플릿")
+    youtube_filename_commands = youtube_filename.add_subparsers(
+        dest="youtube_filename_command", required=True
+    )
+    youtube_filename_status = youtube_filename_commands.add_parser("status", help="현재 템플릿 조회")
+    youtube_filename_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_filename_set = youtube_filename_commands.add_parser("set", help="템플릿 저장")
+    youtube_filename_set.add_argument("--template", required=True)
+    youtube_filename_set.add_argument("--json", action="store_true", help="JSON으로 출력")
+    youtube_filename_preview = youtube_filename_commands.add_parser("preview", help="오프라인 예시 파일명")
+    youtube_filename_preview.add_argument("--template")
+    youtube_filename_preview.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2845,6 +2858,32 @@ def run_cli(args: argparse.Namespace) -> int:
             if gui_is_running()
             else settings_snapshot()
         )
+        if args.youtube_command == "filename":
+            template = (
+                args.template
+                if getattr(args, "template", None) is not None
+                else current["youtubeFilenameTemplate"]
+            )
+            if args.youtube_filename_command == "set":
+                saved = (
+                    control_request(
+                        {
+                            "action": "set_settings",
+                            "updates": {"youtubeFilenameTemplate": template},
+                            "reset": False,
+                        }
+                    )
+                    if gui_is_running()
+                    else update_app_settings({"youtubeFilenameTemplate": template})
+                )
+                result = {
+                    "saved": True,
+                    **preview_youtube_filename(saved["youtubeFilenameTemplate"]),
+                }
+            else:
+                result = preview_youtube_filename(template)
+            print_json(result)
+            return 0
         updates = {
             key: value
             for key, value in {

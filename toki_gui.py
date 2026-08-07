@@ -126,6 +126,7 @@ from youtube_provider import (
     YOUTUBE_MAX_HEIGHTS,
     YOUTUBE_VIDEO_CODECS,
     youtube_format_policy_snapshot,
+    preview_youtube_filename,
 )
 
 
@@ -3993,6 +3994,18 @@ class SettingsDialog(QDialog):
             "CLI: youtube format set --audio-codec auto|aac|opus --json"
         )
         provider_form.addRow("오디오 코덱 선호", self.youtube_audio_codec_combo)
+        self.youtube_filename_template_edit = QLineEdit()
+        self.youtube_filename_template_edit.setToolTip(
+            "CLI: youtube filename set --template TEMPLATE --json"
+        )
+        self.youtube_filename_preview_label = QLabel("")
+        self.youtube_filename_preview_label.setObjectName("mutedLabel")
+        self.youtube_filename_preview_label.setWordWrap(True)
+        self.youtube_filename_template_edit.textChanged.connect(
+            self._update_youtube_filename_preview
+        )
+        provider_form.addRow("파일명 템플릿", self.youtube_filename_template_edit)
+        provider_form.addRow("파일명 미리보기", self.youtube_filename_preview_label)
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
@@ -4087,13 +4100,29 @@ class SettingsDialog(QDialog):
 
     def _scroll_provider_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
-        if any(
+        if "파일명" in lowered:
+            self.provider_scroll.ensureWidgetVisible(
+                self.youtube_filename_template_edit, 20, 40
+            )
+        elif any(
             word in lowered
             for word in ("youtube", "yt-dlp", "ffmpeg", "형식", "해상도", "코덱", "컨테이너")
         ):
             self.provider_scroll.ensureWidgetVisible(
                 self.youtube_audio_codec_combo, 20, 40
             )
+
+    def _youtube_filename_preview_snapshot(self) -> dict[str, Any]:
+        try:
+            return preview_youtube_filename(self.youtube_filename_template_edit.text())
+        except ValueError as error:
+            return {"ok": False, "error": str(error), "networkRequested": False}
+
+    def _update_youtube_filename_preview(self, _value: str = "") -> None:
+        preview = self._youtube_filename_preview_snapshot()
+        self.youtube_filename_preview_label.setText(
+            preview.get("preview") if preview.get("ok") else f"사용할 수 없음: {preview['error']}"
+        )
 
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
@@ -4199,6 +4228,7 @@ class SettingsDialog(QDialog):
                 "audioCodec": str(self.youtube_audio_codec_combo.currentData() or "auto"),
                 "networkRequested": False,
             },
+            "youtubeFilename": self._youtube_filename_preview_snapshot(),
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -4314,6 +4344,9 @@ class SettingsDialog(QDialog):
             (self.youtube_audio_codec_combo, values["youtubeAudioCodec"]),
         ):
             combo.setCurrentIndex(max(0, combo.findData(value)))
+        self.youtube_filename_template_edit.setText(
+            str(values["youtubeFilenameTemplate"])
+        )
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -4564,6 +4597,7 @@ class SettingsDialog(QDialog):
             "youtubeContainer": str(self.youtube_container_combo.currentData()),
             "youtubeVideoCodec": str(self.youtube_video_codec_combo.currentData()),
             "youtubeAudioCodec": str(self.youtube_audio_codec_combo.currentData()),
+            "youtubeFilenameTemplate": self.youtube_filename_template_edit.text(),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),

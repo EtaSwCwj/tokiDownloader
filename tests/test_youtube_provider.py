@@ -7,6 +7,7 @@ from youtube_provider import (
     YouTubePolicyError,
     inspect_youtube_url,
     plan_youtube_format,
+    preview_youtube_filename,
     youtube_format_policy_snapshot,
 )
 
@@ -14,13 +15,25 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 23)
+        self.assertEqual(config["configVersion"], 24)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)
         self.assertEqual(policy["container"], "auto")
         self.assertFalse(policy["networkRequested"])
         self.assertFalse(policy["downloadExecuted"])
+
+    def test_filename_template_is_windows_safe_and_rejects_arbitrary_expressions(self) -> None:
+        preview = preview_youtube_filename(
+            "%(upload_date)s - %(title)s [%(id)s].%(ext)s",
+            {"title": "제목: 테스트", "upload_date": "20260807"},
+        )
+        self.assertEqual(preview["preview"], "20260807 - 제목_ 테스트 [dQw4w9WgXcQ].mp4")
+        self.assertFalse(preview["networkRequested"])
+        with self.assertRaisesRegex(ValueError, "지원하지 않는"):
+            preview_youtube_filename("%(title)s/%(filepath)s.%(ext)s")
+        with self.assertRaisesRegex(ValueError, "필요"):
+            preview_youtube_filename("고정 이름.mp4")
 
     def test_plan_builds_bounded_resolution_and_codec_preferences(self) -> None:
         config = {
@@ -79,5 +92,6 @@ class YouTubeProviderTests(unittest.TestCase):
             "youtubeContainer",
             "youtubeVideoCodec",
             "youtubeAudioCodec",
+            "youtubeFilenameTemplate",
         ):
             self.assertEqual(normalized[key], defaults[key])

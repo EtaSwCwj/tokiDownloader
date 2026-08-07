@@ -1147,6 +1147,23 @@ class CliParserTests(unittest.TestCase):
         ):
             self.assertEqual(run_cli(set_args), 0)
         update.assert_called_once_with({"youtubeFormatMode": "audio_only"})
+
+        filename = build_parser().parse_args(
+            [
+                "youtube", "filename", "preview",
+                "--template", "%(upload_date)s - %(title)s [%(id)s].%(ext)s", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(filename), 0)
+        self.assertEqual(
+            json.loads(output.getvalue())["preview"],
+            "20260807 - 영상 제목 [dQw4w9WgXcQ].mp4",
+        )
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (

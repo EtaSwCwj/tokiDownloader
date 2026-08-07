@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -25,6 +26,12 @@ _VIDEO_CODEC_SORT = {
     "av1": "vcodec:av01",
 }
 _AUDIO_CODEC_SORT = {"aac": "acodec:aac", "opus": "acodec:opus"}
+YOUTUBE_FILENAME_FIELDS = frozenset(
+    {"title", "id", "uploader", "channel", "upload_date", "playlist", "playlist_index", "ext"}
+)
+DEFAULT_YOUTUBE_FILENAME_TEMPLATE = "%(title)s [%(id)s].%(ext)s"
+_YOUTUBE_TEMPLATE_FIELD = re.compile(r"%\(([a-z_]+)\)s")
+_WINDOWS_FILENAME_INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 class YouTubePolicyError(ValueError):
@@ -69,6 +76,59 @@ def normalize_youtube_video_codec(value: Any) -> str:
 
 def normalize_youtube_audio_codec(value: Any) -> str:
     return _normalize_choice(value, YOUTUBE_AUDIO_CODECS, "YouTube 오디오 코덱")
+
+
+def normalize_youtube_filename_template(value: Any) -> str:
+    template = str(value or "").strip()
+    if not template:
+        raise ValueError("YouTube 파일명 템플릿을 입력해주세요.")
+    if len(template) > 240:
+        raise ValueError("YouTube 파일명 템플릿은 240자 이하여야 합니다.")
+    fields = _YOUTUBE_TEMPLATE_FIELD.findall(template)
+    unknown = sorted(set(fields) - YOUTUBE_FILENAME_FIELDS)
+    if unknown:
+        raise ValueError(f"지원하지 않는 YouTube 파일명 변수입니다: {', '.join(unknown)}")
+    literal = _YOUTUBE_TEMPLATE_FIELD.sub("", template)
+    if "%" in literal:
+        raise ValueError("지원하지 않는 yt-dlp 파일명 표현식이 있습니다.")
+    if _WINDOWS_FILENAME_INVALID.search(literal):
+        raise ValueError("YouTube 파일명 템플릿에 Windows 금지 문자를 사용할 수 없습니다.")
+    if "ext" not in fields or not ({"title", "id"} & set(fields)):
+        raise ValueError("YouTube 파일명에는 %(ext)s와 %(title)s 또는 %(id)s가 필요합니다.")
+    return template
+
+
+def preview_youtube_filename(
+    template: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_youtube_filename_template(template)
+    source = {
+        "title": "영상 제목",
+        "id": "dQw4w9WgXcQ",
+        "uploader": "업로더",
+        "channel": "채널",
+        "upload_date": "20260807",
+        "playlist": "재생목록",
+        "playlist_index": "001",
+        "ext": "mp4",
+        **(metadata if isinstance(metadata, dict) else {}),
+    }
+    rendered = _YOUTUBE_TEMPLATE_FIELD.sub(
+        lambda match: str(source.get(match.group(1)) or "미상"), normalized
+    ).strip().rstrip(". ")
+    rendered = _WINDOWS_FILENAME_INVALID.sub("_", rendered)
+    if not rendered:
+        raise ValueError("YouTube 파일명 미리보기 결과가 비어 있습니다.")
+    return {
+        "ok": True,
+        "template": normalized,
+        "preview": rendered,
+        "fields": _YOUTUBE_TEMPLATE_FIELD.findall(normalized),
+        "windowsSafe": True,
+        "networkRequested": False,
+        "downloadExecuted": False,
+    }
 
 
 def inspect_youtube_url(url: str) -> dict[str, Any]:
@@ -118,6 +178,9 @@ def youtube_format_policy_snapshot(config: dict[str, Any] | None = None) -> dict
         "container": normalize_youtube_container(source.get("youtubeContainer")),
         "videoCodec": normalize_youtube_video_codec(source.get("youtubeVideoCodec")),
         "audioCodec": normalize_youtube_audio_codec(source.get("youtubeAudioCodec")),
+        "filenameTemplate": normalize_youtube_filename_template(
+            source.get("youtubeFilenameTemplate", DEFAULT_YOUTUBE_FILENAME_TEMPLATE)
+        ),
         "codecSelection": "preference_with_fallback",
         "networkRequested": False,
         "downloadExecuted": False,
@@ -144,7 +207,13 @@ def plan_youtube_format(url: str, config: dict[str, Any] | None = None) -> dict[
     if policy["audioCodec"] != "auto" and policy["mode"] != "video_only":
         format_sort.append(_AUDIO_CODEC_SORT[policy["audioCodec"]])
     playlist_switch = "--no-playlist" if reference["videoId"] else "--yes-playlist"
-    arguments = [playlist_switch, "--format", selector]
+    arguments = [
+        playlist_switch,
+        "--format",
+        selector,
+        "--output",
+        policy["filenameTemplate"],
+    ]
     if format_sort:
         arguments.extend(("--format-sort", ",".join(format_sort)))
     requires_ffmpeg = policy["mode"] == "video_audio"
