@@ -37,6 +37,13 @@ from hitomi_provider import (
     normalize_hitomi_server_mode,
     normalize_hitomi_server_priority,
 )
+from youtube_provider import (
+    normalize_youtube_audio_codec,
+    normalize_youtube_container,
+    normalize_youtube_format_mode,
+    normalize_youtube_max_height,
+    normalize_youtube_video_codec,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -55,7 +62,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 22
+CONFIG_SCHEMA_VERSION = 23
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -197,6 +204,11 @@ SETTING_KEYS = frozenset(
         "hitomiPreferJapaneseTitle",
         "hitomiMetadataFileMode",
         "hitomiUseOriginalImages",
+        "youtubeFormatMode",
+        "youtubeMaxHeight",
+        "youtubeContainer",
+        "youtubeVideoCodec",
+        "youtubeAudioCodec",
     }
 )
 _LOG_MAX_BYTES = 2 * 1024 * 1024
@@ -503,6 +515,11 @@ def default_config() -> dict[str, Any]:
         "hitomiPreferJapaneseTitle": False,
         "hitomiMetadataFileMode": "metadata_json",
         "hitomiUseOriginalImages": True,
+        "youtubeFormatMode": "video_audio",
+        "youtubeMaxHeight": 0,
+        "youtubeContainer": "auto",
+        "youtubeVideoCodec": "auto",
+        "youtubeAudioCodec": "auto",
     }
 
 
@@ -1802,6 +1819,31 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("hitomiMetadataFileMode"),
         defaults["hitomiMetadataFileMode"],
     )
+    normalized["youtubeFormatMode"] = _safe_normalize(
+        normalize_youtube_format_mode,
+        source.get("youtubeFormatMode"),
+        defaults["youtubeFormatMode"],
+    )
+    normalized["youtubeMaxHeight"] = _safe_normalize(
+        normalize_youtube_max_height,
+        source.get("youtubeMaxHeight"),
+        defaults["youtubeMaxHeight"],
+    )
+    normalized["youtubeContainer"] = _safe_normalize(
+        normalize_youtube_container,
+        source.get("youtubeContainer"),
+        defaults["youtubeContainer"],
+    )
+    normalized["youtubeVideoCodec"] = _safe_normalize(
+        normalize_youtube_video_codec,
+        source.get("youtubeVideoCodec"),
+        defaults["youtubeVideoCodec"],
+    )
+    normalized["youtubeAudioCodec"] = _safe_normalize(
+        normalize_youtube_audio_codec,
+        source.get("youtubeAudioCodec"),
+        defaults["youtubeAudioCodec"],
+    )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
     return normalized
@@ -2010,6 +2052,11 @@ def validate_app_setting_updates(
         "hitomiFilenameMode": normalize_hitomi_filename_mode,
         "hitomiExcludedTags": normalize_hitomi_excluded_tags,
         "hitomiMetadataFileMode": normalize_hitomi_metadata_file_mode,
+        "youtubeFormatMode": normalize_youtube_format_mode,
+        "youtubeMaxHeight": normalize_youtube_max_height,
+        "youtubeContainer": normalize_youtube_container,
+        "youtubeVideoCodec": normalize_youtube_video_codec,
+        "youtubeAudioCodec": normalize_youtube_audio_codec,
     }
     for key, normalizer in normalizers.items():
         if key in updates:

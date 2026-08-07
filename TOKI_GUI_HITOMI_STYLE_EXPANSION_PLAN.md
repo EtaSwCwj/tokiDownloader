@@ -665,7 +665,7 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 ### 단계 H. YouTube 선택형 공급자
 
 - [x] `yt-dlp`와 FFmpeg 설치 검사
-- [ ] 형식, 해상도, 비디오·오디오 코덱
+- [x] 형식, 해상도, 비디오·오디오 코덱
 - [ ] 파일명 템플릿
 - [ ] 선호 언어, 자막, 오디오 트랙
 - [ ] 썸네일과 메타데이터
@@ -676,6 +676,17 @@ Python 233건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했�
 
 YouTube 공급자는 별도 optional dependency이며 기본 toki 설치와 테스트를 느리게 만들지
 않는다. 사용자는 다운로드 권한이 있는 콘텐츠만 대상으로 해야 한다.
+
+2026-08-07 YouTube 형식 정책 구현: 설정 스키마 v23에 영상+오디오, 영상만, 오디오만 방식과
+최고 화질/2160p~144p 상한, 자동/MP4/MKV/WebM 컨테이너, 자동/H.264/H.265/VP9/AV1 비디오
+코덱 선호, 자동/AAC/Opus 오디오 코덱 선호를 추가했다. 코덱은 사용 가능한 형식을 배제하는
+고정 필터가 아니라 yt-dlp 공식 `--format-sort`의 선호+폴백으로 계산하며, 해상도는 알 수 없는
+높이도 허용하는 `height<=?N` 선택자를 쓴다. `youtube format status|set|plan`과 공급자 설정이
+같은 공용 정책을 사용하고 `plan`은 YouTube URL만 오프라인 검증해 `--format`,
+`--merge-output-format`, `--remux-video` 인자를 반환할 뿐 yt-dlp·FFmpeg·네트워크·다운로드를
+실행하지 않는다. 영상 URL은 `--no-playlist`, 재생목록 전용 URL은 `--yes-playlist`를 명시해
+의도하지 않은 범위 확장을 막는다. GUI 검증 화면은 `logs/youtube-format-settings.png`에
+보존했다. Python 238건, Node 16건, 자체 점검 6/6과 필수 환경 5/5를 통과했다.
 
 ## 6. 기능별 안전 경계
 

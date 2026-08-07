@@ -158,6 +158,9 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi images set --original on --json
 .\toki-cli.cmd hitomi images plan --input "1234567" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --original off --json
 .\toki-cli.cmd hitomi close --json
+.\toki-cli.cmd youtube format status --json
+.\toki-cli.cmd youtube format set --mode video_audio --max-height 1080 --container mp4 --video-codec h264 --audio-codec aac --json
+.\toki-cli.cmd youtube format plan --input "https://www.youtube.com/watch?v=VIDEO_ID" --json
 .\toki-cli.cmd sleep-prevention status --json
 .\toki-cli.cmd sleep-prevention set --state on --json
 .\toki-cli.cmd sleep-prevention plan --active-downloads 2 --json
@@ -828,6 +831,16 @@ GUI 설정을 켜 로컬 픽스처의 `日本語タイトル` 선택을 확인�
 사용합니다. 로컬 픽스처에서 WebP·AVIF 두 장 선택을 확인하고 기본 원본 사용으로 복원했으며,
 실제 이미지 URL 요청이나 다운로드는 수행하지 않았습니다. 화면은
 `logs\hitomi-original-image-settings.png`, `logs\hitomi-optimized-image-plan.png`에 있습니다.
+
+설정 스키마 v23은 YouTube 선택 공급자의 형식 정책을 저장합니다. 형식은 영상+오디오,
+영상만, 오디오만이고 해상도는 최고 화질 또는 2160p~144p 상한을 선택합니다. 컨테이너는
+자동/MP4/MKV/WebM, 비디오 코덱은 자동/H.264/H.265/VP9/AV1, 오디오 코덱은 자동/AAC/Opus를
+지원합니다. 코덱 선택은 해당 형식만 강제해 실패시키는 필터가 아니라 yt-dlp의
+`--format-sort` 선호+폴백이며, 지정 컨테이너는 병합·리먹스가 필요하므로 FFmpeg가 필요합니다.
+`youtube format status|set|plan`과 공급자 설정 탭이 같은 정책을 사용합니다. `plan --input URL`
+은 HTTPS YouTube 주소와 동영상/재생목록 ID를 로컬에서만 검사하고 실행 예정 인자를 보여줄
+뿐 외부 요청이나 다운로드를 하지 않습니다. 실제 YouTube 다운로드 실행은 아직 활성화하지
+않았습니다. 화면은 `logs\youtube-format-settings.png`에 있습니다.
 
 다운로드 중 절전 방지는 기본적으로 꺼져 있습니다. 고급 설정 또는 `sleep-prevention set
 --state on`으로 켜면 실제 다운로드 프로세스가 실행되는 동안에만 Windows

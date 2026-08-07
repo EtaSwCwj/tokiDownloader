@@ -43,6 +43,16 @@ from hitomi_provider import (
     select_hitomi_display_title,
     write_hitomi_metadata_files,
 )
+from youtube_provider import (
+    YOUTUBE_AUDIO_CODECS,
+    YOUTUBE_CONTAINERS,
+    YOUTUBE_FORMAT_MODES,
+    YOUTUBE_MAX_HEIGHTS,
+    YOUTUBE_VIDEO_CODECS,
+    YouTubePolicyError,
+    plan_youtube_format,
+    youtube_format_policy_snapshot,
+)
 from toki_core import (
     APP_VERSION,
     COOKIE_PROVIDERS,
@@ -928,6 +938,27 @@ def build_parser() -> argparse.ArgumentParser:
         "close", help="열린 메타데이터 대화상자 닫기"
     )
     hitomi_metadata_close.add_argument("--json", action="store_true", help="JSON으로 출력")
+
+    youtube = subparsers.add_parser("youtube", help="YouTube 선택 공급자 정책과 오프라인 계획")
+    youtube_commands = youtube.add_subparsers(dest="youtube_command", required=True)
+    youtube_format = youtube_commands.add_parser("format", help="형식·해상도·코덱 정책")
+    youtube_format_commands = youtube_format.add_subparsers(
+        dest="youtube_format_command", required=True
+    )
+    youtube_format_status = youtube_format_commands.add_parser("status", help="현재 정책 조회")
+    youtube_format_status.add_argument("--json", action="store_true", help="JSON으로 출력")
+    for name, help_text in (("set", "형식 정책 저장"), ("plan", "외부 요청 없이 yt-dlp 인자 계산")):
+        youtube_format_command = youtube_format_commands.add_parser(name, help=help_text)
+        if name == "plan":
+            youtube_format_command.add_argument("--input", required=True, help="YouTube URL")
+        youtube_format_command.add_argument("--mode", choices=YOUTUBE_FORMAT_MODES)
+        youtube_format_command.add_argument(
+            "--max-height", type=int, choices=YOUTUBE_MAX_HEIGHTS
+        )
+        youtube_format_command.add_argument("--container", choices=YOUTUBE_CONTAINERS)
+        youtube_format_command.add_argument("--video-codec", choices=YOUTUBE_VIDEO_CODECS)
+        youtube_format_command.add_argument("--audio-codec", choices=YOUTUBE_AUDIO_CODECS)
+        youtube_format_command.add_argument("--json", action="store_true", help="JSON으로 출력")
     hitomi_filenames = hitomi_commands.add_parser(
         "filenames", help="Hitomi 이미지 파일명 방식과 로컬 계획"
     )
@@ -2805,6 +2836,43 @@ def run_cli(args: argparse.Namespace) -> int:
                     provider_hint=args.provider,
                 )
             except HitomiReferenceError as error:
+                result = error.to_dict()
+        print_json(result)
+        return 0 if result.get("ok", True) else 2
+    if command == "youtube":
+        current = (
+            control_request({"action": "settings"})
+            if gui_is_running()
+            else settings_snapshot()
+        )
+        updates = {
+            key: value
+            for key, value in {
+                "youtubeFormatMode": args.mode,
+                "youtubeMaxHeight": args.max_height,
+                "youtubeContainer": args.container,
+                "youtubeVideoCodec": args.video_codec,
+                "youtubeAudioCodec": args.audio_codec,
+            }.items()
+            if value is not None
+        } if args.youtube_format_command != "status" else {}
+        if args.youtube_format_command == "status":
+            result = youtube_format_policy_snapshot(current)
+        elif args.youtube_format_command == "set":
+            if not updates:
+                raise ValueError("저장할 YouTube 형식 설정을 하나 이상 지정하세요.")
+            saved = (
+                control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+                if gui_is_running()
+                else update_app_settings(updates)
+            )
+            result = {"saved": True, **youtube_format_policy_snapshot(saved)}
+        else:
+            try:
+                result = plan_youtube_format(args.input, {**current, **updates})
+            except YouTubePolicyError as error:
                 result = error.to_dict()
         print_json(result)
         return 0 if result.get("ok", True) else 2

@@ -119,6 +119,14 @@ from hitomi_provider import (
     select_hitomi_display_title,
     write_hitomi_metadata_files,
 )
+from youtube_provider import (
+    YOUTUBE_AUDIO_CODECS,
+    YOUTUBE_CONTAINERS,
+    YOUTUBE_FORMAT_MODES,
+    YOUTUBE_MAX_HEIGHTS,
+    YOUTUBE_VIDEO_CODECS,
+    youtube_format_policy_snapshot,
+)
 
 
 def webengine_runtime_status() -> dict[str, Any]:
@@ -3396,7 +3404,7 @@ class SettingsDialog(QDialog):
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
-        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 의존성 플러그인",
+        "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 형식 해상도 컨테이너 비디오 오디오 코덱 의존성 플러그인",
     )
 
     def __init__(self, owner: "MainWindow") -> None:
@@ -3938,6 +3946,53 @@ class SettingsDialog(QDialog):
         youtube_status = QLabel("선택 기능 · yt-dlp와 FFmpeg 상태는 진단에서 확인")
         youtube_status.setWordWrap(True)
         provider_form.addRow(self.strings["provider.youtube"], youtube_status)
+        self.youtube_format_mode_combo = QComboBox()
+        for label, value in (
+            ("영상 + 오디오 · 가능한 경우 병합", "video_audio"),
+            ("영상만 · 오디오 제외", "video_only"),
+            ("오디오만", "audio_only"),
+        ):
+            self.youtube_format_mode_combo.addItem(label, value)
+        self.youtube_format_mode_combo.setToolTip(
+            "CLI: youtube format set --mode video_audio|video_only|audio_only --json"
+        )
+        provider_form.addRow("YouTube 형식", self.youtube_format_mode_combo)
+        self.youtube_max_height_combo = QComboBox()
+        for height in YOUTUBE_MAX_HEIGHTS:
+            self.youtube_max_height_combo.addItem(
+                "최고 화질" if height == 0 else f"최대 {height}p", height
+            )
+        self.youtube_max_height_combo.setToolTip(
+            "CLI: youtube format set --max-height 0|2160|1440|1080|720|480|360|240|144 --json"
+        )
+        provider_form.addRow("최대 해상도", self.youtube_max_height_combo)
+        self.youtube_container_combo = QComboBox()
+        for value in YOUTUBE_CONTAINERS:
+            self.youtube_container_combo.addItem(
+                "자동 · 원본/병합 결과 유지" if value == "auto" else value.upper(), value
+            )
+        self.youtube_container_combo.setToolTip(
+            "CLI: youtube format set --container auto|mp4|mkv|webm --json"
+        )
+        provider_form.addRow("출력 컨테이너", self.youtube_container_combo)
+        self.youtube_video_codec_combo = QComboBox()
+        for value in YOUTUBE_VIDEO_CODECS:
+            self.youtube_video_codec_combo.addItem(
+                "자동 · 품질 우선" if value == "auto" else value.upper(), value
+            )
+        self.youtube_video_codec_combo.setToolTip(
+            "CLI: youtube format set --video-codec auto|h264|h265|vp9|av1 --json"
+        )
+        provider_form.addRow("비디오 코덱 선호", self.youtube_video_codec_combo)
+        self.youtube_audio_codec_combo = QComboBox()
+        for value in YOUTUBE_AUDIO_CODECS:
+            self.youtube_audio_codec_combo.addItem(
+                "자동 · 품질 우선" if value == "auto" else value.upper(), value
+            )
+        self.youtube_audio_codec_combo.setToolTip(
+            "CLI: youtube format set --audio-codec auto|aac|opus --json"
+        )
+        provider_form.addRow("오디오 코덱 선호", self.youtube_audio_codec_combo)
         dependency_button = QPushButton("의존성 진단 열기")
         dependency_button.clicked.connect(owner.show_dependency_diagnostics)
         provider_form.addRow("설치 상태", dependency_button)
@@ -3966,7 +4021,11 @@ class SettingsDialog(QDialog):
         provider_note.setObjectName("mutedLabel")
         provider_note.setWordWrap(True)
         provider_form.addRow("", provider_note)
-        self.tabs.addTab(provider_page, self.strings["settings.tab.provider"])
+        self.provider_scroll = QScrollArea()
+        self.provider_scroll.setWidgetResizable(True)
+        self.provider_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.provider_scroll.setWidget(provider_page)
+        self.tabs.addTab(self.provider_scroll, self.strings["settings.tab.provider"])
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -4023,6 +4082,18 @@ class SettingsDialog(QDialog):
             self.tabs.setCurrentIndex(matches[0])
         if 3 in matches and words:
             QTimer.singleShot(0, lambda: self._scroll_advanced_search(query))
+        if 4 in matches and words:
+            QTimer.singleShot(100, lambda: self._scroll_provider_search(query))
+
+    def _scroll_provider_search(self, query: str) -> None:
+        lowered = str(query or "").casefold()
+        if any(
+            word in lowered
+            for word in ("youtube", "yt-dlp", "ffmpeg", "형식", "해상도", "코덱", "컨테이너")
+        ):
+            self.provider_scroll.ensureWidgetVisible(
+                self.youtube_audio_codec_combo, 20, 40
+            )
 
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
@@ -4120,6 +4191,14 @@ class SettingsDialog(QDialog):
                 if part.strip()
             ],
             "hitomiPreferJapaneseTitle": self.hitomi_prefer_japanese_title_check.isChecked(),
+            "youtubeFormat": {
+                "mode": str(self.youtube_format_mode_combo.currentData() or "video_audio"),
+                "maxHeight": int(self.youtube_max_height_combo.currentData() or 0),
+                "container": str(self.youtube_container_combo.currentData() or "auto"),
+                "videoCodec": str(self.youtube_video_codec_combo.currentData() or "auto"),
+                "audioCodec": str(self.youtube_audio_codec_combo.currentData() or "auto"),
+                "networkRequested": False,
+            },
         }
 
     def _load_values(self, values: dict[str, Any]) -> None:
@@ -4227,6 +4306,14 @@ class SettingsDialog(QDialog):
         self.hitomi_prefer_japanese_title_check.setChecked(
             bool(values["hitomiPreferJapaneseTitle"])
         )
+        for combo, value in (
+            (self.youtube_format_mode_combo, values["youtubeFormatMode"]),
+            (self.youtube_max_height_combo, values["youtubeMaxHeight"]),
+            (self.youtube_container_combo, values["youtubeContainer"]),
+            (self.youtube_video_codec_combo, values["youtubeVideoCodec"]),
+            (self.youtube_audio_codec_combo, values["youtubeAudioCodec"]),
+        ):
+            combo.setCurrentIndex(max(0, combo.findData(value)))
         density_index = self.row_density_combo.findData(str(values["rowDensity"]))
         self.row_density_combo.setCurrentIndex(max(0, density_index))
         theme_index = self.theme_combo.findData(str(values["theme"]))
@@ -4472,6 +4559,11 @@ class SettingsDialog(QDialog):
             "hitomiUseOriginalImages": self.hitomi_original_images_check.isChecked(),
             "hitomiExcludedTags": self.hitomi_excluded_tags_edit.toPlainText(),
             "hitomiPreferJapaneseTitle": self.hitomi_prefer_japanese_title_check.isChecked(),
+            "youtubeFormatMode": str(self.youtube_format_mode_combo.currentData()),
+            "youtubeMaxHeight": int(self.youtube_max_height_combo.currentData() or 0),
+            "youtubeContainer": str(self.youtube_container_combo.currentData()),
+            "youtubeVideoCodec": str(self.youtube_video_codec_combo.currentData()),
+            "youtubeAudioCodec": str(self.youtube_audio_codec_combo.currentData()),
             "rowDensity": str(self.row_density_combo.currentData()),
             "theme": str(self.theme_combo.currentData()),
             "listViewMode": str(self.list_view_mode_combo.currentData()),
@@ -10777,6 +10869,7 @@ class MainWindow(QMainWindow):
             "hitomiFilenamePolicy": hitomi_filename_policy_snapshot(self.config),
             "hitomiExcludedTagPolicy": hitomi_excluded_tag_policy_snapshot(self.config),
             "hitomiTitlePolicy": hitomi_title_policy_snapshot(self.config),
+            "youtubeFormatPolicy": youtube_format_policy_snapshot(self.config),
             "sleepPrevention": self.sleep_prevention_status_snapshot(),
             "completionAction": self.completion_action_snapshot(),
             "notifications": self.notification_status_snapshot(),

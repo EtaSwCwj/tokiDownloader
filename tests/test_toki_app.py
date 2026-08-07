@@ -1108,6 +1108,45 @@ class CliParserTests(unittest.TestCase):
         request.assert_called_once_with(
             {"action": "show_cookie_manager", "provider": "exhentai"}
         )
+
+    def test_youtube_format_cli_uses_shared_offline_policy(self) -> None:
+        status = build_parser().parse_args(["youtube", "format", "status", "--json"])
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(status), 0)
+        self.assertFalse(json.loads(output.getvalue())["networkRequested"])
+
+        plan = build_parser().parse_args(
+            [
+                "youtube", "format", "plan",
+                "--input", "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "--max-height", "1080", "--container", "mp4",
+                "--video-codec", "h264", "--audio-codec", "aac", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(plan), 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["formatSelector"], "bv*[height<=?1080]+ba/b[height<=?1080]")
+        self.assertFalse(payload["downloadExecuted"])
+
+        set_args = build_parser().parse_args(
+            ["youtube", "format", "set", "--mode", "audio_only", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value={**default_config(), "youtubeFormatMode": "audio_only"}) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        update.assert_called_once_with({"youtubeFormatMode": "audio_only"})
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
         with (
