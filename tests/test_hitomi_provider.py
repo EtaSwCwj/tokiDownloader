@@ -8,6 +8,7 @@ from pathlib import Path
 from hitomi_provider import (
     HITOMI_METADATA_MAX_BYTES,
     HitomiReferenceError,
+    _SameOriginMetadataRedirectHandler,
     evaluate_hitomi_metadata_outcome,
     evaluate_hitomi_excluded_tags,
     fetch_hitomi_metadata,
@@ -275,6 +276,7 @@ class HitomiReferenceTests(unittest.TestCase):
         )
         self.assertEqual(auto_failure["decision"], "continue_without_metadata")
         self.assertTrue(auto_failure["shouldContinue"])
+        self.assertEqual(auto_failure["redirectPolicy"], "same_origin_only")
         required_failure = evaluate_hitomi_metadata_outcome(
             config={**default_config(), "hitomiMetadataMode": "required"},
             outcome="failure",
@@ -326,6 +328,55 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertEqual(result["pageCount"], 10_000)
         self.assertEqual(len(result["files"]), 10_000)
         self.assertEqual(result["files"][-1]["index"], 10_000)
+
+    def test_metadata_redirects_are_limited_to_the_original_origin(self) -> None:
+        from urllib.request import Request
+
+        handler = _SameOriginMetadataRedirectHandler()
+        request = Request(
+            "https://api.e-hentai.org/api.php",
+            headers={"Cookie": "ipb_pass_hash=secret"},
+        )
+        redirected = handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://api.e-hentai.org/v2/api.php",
+        )
+        self.assertEqual(redirected.full_url, "https://api.e-hentai.org/v2/api.php")
+        with self.assertRaises(HitomiReferenceError) as caught:
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                "https://example.invalid/collect",
+            )
+        self.assertEqual(caught.exception.code, "hitomi.metadata_redirect_blocked")
+
+        class ForeignResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://example.invalid/metadata"
+
+            def read(self, _limit):
+                raise AssertionError("다른 출처 응답 본문을 읽으면 안 됩니다.")
+
+        with self.assertRaises(HitomiReferenceError) as caught:
+            fetch_hitomi_metadata(
+                "42",
+                opener=lambda *_args, **_kwargs: ForeignResponse(),
+                confirmed=True,
+            )
+        self.assertEqual(caught.exception.code, "hitomi.metadata_redirect_blocked")
 
     def test_filename_modes_are_windows_safe_deterministic_and_bounded(self) -> None:
         metadata = load_hitomi_metadata_fixture(

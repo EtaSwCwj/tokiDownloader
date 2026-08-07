@@ -809,7 +809,9 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 받지 않으면 `hitomi.external_confirmation_required`로 거부하므로 CLI·GUI 바깥의 직접 호출로
 이 경계를 우회할 수 없습니다. ExHentai
 갤러리 토큰은 POST 요청 메모리에만 존재하고 계획·결과·설정·로그에는 원문을 남기지
-않습니다. 로컬 검증 화면은 `logs\hitomi-metadata-plan.png`,
+않습니다. HTTP 리다이렉트는 최초 요청과 스킴·호스트·포트가 같은 출처만 허용하므로 쿠키나
+갤러리 토큰이 다른 호스트로 전달되는 상황을 차단합니다. 로컬 검증 화면은
+`logs\hitomi-metadata-plan.png`,
 `logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`,
 `logs\hitomi-metadata-mode-final.png`, `logs\hitomi-metadata-required-failure.png`에 있습니다.
 실제 공급자 요청 검증은 사용자 승인 전에는 실행하지 않습니다.

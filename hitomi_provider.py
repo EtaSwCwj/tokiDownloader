@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 HITOMI_PROVIDER_CONTRACT_VERSION = 1
@@ -77,6 +77,32 @@ class HitomiReferenceError(ValueError):
 
     def to_dict(self) -> dict[str, Any]:
         return {"ok": False, "errorCode": self.code, "error": str(self)}
+
+
+def _http_origin(url: str) -> tuple[str, str, int]:
+    try:
+        parsed = urlsplit(str(url or ""))
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()
+        if scheme not in {"http", "https"} or not host:
+            raise ValueError
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except (TypeError, ValueError) as error:
+        raise HitomiReferenceError(
+            "hitomi.metadata_redirect_blocked",
+            "메타데이터 요청의 리다이렉트 주소가 안전하지 않습니다.",
+        ) from error
+    return scheme, host, port
+
+
+class _SameOriginMetadataRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _http_origin(req.full_url) != _http_origin(newurl):
+            raise HitomiReferenceError(
+                "hitomi.metadata_redirect_blocked",
+                "메타데이터 요청이 다른 출처로 이동하려 해 차단했습니다.",
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def hitomi_provider_capabilities() -> dict[str, Any]:
@@ -753,6 +779,7 @@ def hitomi_metadata_policy_snapshot(config: dict[str, Any] | None = None) -> dic
         "enabled": mode != "disabled",
         "failurePolicy": "stop" if mode == "required" else "continue",
         "externalRequestRequiresConfirmation": True,
+        "redirectPolicy": "same_origin_only",
         "maxResponseBytes": HITOMI_METADATA_MAX_BYTES,
         "networkRequested": False,
     }
@@ -1217,10 +1244,17 @@ def fetch_hitomi_metadata(
         headers=headers,
         method=str(request_plan["method"]),
     )
-    open_request = opener or urlopen
+    open_request = opener or build_opener(_SameOriginMetadataRedirectHandler()).open
     try:
         response = open_request(request, timeout=max(1, min(120, int(timeout))))
         with response:
+            final_url_reader = getattr(response, "geturl", None)
+            final_url = str(final_url_reader() or "") if callable(final_url_reader) else ""
+            if final_url and _http_origin(request.full_url) != _http_origin(final_url):
+                raise HitomiReferenceError(
+                    "hitomi.metadata_redirect_blocked",
+                    "메타데이터 응답이 다른 출처에서 도착해 차단했습니다.",
+                )
             payload = response.read(HITOMI_METADATA_MAX_BYTES + 1)
     except HitomiReferenceError:
         raise
