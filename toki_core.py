@@ -79,6 +79,7 @@ SETTING_KEYS = frozenset(
         "quickActions",
         "completionAction",
         "completionCountdownSeconds",
+        "clipboardMonitor",
         "theme",
         "trayEnabled",
         "closeToTray",
@@ -344,6 +345,7 @@ def default_config() -> dict[str, Any]:
         ],
         "completionAction": "none",
         "completionCountdownSeconds": 15,
+        "clipboardMonitor": False,
         "theme": "system",
         "trayEnabled": False,
         "closeToTray": False,
@@ -476,6 +478,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "notifyOnError",
         "thumbnailsVisible",
         "alwaysOnTop",
+        "clipboardMonitor",
     ):
         value = source.get(key)
         normalized[key] = value if isinstance(value, bool) else defaults[key]
@@ -699,6 +702,7 @@ def validate_app_setting_updates(
         "notifyOnError",
         "thumbnailsVisible",
         "alwaysOnTop",
+        "clipboardMonitor",
     ):
         if key in updates:
             if not isinstance(updates[key], bool):
@@ -1644,6 +1648,53 @@ def build_work_key(url: str) -> str:
     parsed = urlsplit(value)
     normalized_path = parsed.path.rstrip("/").lower()
     return f"url:{parsed.hostname or ''}{normalized_path}"
+
+
+def inspect_clipboard_url(
+    text: str, *, existing_work_keys: tuple[str, ...] | list[str] | set[str] = ()
+) -> dict[str, Any]:
+    match = re.search(r"https://[^\s<>\"']+", str(text or ""), re.IGNORECASE)
+    if not match:
+        return {
+            "ok": True,
+            "candidate": False,
+            "duplicate": False,
+            "reason": "no_https_url",
+            "url": "",
+            "workKey": "",
+        }
+    url = match.group(0).rstrip(".,;:!?)]}>\"'")
+    try:
+        normalized = validate_url(url)
+        work_key = build_work_key(normalized)
+    except ValueError as error:
+        return {
+            "ok": True,
+            "candidate": False,
+            "duplicate": False,
+            "reason": "invalid_url",
+            "error": str(error),
+            "url": url,
+            "workKey": "",
+        }
+    if work_key.startswith("url:"):
+        return {
+            "ok": True,
+            "candidate": False,
+            "duplicate": False,
+            "reason": "unsupported_url",
+            "url": normalized,
+            "workKey": work_key,
+        }
+    duplicate = work_key in {str(value) for value in existing_work_keys}
+    return {
+        "ok": True,
+        "candidate": True,
+        "duplicate": duplicate,
+        "reason": "duplicate" if duplicate else "new",
+        "url": normalized,
+        "workKey": work_key,
+    }
 
 
 def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:

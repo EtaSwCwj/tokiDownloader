@@ -107,6 +107,26 @@ class _DialogStub:
 
 
 class WorkSchedulerTests(unittest.TestCase):
+    def test_clipboard_inspection_ipc_never_prompts_without_explicit_request(self) -> None:
+        calls = []
+        harness = type("ClipboardHarness", (), {})()
+        harness.inspect_clipboard_text = (
+            lambda text, prompt=False: calls.append((text, prompt))
+            or {"candidate": True, "duplicate": False}
+        )
+
+        result = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "inspect_clipboard",
+                "text": "https://newtoki1.org/manhwa/34360",
+                "prompt": False,
+            },
+        )
+
+        self.assertTrue(result["candidate"])
+        self.assertEqual(calls, [("https://newtoki1.org/manhwa/34360", False)])
+
     def test_completion_action_ipc_only_previews_or_cancels(self) -> None:
         calls = []
         harness = type("CompletionHarness", (), {})()

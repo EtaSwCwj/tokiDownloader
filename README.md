@@ -194,6 +194,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd completion-action set --action exit --countdown 15 --json
 .\toki-cli.cmd completion-action preview --action shutdown --countdown 15 --show-gui
 .\toki-cli.cmd completion-action cancel
+.\toki-cli.cmd clipboard inspect --text "https://newtoki1.org/manhwa/34360" --json
+.\toki-cli.cmd clipboard monitor --state on --json
 .\toki-cli.cmd job-menu --job 작업ID
 .\toki-cli.cmd window
 .\toki-cli.cmd window --screen "모니터 이름" --center --normal
@@ -256,6 +258,11 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 표시하며 사용자가 취소할 수 있습니다. `completion-action status|set`으로 정책을 관리하고
 `preview --action shutdown --countdown 15 --show-gui`로 실제 종료 없이 화면과 취소 동작을
 점검합니다. 미리보기 명령은 시스템 종료를 실행하지 않습니다.
+
+클립보드 URL 감지는 기본적으로 꺼져 있습니다. 켜면 지원 작품 URL이 새로 복사될 때 작품
+키를 전체 DB와 비교하고, 이미 등록된 작품은 건너뛰며 새 작품은 확인 질문 뒤에만 대기열에
+추가합니다. `clipboard inspect --text URL --json`은 추가 없이 판정만 수행하고,
+`clipboard monitor --state on|off`로 감지 설정을 바꿉니다.
 
 `performance audit`은 작품 목록의 갱신일·제목·진행률 정렬과 상태 필터 조합 6가지를
 `EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,

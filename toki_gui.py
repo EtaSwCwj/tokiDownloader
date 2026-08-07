@@ -124,6 +124,7 @@ from toki_core import (
     import_app_settings,
     import_jobs_snapshot,
     inspect_local_archive,
+    inspect_clipboard_url,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
@@ -1747,7 +1748,7 @@ class CompletionCountdownDialog(QDialog):
 class SettingsDialog(QDialog):
     TAB_KEYS = ("general", "network", "display", "advanced", "provider")
     TAB_SEARCH_TERMS = (
-        "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운",
+        "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
@@ -1810,6 +1811,10 @@ class SettingsDialog(QDialog):
         self.completion_countdown_spin.setRange(5, 300)
         self.completion_countdown_spin.setSuffix("초")
         general_form.addRow("완료 후 카운트다운", self.completion_countdown_spin)
+        self.clipboard_monitor_check = QCheckBox(
+            "클립보드의 지원 작품 URL을 감지하고 추가 전 확인"
+        )
+        general_form.addRow("클립보드 감지", self.clipboard_monitor_check)
         general_note = QLabel(
             "브라우저 표시는 기본적으로 끄는 것을 권장합니다. 개인 Chrome 프로필은 사용하지 않습니다."
         )
@@ -2011,6 +2016,7 @@ class SettingsDialog(QDialog):
         self.completion_countdown_spin.setValue(
             int(values["completionCountdownSeconds"])
         )
+        self.clipboard_monitor_check.setChecked(bool(values["clipboardMonitor"]))
         self.work_spin.setValue(int(values["workConcurrency"]))
         self.image_spin.setValue(int(values["imageConcurrency"]))
         self.retry_count_spin.setValue(int(values["retryCount"]))
@@ -2085,6 +2091,7 @@ class SettingsDialog(QDialog):
             "notifyOnError": self.notify_error_check.isChecked(),
             "completionAction": str(self.completion_action_combo.currentData()),
             "completionCountdownSeconds": self.completion_countdown_spin.value(),
+            "clipboardMonitor": self.clipboard_monitor_check.isChecked(),
             "workConcurrency": self.work_spin.value(),
             "imageConcurrency": self.image_spin.value(),
             "retryCount": self.retry_count_spin.value(),
@@ -2425,6 +2432,8 @@ class MainWindow(QMainWindow):
         self.active_completion_dialog: CompletionCountdownDialog | None = None
         self.completion_action_armed = False
         self.last_completion_action: dict[str, Any] = {}
+        self.last_clipboard_text = ""
+        self.last_clipboard_inspection: dict[str, Any] = {}
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_doctor_dialog: DependencyDiagnosticsDialog | None = None
         self.active_performance_dialog: PerformanceDiagnosticsDialog | None = None
@@ -2473,6 +2482,7 @@ class MainWindow(QMainWindow):
         self._configure_tray()
         self._start_control_server()
         self._restore_job_history()
+        QApplication.clipboard().dataChanged.connect(self._clipboard_changed)
 
         for line in read_log_tail(120):
             self.log_edit.appendPlainText(line)
@@ -4636,6 +4646,56 @@ class MainWindow(QMainWindow):
             "last": self.last_completion_action,
         }
 
+    def inspect_clipboard_text(
+        self, text: str, *, prompt: bool = False
+    ) -> dict[str, Any]:
+        first = inspect_clipboard_url(text, existing_work_keys=set(self.jobs_by_work))
+        if first.get("candidate") and not first.get("duplicate"):
+            stored = load_job_by_work_key(str(first["workKey"]))
+            if stored:
+                first = inspect_clipboard_url(
+                    text, existing_work_keys={stored.work_key}
+                )
+        result = {
+            **first,
+            "monitorEnabled": bool(self.config.get("clipboardMonitor", False)),
+            "prompted": False,
+            "accepted": False,
+            "enqueued": False,
+        }
+        self.last_clipboard_inspection = result
+        if not result.get("candidate"):
+            return result
+        if result.get("duplicate"):
+            self.statusBar().showMessage("이미 등록된 작품 URL입니다.", 3000)
+            return result
+        if not prompt:
+            return result
+        result["prompted"] = True
+        answer = QMessageBox.question(
+            self,
+            "클립보드 작품 URL 감지",
+            f"새 작품 URL을 감지했습니다. 다운로드 작업에 추가할까요?\n\n{result['url']}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        result["accepted"] = answer == QMessageBox.StandardButton.Yes
+        if result["accepted"]:
+            self.url_edit.setText(str(result["url"]))
+            self.start_from_form()
+            result["enqueued"] = True
+        self.last_clipboard_inspection = result
+        return result
+
+    def _clipboard_changed(self) -> None:
+        if not bool(self.config.get("clipboardMonitor", False)):
+            return
+        text = QApplication.clipboard().text().strip()
+        if not text or text == self.last_clipboard_text:
+            return
+        self.last_clipboard_text = text
+        self.inspect_clipboard_text(text, prompt=True)
+
     def preview_completion_action(
         self, action: str, countdown_seconds: int
     ) -> dict[str, Any]:
@@ -6512,6 +6572,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd set-retry-policy [--count 0~5] [--backoff 1~60]\n"
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced|provider --search TEXT|--close]\n"
             "toki-cli.cmd completion-action status|set|preview|cancel [options]\n"
+            "toki-cli.cmd clipboard inspect|monitor [options]\n"
             "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
             "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
@@ -6688,6 +6749,10 @@ class MainWindow(QMainWindow):
                 "batchSize": 100,
             },
             "completionAction": self.completion_action_snapshot(),
+            "clipboard": {
+                "monitorEnabled": bool(self.config.get("clipboardMonitor", False)),
+                "lastInspection": self.last_clipboard_inspection,
+            },
             "startupRecovery": self.startup_recovery,
             "logPath": str(LOG_PATH),
             "jobDbPath": str(JOB_DB_PATH),
@@ -7045,6 +7110,10 @@ class MainWindow(QMainWindow):
             )
         if action == "cancel_completion_action":
             return {"cancelled": self.cancel_completion_action()}
+        if action == "inspect_clipboard":
+            return self.inspect_clipboard_text(
+                str(request.get("text") or ""), prompt=bool(request.get("prompt"))
+            )
         if action == "export_jobs_snapshot":
             return self.export_jobs_snapshot_now(str(request.get("output") or ""))
         if action == "import_jobs_snapshot":

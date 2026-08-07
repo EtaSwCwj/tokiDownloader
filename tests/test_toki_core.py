@@ -40,6 +40,7 @@ from toki_core import (
     hydrate_job_metadata,
     import_jobs_snapshot,
     inspect_local_archive,
+    inspect_clipboard_url,
     list_work_collections,
     job_database_diagnostics,
     keyboard_shortcut_catalog,
@@ -427,6 +428,22 @@ class CoreContractTests(unittest.TestCase):
         self.assertTrue(shutdown["destructive"])
         with self.assertRaises(ValueError):
             completion_action_plan("shutdown", 1, armed=True)
+
+    def test_clipboard_url_inspection_rejects_noise_and_flags_work_duplicates(self) -> None:
+        noise = inspect_clipboard_url("일반 텍스트 https://example.com/page")
+        new = inspect_clipboard_url(
+            "복사: https://newtoki1.org/manhwa/34360)."
+        )
+        duplicate = inspect_clipboard_url(
+            new["url"], existing_work_keys={new["workKey"]}
+        )
+
+        self.assertFalse(noise["candidate"])
+        self.assertEqual(noise["reason"], "unsupported_url")
+        self.assertTrue(new["candidate"])
+        self.assertEqual(new["workKey"], "manatoki:34360")
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(duplicate["reason"], "duplicate")
 
     def test_job_list_view_state_covers_loading_empty_filtered_error_and_content(self) -> None:
         loading = build_job_list_view_state(loading=True, total_count=12)

@@ -14,6 +14,42 @@ from toki_app import build_parser, run_cli, run_direct_download
 
 
 class CliParserTests(unittest.TestCase):
+    def test_clipboard_cli_inspects_duplicates_and_updates_monitor(self) -> None:
+        inspect_args = build_parser().parse_args(
+            [
+                "clipboard",
+                "inspect",
+                "--text",
+                "https://newtoki1.org/manhwa/34360",
+                "--json",
+            ]
+        )
+        existing = toki_app.DownloadJob(
+            job_id="j1",
+            url="https://newtoki1.org/manhwa/34360",
+            output_dir="D:/Manga",
+            work_key="manatoki:34360",
+        )
+        with (
+            patch("toki_app.load_job_by_work_key", return_value=existing),
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(inspect_args), 0)
+
+        monitor = build_parser().parse_args(
+            ["clipboard", "monitor", "--state", "on", "--json"]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch(
+                "toki_app.update_app_settings",
+                return_value={"clipboardMonitor": True},
+            ) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(monitor), 0)
+        update.assert_called_once_with({"clipboardMonitor": True})
+
     def test_completion_action_cli_sets_previews_and_cancels_without_execution(self) -> None:
         set_args = build_parser().parse_args(
             ["completion-action", "set", "--action", "shutdown", "--countdown", "30", "--json"]

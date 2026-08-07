@@ -57,7 +57,9 @@ from toki_core import (
     import_app_settings,
     import_jobs_snapshot,
     inspect_local_archive,
+    inspect_clipboard_url,
     load_job_by_id,
+    load_job_by_work_key,
     load_jobs_page,
     log_retention_status,
     list_job_episode_images,
@@ -912,6 +914,24 @@ def build_parser() -> argparse.ArgumentParser:
     completion_preview.add_argument("--show-gui", action="store_true")
     completion_preview.add_argument("--json", action="store_true", help="JSON으로 출력")
     completion_commands.add_parser("cancel", help="열린 카운트다운 취소")
+
+    clipboard = subparsers.add_parser(
+        "clipboard", help="클립보드 작품 URL 판정과 감지 설정"
+    )
+    clipboard_commands = clipboard.add_subparsers(
+        dest="clipboard_command", required=True
+    )
+    clipboard_inspect = clipboard_commands.add_parser(
+        "inspect", help="텍스트의 지원 작품 URL과 중복 여부 검사"
+    )
+    clipboard_inspect.add_argument("--text", required=True)
+    clipboard_inspect.add_argument("--via-gui", action="store_true")
+    clipboard_inspect.add_argument("--json", action="store_true")
+    clipboard_monitor = clipboard_commands.add_parser(
+        "monitor", help="클립보드 URL 감지 켜기 또는 끄기"
+    )
+    clipboard_monitor.add_argument("--state", choices=("on", "off"), required=True)
+    clipboard_monitor.add_argument("--json", action="store_true")
 
     tray = subparsers.add_parser("tray", help="GUI 시스템 트레이 제어")
     tray.add_argument(
@@ -2379,6 +2399,34 @@ def run_cli(args: argparse.Namespace) -> int:
             print_json(result)
         else:
             print_json(result)
+        return 0
+    if command == "clipboard":
+        if args.clipboard_command == "monitor":
+            updates = {"clipboardMonitor": args.state == "on"}
+            if gui_is_running():
+                values = control_request(
+                    {"action": "set_settings", "updates": updates, "reset": False}
+                )
+            else:
+                values = update_app_settings(updates)
+            result = {
+                "monitorEnabled": bool(values["clipboardMonitor"]),
+                "saved": True,
+            }
+        elif args.via_gui:
+            ensure_gui_running()
+            result = control_request(
+                {"action": "inspect_clipboard", "text": args.text, "prompt": False}
+            )
+        else:
+            result = inspect_clipboard_url(args.text)
+            if result.get("candidate"):
+                existing = load_job_by_work_key(str(result["workKey"]))
+                if existing:
+                    result = inspect_clipboard_url(
+                        args.text, existing_work_keys={existing.work_key}
+                    )
+        print_json(result)
         return 0
     if command == "tray":
         ensure_gui_running()
