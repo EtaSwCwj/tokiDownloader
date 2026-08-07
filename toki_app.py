@@ -867,6 +867,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--always-on-top", choices=("on", "off"), help="창을 항상 위에 표시"
     )
     set_settings.add_argument("--opacity", type=int, help="창 불투명도 50~100")
+    set_settings.add_argument(
+        "--quick-actions",
+        help="빠른 실행 동작 ID를 쉼표로 구분한 표시 순서",
+    )
     set_settings.add_argument("--tray", choices=("on", "off"), help="시스템 트레이 사용")
     set_settings.add_argument(
         "--close-to-tray", choices=("on", "off"), help="창 닫기 시 트레이로 숨김"
@@ -2267,6 +2271,10 @@ def run_cli(args: argparse.Namespace) -> int:
             "windowOpacity": args.opacity,
         }
         updates = {key: value for key, value in mapping.items() if value is not None}
+        if args.quick_actions is not None:
+            updates["quickActions"] = [
+                value.strip() for value in args.quick_actions.split(",") if value.strip()
+            ]
         if args.show_browser is not None:
             updates["showBrowser"] = args.show_browser == "on"
         if args.log_visible is not None:

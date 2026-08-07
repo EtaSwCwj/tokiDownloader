@@ -760,6 +760,7 @@ class CliParserTests(unittest.TestCase):
                 "--view-mode", "icon", "--thumbnails", "off",
                 "--thumbnail-size", "large", "--always-on-top", "on",
                 "--opacity", "85",
+                "--quick-actions", "settings.open,folder.open,download.start",
             ]
         )
         with (
@@ -781,6 +782,11 @@ class CliParserTests(unittest.TestCase):
                     "listViewMode": "icon",
                     "thumbnailSize": "large",
                     "windowOpacity": 85,
+                    "quickActions": [
+                        "settings.open",
+                        "folder.open",
+                        "download.start",
+                    ],
                     "showBrowser": True,
                     "logVisible": False,
                     "thumbnailsVisible": False,

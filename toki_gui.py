@@ -64,6 +64,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListView,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -126,6 +127,7 @@ from toki_core import (
     keyboard_shortcut_catalog,
     keyboard_shortcut_keys,
     menu_action_availability,
+    quick_action_catalog,
     load_config,
     load_job_by_id,
     load_job_by_work_key,
@@ -1683,7 +1685,7 @@ class SettingsDialog(QDialog):
     TAB_SEARCH_TERMS = (
         "일반 저장 폴더 브라우저 로그 트레이 알림 닫기 최소화",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프",
-        "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률",
+        "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 진행률 빠른 실행 도구",
         "고급 로그 파일 크기 보존 순환 기록",
         "공급자 toki newtoki manatoki booktoki hitomi youtube yt-dlp ffmpeg 의존성 플러그인",
     )
@@ -1796,6 +1798,13 @@ class SettingsDialog(QDialog):
         self.window_opacity_spin.setRange(50, 100)
         self.window_opacity_spin.setSuffix("%")
         display_form.addRow("창 불투명도", self.window_opacity_spin)
+        self.quick_action_list = QListWidget()
+        self.quick_action_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.quick_action_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.quick_action_list.setMaximumHeight(180)
+        display_form.addRow("빠른 실행 도구", self.quick_action_list)
         display_note = QLabel(
             "간략하게 모드는 표지를 생략하고 상태·제목·핵심 정보와 진행률을 한 줄 카드에 표시합니다."
         )
@@ -1939,6 +1948,37 @@ class SettingsDialog(QDialog):
         self.thumbnail_size_combo.setCurrentIndex(max(0, size_index))
         self.always_on_top_check.setChecked(bool(values["alwaysOnTop"]))
         self.window_opacity_spin.setValue(int(values["windowOpacity"]))
+        self._load_quick_actions(values["quickActions"])
+
+    def _load_quick_actions(self, selected: list[str]) -> None:
+        catalog = quick_action_catalog()
+        by_id = {item["id"]: item for item in catalog}
+        ordered_ids = [action_id for action_id in selected if action_id in by_id]
+        ordered_ids.extend(
+            item["id"] for item in catalog if item["id"] not in ordered_ids
+        )
+        self.quick_action_list.clear()
+        for action_id in ordered_ids:
+            item = QListWidgetItem(by_id[action_id]["label"])
+            item.setData(Qt.ItemDataRole.UserRole, action_id)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if action_id in selected
+                else Qt.CheckState.Unchecked
+            )
+            self.quick_action_list.addItem(item)
+
+    def _selected_quick_actions(self) -> list[str]:
+        return [
+            str(self.quick_action_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.quick_action_list.count())
+            if self.quick_action_list.item(row).checkState() == Qt.CheckState.Checked
+        ]
 
     def _load_defaults(self) -> None:
         from toki_core import default_config
@@ -1976,6 +2016,7 @@ class SettingsDialog(QDialog):
             "thumbnailSize": str(self.thumbnail_size_combo.currentData()),
             "alwaysOnTop": self.always_on_top_check.isChecked(),
             "windowOpacity": self.window_opacity_spin.value(),
+            "quickActions": self._selected_quick_actions(),
         }
 
     def _apply(self, *, close_after: bool) -> None:
@@ -2872,7 +2913,15 @@ class MainWindow(QMainWindow):
         log_layout.addLayout(log_actions)
         log_layout.addWidget(self.log_edit)
 
+        self.quick_action_frame = QFrame()
+        self.quick_action_frame.setObjectName("inputBox")
+        self.quick_action_layout = QHBoxLayout(self.quick_action_frame)
+        self.quick_action_layout.setContentsMargins(8, 5, 8, 5)
+        self.quick_action_buttons: dict[str, QPushButton] = {}
+        self._rebuild_quick_action_bar(self.config.get("quickActions") or [])
+
         root.addWidget(input_box)
+        root.addWidget(self.quick_action_frame)
         root.addLayout(queue_header)
         root.addLayout(filter_bar)
         root.addWidget(self.list_stack, 1)
@@ -4579,6 +4628,41 @@ class MainWindow(QMainWindow):
             if was_visible:
                 self.show()
         self.setWindowOpacity(max(0.5, min(1.0, int(values.get("windowOpacity", 100)) / 100)))
+        self._rebuild_quick_action_bar(values.get("quickActions") or [])
+
+    def _rebuild_quick_action_bar(self, action_ids: list[str]) -> None:
+        if not hasattr(self, "quick_action_layout"):
+            return
+        while self.quick_action_layout.count():
+            item = self.quick_action_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.quick_action_buttons = {}
+        label = QLabel("빠른 실행")
+        label.setObjectName("mutedLabel")
+        self.quick_action_layout.addWidget(label)
+        action_map = {
+            "download.start": self.start_action,
+            "job.stop": self.stop_action,
+            "job.rescan_full": self.retry_action,
+            "folder.open": self.open_folder_action,
+            "details.open": self.details_action,
+            "duplicates.works": self.duplicate_works_action,
+            "settings.open": self.settings_action,
+            "screenshot.capture": self.screenshot_action,
+        }
+        labels = {item["id"]: item["label"] for item in quick_action_catalog()}
+        for action_id in action_ids:
+            action = action_map.get(action_id)
+            if not action:
+                continue
+            button = QPushButton(labels.get(action_id, action.text()))
+            button.setEnabled(action.isEnabled())
+            button.clicked.connect(action.trigger)
+            self.quick_action_layout.addWidget(button)
+            self.quick_action_buttons[action_id] = button
+        self.quick_action_layout.addStretch(1)
 
     def _configure_tray(self) -> None:
         enabled = bool(self.config.get("trayEnabled", False))
@@ -6656,6 +6740,9 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(states["download.start"])
         self.stop_button.setEnabled(states["job.stop"])
         self.retry_button.setEnabled(states["job.rescan_full"])
+        for action_id, button in getattr(self, "quick_action_buttons", {}).items():
+            if action_id in states:
+                button.setEnabled(states[action_id])
         return states
 
     def _start_control_server(self) -> None:

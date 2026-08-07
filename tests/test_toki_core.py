@@ -450,6 +450,7 @@ class CoreContractTests(unittest.TestCase):
                         "listViewMode": "tiles",
                         "thumbnailSize": "huge",
                         "windowOpacity": 10,
+                        "quickActions": ["missing.action"],
                         "trayEnabled": "yes",
                     }
                 ),
@@ -467,6 +468,7 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(loaded["listViewMode"], "list")
                 self.assertEqual(loaded["thumbnailSize"], "medium")
                 self.assertEqual(loaded["windowOpacity"], 100)
+                self.assertEqual(loaded["quickActions"], defaults["quickActions"])
                 self.assertFalse(loaded["trayEnabled"])
 
                 output = root / "새 저장 폴더"
@@ -488,6 +490,11 @@ class CoreContractTests(unittest.TestCase):
                         "thumbnailSize": "large",
                         "alwaysOnTop": True,
                         "windowOpacity": 85,
+                        "quickActions": [
+                            "settings.open",
+                            "folder.open",
+                            "settings.open",
+                        ],
                         "trayEnabled": True,
                         "closeToTray": True,
                         "notifyOnComplete": False,
@@ -503,6 +510,9 @@ class CoreContractTests(unittest.TestCase):
                 self.assertEqual(updated["thumbnailSize"], "large")
                 self.assertTrue(updated["alwaysOnTop"])
                 self.assertEqual(updated["windowOpacity"], 85)
+                self.assertEqual(
+                    updated["quickActions"], ["settings.open", "folder.open"]
+                )
                 self.assertTrue(updated["trayEnabled"])
                 self.assertTrue(updated["closeToTray"])
                 self.assertFalse(updated["notifyOnComplete"])

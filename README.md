@@ -242,6 +242,11 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 `status --json`의 `view`로 확인합니다. 아이콘 보기도 SQLite 페이지 조회, GUI 최대 2,000개
 보유, 100개 배치 레이아웃을 유지해 기록 전체를 한 번에 메모리에 올리지 않습니다.
 
+메인 입력 영역 아래의 빠른 실행 막대는 디스플레이 설정에서 항목을 체크하고 드래그해
+순서를 바꿀 수 있습니다. CLI에서는 `set-settings --quick-actions
+download.start,job.stop,job.rescan_full,folder.open,settings.open`처럼 동작 ID 순서를
+지정합니다. 빠른 실행 버튼도 메뉴와 동일한 활성/비활성 판정과 대응 CLI를 사용합니다.
+
 `performance audit`은 작품 목록의 갱신일·제목·진행률 정렬과 상태 필터 조합 6가지를
 `EXPLAIN QUERY PLAN`으로 검사합니다. 각 조회가 전용 SQLite 복합 인덱스를 사용하는지,
 전체 임시 정렬이 발생하는지를 JSON으로 반환합니다. `--show-gui`는 같은 결과를 도구 메뉴의

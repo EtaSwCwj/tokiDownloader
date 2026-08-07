@@ -76,6 +76,7 @@ SETTING_KEYS = frozenset(
         "thumbnailSize",
         "alwaysOnTop",
         "windowOpacity",
+        "quickActions",
         "theme",
         "trayEnabled",
         "closeToTray",
@@ -87,6 +88,16 @@ SETTING_KEYS = frozenset(
 _LOG_MAX_BYTES = 2 * 1024 * 1024
 _LOG_BACKUP_COUNT = 1
 ACTIVE_JOB_STATES = frozenset({"대기", "실행 중", "일시정지", "재시도 대기"})
+QUICK_ACTIONS = (
+    {"id": "download.start", "label": "다운로드"},
+    {"id": "job.stop", "label": "중지"},
+    {"id": "job.rescan_full", "label": "전체 재검사"},
+    {"id": "folder.open", "label": "폴더 열기"},
+    {"id": "details.open", "label": "작품 정보"},
+    {"id": "duplicates.works", "label": "중복 검사"},
+    {"id": "settings.open", "label": "설정"},
+    {"id": "screenshot.capture", "label": "화면 캡처"},
+)
 JOB_SORT_ORDERS = {
     "updated": "pinned DESC, updated_at DESC, job_id DESC",
     "title": "pinned DESC, title COLLATE NOCASE ASC, updated_at DESC, job_id DESC",
@@ -322,6 +333,13 @@ def default_config() -> dict[str, Any]:
         "thumbnailSize": "medium",
         "alwaysOnTop": False,
         "windowOpacity": 100,
+        "quickActions": [
+            "download.start",
+            "job.stop",
+            "job.rescan_full",
+            "folder.open",
+            "settings.open",
+        ],
         "theme": "system",
         "trayEnabled": False,
         "closeToTray": False,
@@ -386,6 +404,28 @@ def normalize_window_opacity(value: int | None) -> int:
     normalized = 100 if value is None else int(value)
     if not 50 <= normalized <= 100:
         raise ValueError("창 불투명도는 50~100이어야 합니다.")
+    return normalized
+
+
+def quick_action_catalog() -> list[dict[str, str]]:
+    return [dict(item) for item in QUICK_ACTIONS]
+
+
+def normalize_quick_actions(value: Any) -> list[str]:
+    if value is None:
+        return list(default_config()["quickActions"])
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("빠른 실행 도구는 동작 ID 목록이어야 합니다.")
+    supported = {item["id"] for item in QUICK_ACTIONS}
+    normalized: list[str] = []
+    for item in value:
+        action_id = str(item or "").strip()
+        if action_id not in supported:
+            raise ValueError(f"지원하지 않는 빠른 실행 동작입니다: {action_id}")
+        if action_id not in normalized:
+            normalized.append(action_id)
+    if not normalized:
+        raise ValueError("빠른 실행 도구를 하나 이상 선택해주세요.")
     return normalized
 
 
@@ -475,6 +515,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         normalize_window_opacity,
         source.get("windowOpacity"),
         defaults["windowOpacity"],
+    )
+    normalized["quickActions"] = _safe_normalize(
+        normalize_quick_actions,
+        source.get("quickActions"),
+        defaults["quickActions"],
     )
     window = source.get("window")
     normalized["window"] = window if isinstance(window, dict) else defaults["window"]
@@ -643,6 +688,7 @@ def validate_app_setting_updates(
         "listViewMode": normalize_list_view_mode,
         "thumbnailSize": normalize_thumbnail_size,
         "windowOpacity": normalize_window_opacity,
+        "quickActions": normalize_quick_actions,
     }
     for key, normalizer in normalizers.items():
         if key in updates:
