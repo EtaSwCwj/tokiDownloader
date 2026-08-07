@@ -797,14 +797,14 @@ class WorkSchedulerTests(unittest.TestCase):
         )
         harness.close_cookie_manager = lambda: calls.append(("close",)) or True
         shown = MainWindow._handle_control_action(
-            harness, {"action": "show_cookie_manager", "provider": "manatoki"}
+            harness, {"action": "show_cookie_manager", "provider": "exhentai"}
         )
         closed = MainWindow._handle_control_action(
             harness, {"action": "close_cookie_manager"}
         )
         self.assertEqual(shown, {"shown": True})
         self.assertEqual(closed, {"closed": True})
-        self.assertEqual(calls, [("show", "manatoki"), ("close",)])
+        self.assertEqual(calls, [("show", "exhentai"), ("close",)])
 
     def test_hitomi_inspector_ipc_uses_offline_service_and_gui_contract(self) -> None:
         calls = []
@@ -901,6 +901,7 @@ class WorkSchedulerTests(unittest.TestCase):
 
     def test_hitomi_metadata_state_reports_selected_japanese_title(self) -> None:
         text_stub = type("TextStub", (), {"text": lambda self: "1234567"})()
+        checkbox_stub = type("CheckStub", (), {"isChecked": lambda self: False})()
         owner = type(
             "OwnerStub",
             (),
@@ -919,6 +920,7 @@ class WorkSchedulerTests(unittest.TestCase):
                     "japaneseTitle": "日本語タイトル",
                 },
                 "reference_edit": text_stub,
+                "use_cookies_checkbox": checkbox_stub,
                 "fixture_path": "fixture.js",
                 "fetch_task": None,
                 "isVisible": lambda self: True,
@@ -931,6 +933,54 @@ class WorkSchedulerTests(unittest.TestCase):
         self.assertFalse(snapshot["titleSelection"]["usedFallback"])
         self.assertTrue(snapshot["imageSourcePlan"]["useOriginal"])
         self.assertFalse(snapshot["imageSourcePlan"]["networkRequested"])
+        self.assertFalse(snapshot["useStoredCookies"])
+        self.assertFalse(snapshot["cookieValuesExposed"])
+
+    def test_hitomi_metadata_cookie_fetch_reads_vault_only_when_opted_in(self) -> None:
+        config = default_config()
+        reference = "https://exhentai.org/g/987654/abcdef1234/"
+        with (
+            patch(
+                "toki_gui.provider_cookie_request_header",
+                return_value="ipb_member_id=member; ipb_pass_hash=secret",
+            ) as header,
+            patch(
+                "toki_gui.fetch_hitomi_metadata",
+                return_value={"ok": True},
+            ) as fetch,
+        ):
+            result = HitomiMetadataDialog._fetch_metadata_service(
+                reference, "auto", config, False
+            )
+        self.assertTrue(result["ok"])
+        header.assert_not_called()
+        fetch.assert_called_once_with(
+            reference, provider_hint="auto", config=config
+        )
+
+        with (
+            patch(
+                "toki_gui.provider_cookie_request_header",
+                return_value="ipb_member_id=member; ipb_pass_hash=secret",
+            ) as header,
+            patch(
+                "toki_gui.fetch_hitomi_metadata",
+                return_value={"ok": True},
+            ) as fetch,
+        ):
+            result = HitomiMetadataDialog._fetch_metadata_service(
+                reference, "auto", config, True
+            )
+        self.assertTrue(result["ok"])
+        header.assert_called_once_with(
+            "exhentai", "https://api.e-hentai.org/api.php"
+        )
+        fetch.assert_called_once_with(
+            reference,
+            provider_hint="auto",
+            config=config,
+            cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
+        )
 
     def test_proxy_credential_manager_ipc_opens_without_reading_secrets(self) -> None:
         calls = []

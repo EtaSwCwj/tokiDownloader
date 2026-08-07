@@ -98,6 +98,7 @@ class HitomiReferenceTests(unittest.TestCase):
         self.assertFalse(result["download"])
         self.assertTrue(result["metadataFileGeneration"])
         self.assertTrue(result["originalImagePolicy"])
+        self.assertTrue(result["userOwnedCookieAuthentication"])
         self.assertFalse(result["authenticationBypass"])
         self.assertIn("exhentai.org", result["supportedHosts"])
 
@@ -241,6 +242,7 @@ class HitomiReferenceTests(unittest.TestCase):
             captured["url"] = request.full_url
             captured["method"] = request.get_method()
             captured["body"] = json.loads(request.data.decode())
+            captured["cookie"] = request.get_header("Cookie")
             captured["timeout"] = timeout
             return Response()
 
@@ -248,12 +250,17 @@ class HitomiReferenceTests(unittest.TestCase):
             "https://exhentai.org/g/987654/abcdef1234/",
             opener=opener,
             timeout=9,
+            cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
         )
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["body"]["gidlist"], [[987654, "abcdef1234"]])
         self.assertEqual(captured["timeout"], 9)
+        self.assertEqual(
+            captured["cookie"], "ipb_member_id=member; ipb_pass_hash=secret"
+        )
         self.assertTrue(result["networkRequested"])
         self.assertNotIn("abcdef1234", repr(result))
+        self.assertNotIn("ipb_pass_hash", repr(result))
 
     def test_filename_modes_are_windows_safe_deterministic_and_bounded(self) -> None:
         metadata = load_hitomi_metadata_fixture(

@@ -65,11 +65,57 @@ _WINDOWS_RESERVED_SEGMENT = re.compile(
 )
 _WINDOWS_INVALID_SEGMENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 NETWORK_PROVIDERS = ("manatoki", "newtoki", "booktoki")
+COOKIE_PROVIDERS = NETWORK_PROVIDERS + ("hitomi", "exhentai", "ehentai")
+COOKIE_PROVIDER_POLICIES: dict[str, dict[str, Any]] = {
+    "manatoki": {
+        "label": "마나토끼",
+        "authenticationRequired": False,
+        "allowedDomainSuffixes": (),
+        "requiredCookieNames": (),
+        "recommendedCookieNames": (),
+    },
+    "newtoki": {
+        "label": "뉴토끼",
+        "authenticationRequired": False,
+        "allowedDomainSuffixes": (),
+        "requiredCookieNames": (),
+        "recommendedCookieNames": (),
+    },
+    "booktoki": {
+        "label": "북토끼",
+        "authenticationRequired": False,
+        "allowedDomainSuffixes": (),
+        "requiredCookieNames": (),
+        "recommendedCookieNames": (),
+    },
+    "hitomi": {
+        "label": "Hitomi.la",
+        "authenticationRequired": False,
+        "allowedDomainSuffixes": ("hitomi.la",),
+        "requiredCookieNames": (),
+        "recommendedCookieNames": (),
+    },
+    "exhentai": {
+        "label": "ExHentai",
+        "authenticationRequired": True,
+        "allowedDomainSuffixes": ("exhentai.org", "e-hentai.org"),
+        "requiredCookieNames": (),
+        "recommendedCookieNames": ("ipb_member_id", "ipb_pass_hash", "igneous"),
+    },
+    "ehentai": {
+        "label": "E-Hentai",
+        "authenticationRequired": False,
+        "allowedDomainSuffixes": ("e-hentai.org",),
+        "requiredCookieNames": (),
+        "recommendedCookieNames": ("ipb_member_id", "ipb_pass_hash"),
+    },
+}
 PUBLIC_IP_ENDPOINT = "https://api.ipify.org?format=json"
 CREDENTIAL_SERVICE = "tokiDownloader"
 PROXY_CREDENTIAL_KEY = "proxy:credentials"
 MAX_COOKIE_IMPORT_BYTES = 5 * 1024 * 1024
 MAX_COOKIE_COUNT = 10_000
+_COOKIE_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 JOB_DB_MIGRATIONS = {
     1: "작품 work_key 정규화와 실행 이력 분리",
     2: "고정·상태·정렬 복합 인덱스와 마이그레이션 이력",
@@ -793,11 +839,86 @@ def lookup_public_ip(
 
 def normalize_cookie_provider(value: str) -> str:
     provider = str(value or "").strip().lower()
-    if provider not in NETWORK_PROVIDERS:
+    if provider not in COOKIE_PROVIDERS:
         raise ValueError(
-            f"쿠키 공급자는 {', '.join(NETWORK_PROVIDERS)} 중 하나여야 합니다."
+            f"쿠키 공급자는 {', '.join(COOKIE_PROVIDERS)} 중 하나여야 합니다."
         )
     return provider
+
+
+def provider_cookie_policy(provider: str) -> dict[str, Any]:
+    normalized_provider = normalize_cookie_provider(provider)
+    policy = COOKIE_PROVIDER_POLICIES[normalized_provider]
+    return {
+        "provider": normalized_provider,
+        "label": str(policy["label"]),
+        "authenticationRequired": bool(policy["authenticationRequired"]),
+        "allowedDomainSuffixes": list(policy["allowedDomainSuffixes"]),
+        "requiredCookieNames": list(policy["requiredCookieNames"]),
+        "recommendedCookieNames": list(policy["recommendedCookieNames"]),
+        "accessRestrictionBypassSupported": False,
+        "storage": "os-credential-vault",
+        "valuesExposed": False,
+    }
+
+
+def _cookie_matches_domain(cookie_domain: str, allowed_suffixes: tuple[str, ...]) -> bool:
+    normalized_domain = str(cookie_domain or "").strip().lower().lstrip(".")
+    return any(
+        normalized_domain == suffix or normalized_domain.endswith(f".{suffix}")
+        for suffix in allowed_suffixes
+    )
+
+
+def assess_provider_cookies(
+    provider: str,
+    cookies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    policy = provider_cookie_policy(provider)
+    allowed_suffixes = tuple(policy["allowedDomainSuffixes"])
+    relevant = (
+        [
+            cookie
+            for cookie in cookies
+            if _cookie_matches_domain(str(cookie.get("domain") or ""), allowed_suffixes)
+        ]
+        if allowed_suffixes
+        else list(cookies)
+    )
+    present_names = {
+        str(cookie.get("name") or "").strip().lower()
+        for cookie in relevant
+        if cookie.get("name")
+    }
+    required_names = [name.lower() for name in policy["requiredCookieNames"]]
+    recommended_names = [name.lower() for name in policy["recommendedCookieNames"]]
+    missing_required = [name for name in required_names if name not in present_names]
+    missing_recommended = [name for name in recommended_names if name not in present_names]
+    authentication_ready: bool | None
+    if policy["authenticationRequired"]:
+        if not relevant:
+            authentication_ready = False
+        elif required_names:
+            authentication_ready = not missing_required
+        else:
+            authentication_ready = None
+    else:
+        authentication_ready = bool(relevant)
+    return {
+        "provider": policy["provider"],
+        "inputCookieCount": len(cookies),
+        "relevantCookieCount": len(relevant),
+        "ignoredCookieCount": len(cookies) - len(relevant),
+        "domains": sorted(
+            {str(cookie.get("domain") or "") for cookie in relevant if cookie.get("domain")}
+        ),
+        "authenticationRequired": policy["authenticationRequired"],
+        "authenticationReady": authentication_ready,
+        "authenticationReadinessVerifiable": bool(required_names),
+        "missingRequiredCookieNames": missing_required,
+        "missingRecommendedCookieNames": missing_recommended,
+        "valuesExposed": False,
+    }
 
 
 def credential_store_status() -> dict[str, Any]:
@@ -975,6 +1096,10 @@ def _normalize_cookie(cookie: dict[str, Any]) -> dict[str, Any]:
     path_value = str(cookie.get("path") or "/").strip() or "/"
     if not name or not domain or any(ord(char) < 32 for char in name + domain):
         raise ValueError("쿠키 이름과 도메인이 필요합니다.")
+    if not _COOKIE_NAME.fullmatch(name):
+        raise ValueError("쿠키 이름에 HTTP 헤더에서 사용할 수 없는 문자가 있습니다.")
+    if any(ord(char) < 32 for char in value + path_value) or ";" in value:
+        raise ValueError("쿠키 값 또는 경로에 안전하지 않은 문자가 있습니다.")
     if len(name) > 512 or len(value) > 16_384 or len(domain) > 253:
         raise ValueError("쿠키 필드 길이가 안전 한도를 초과합니다.")
     return {
@@ -1042,13 +1167,29 @@ def parse_cookie_file(input_path: Path) -> list[dict[str, Any]]:
 def cookie_import_plan(provider: str, input_path: Path) -> dict[str, Any]:
     normalized_provider = normalize_cookie_provider(provider)
     cookies = parse_cookie_file(input_path)
+    assessment = assess_provider_cookies(normalized_provider, cookies)
+    if assessment["relevantCookieCount"] <= 0:
+        allowed = provider_cookie_policy(normalized_provider)["allowedDomainSuffixes"]
+        raise ValueError(
+            "선택한 공급자에 해당하는 쿠키가 없습니다. "
+            f"허용 도메인: {', '.join(allowed)}"
+        )
     return {
         "provider": normalized_provider,
         "inputPath": str(Path(input_path).expanduser().resolve()),
-        "cookieCount": len(cookies),
-        "domains": sorted({cookie["domain"] for cookie in cookies}),
+        "cookieCount": assessment["relevantCookieCount"],
+        "ignoredCookieCount": assessment["ignoredCookieCount"],
+        "domains": assessment["domains"],
+        "authenticationRequired": assessment["authenticationRequired"],
+        "authenticationReady": assessment["authenticationReady"],
+        "authenticationReadinessVerifiable": assessment[
+            "authenticationReadinessVerifiable"
+        ],
+        "missingRequiredCookieNames": assessment["missingRequiredCookieNames"],
+        "missingRecommendedCookieNames": assessment["missingRecommendedCookieNames"],
         "containsValues": True,
         "willStoreInOsCredentialVault": True,
+        "valuesExposed": False,
         "executed": False,
     }
 
@@ -1061,6 +1202,15 @@ def import_provider_cookies(
 ) -> dict[str, Any]:
     plan = cookie_import_plan(provider, input_path)
     cookies = parse_cookie_file(input_path)
+    allowed_suffixes = tuple(
+        COOKIE_PROVIDER_POLICIES[plan["provider"]]["allowedDomainSuffixes"]
+    )
+    if allowed_suffixes:
+        cookies = [
+            cookie
+            for cookie in cookies
+            if _cookie_matches_domain(cookie["domain"], allowed_suffixes)
+        ]
     payload = {
         "format": "tokiDownloader-cookies",
         "formatVersion": 1,
@@ -1096,16 +1246,65 @@ def provider_cookie_status(provider: str, *, backend: Any | None = None) -> dict
     normalized_provider = normalize_cookie_provider(provider)
     payload = _load_provider_cookie_payload(normalized_provider, backend)
     cookies = payload.get("cookies", []) if payload else []
+    assessment = assess_provider_cookies(normalized_provider, cookies)
     return {
         "provider": normalized_provider,
         "stored": payload is not None,
         "cookieCount": len(cookies),
-        "domains": sorted(
-            {str(cookie.get("domain") or "") for cookie in cookies if cookie.get("domain")}
-        ),
+        "domains": assessment["domains"],
+        "authenticationRequired": assessment["authenticationRequired"],
+        "authenticationReady": assessment["authenticationReady"],
+        "authenticationReadinessVerifiable": assessment[
+            "authenticationReadinessVerifiable"
+        ],
+        "missingRequiredCookieNames": assessment["missingRequiredCookieNames"],
+        "missingRecommendedCookieNames": assessment["missingRecommendedCookieNames"],
         "updatedAt": str(payload.get("updatedAt") or "") if payload else "",
         "valuesExposed": False,
     }
+
+
+def provider_cookie_request_header(
+    provider: str,
+    request_url: str,
+    *,
+    backend: Any | None = None,
+    now_epoch: int | None = None,
+) -> str:
+    normalized_provider = normalize_cookie_provider(provider)
+    policy = provider_cookie_policy(normalized_provider)
+    parsed_url = urlsplit(str(request_url or "").strip())
+    host = str(parsed_url.hostname or "").lower()
+    if parsed_url.scheme not in {"http", "https"} or not host:
+        raise ValueError("쿠키를 적용할 HTTP(S) 주소가 필요합니다.")
+    allowed_suffixes = tuple(policy["allowedDomainSuffixes"])
+    if allowed_suffixes and not _cookie_matches_domain(host, allowed_suffixes):
+        raise ValueError("선택한 공급자와 요청 주소의 도메인이 일치하지 않습니다.")
+    payload = _load_provider_cookie_payload(normalized_provider, backend)
+    if payload is None:
+        raise ValueError("선택한 공급자의 저장된 쿠키가 없습니다.")
+    current_epoch = int(time.time()) if now_epoch is None else int(now_epoch)
+    request_path = parsed_url.path or "/"
+    selected: list[dict[str, Any]] = []
+    for raw_cookie in payload["cookies"]:
+        if not isinstance(raw_cookie, dict):
+            continue
+        cookie = _normalize_cookie(raw_cookie)
+        cookie_domain = cookie["domain"].lstrip(".")
+        if host != cookie_domain and not host.endswith(f".{cookie_domain}"):
+            continue
+        if cookie["secure"] and parsed_url.scheme != "https":
+            continue
+        cookie_path = cookie["path"] or "/"
+        if not request_path.startswith(cookie_path):
+            continue
+        if cookie["expires"] > 0 and cookie["expires"] <= current_epoch:
+            continue
+        selected.append(cookie)
+    if not selected:
+        raise ValueError("요청 주소에 적용할 수 있는 유효한 저장 쿠키가 없습니다.")
+    selected.sort(key=lambda cookie: (-len(cookie["path"]), cookie["name"].casefold()))
+    return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in selected)
 
 
 def export_provider_cookies(

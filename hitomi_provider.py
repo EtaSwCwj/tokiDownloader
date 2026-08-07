@@ -92,6 +92,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
         "japaneseTitlePolicy": True,
         "metadataFileGeneration": True,
         "originalImagePolicy": True,
+        "userOwnedCookieAuthentication": True,
         "metadataExternalRequestRequiresConfirmation": True,
         "supportedProviders": ["hitomi", "exhentai"],
         "supportedHosts": sorted(HITOMI_SUPPORTED_HOSTS),
@@ -106,6 +107,7 @@ def hitomi_provider_capabilities() -> dict[str, Any]:
             "표시 제목은 일본어 우선 여부와 명시적 폴백 근거를 함께 반환합니다.",
             "metadata.json과 info.txt 저장은 기존 파일 교체 전 별도 확인을 요구합니다.",
             "원본/최적화 이미지 선택 계획은 파일 변형 플래그만 읽고 네트워크를 사용하지 않습니다.",
+            "사용자 소유 쿠키는 기본 꺼짐이며 OS 보안 저장소와 명시적 요청 확인을 사용합니다.",
         ],
     }
 
@@ -1123,6 +1125,7 @@ def fetch_hitomi_metadata(
     config: dict[str, Any] | None = None,
     opener: Any = None,
     timeout: int = 30,
+    cookie_header: str = "",
 ) -> dict[str, Any]:
     plan = hitomi_metadata_request_plan(
         reference,
@@ -1139,6 +1142,14 @@ def fetch_hitomi_metadata(
         "Accept": "application/json, application/javascript;q=0.9",
         "User-Agent": "tokiDownloader/0.1 metadata-only",
     }
+    normalized_cookie_header = str(cookie_header or "")
+    if "\r" in normalized_cookie_header or "\n" in normalized_cookie_header:
+        raise HitomiReferenceError(
+            "hitomi.cookie_header_invalid",
+            "쿠키 헤더에 안전하지 않은 줄바꿈이 있습니다.",
+        )
+    if normalized_cookie_header:
+        headers["Cookie"] = normalized_cookie_header
     data = None
     if plan["provider"] == "exhentai":
         token = _extract_exhentai_gallery_token(reference)

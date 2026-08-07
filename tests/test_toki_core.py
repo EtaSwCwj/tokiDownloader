@@ -29,6 +29,7 @@ from toki_core import (
     cleanup_run_history,
     completion_action_plan,
     cookie_import_plan,
+    assess_provider_cookies,
     clear_provider_cookies,
     clear_proxy_credentials,
     create_work_collection,
@@ -111,6 +112,8 @@ from toki_core import (
     pdf_generation_policy_snapshot,
     lookup_public_ip,
     provider_cookie_status,
+    provider_cookie_policy,
+    provider_cookie_request_header,
     proxy_credential_status,
     read_run_log,
     rebuild_job_metadata,
@@ -511,6 +514,92 @@ class CoreContractTests(unittest.TestCase):
             self.assertFalse(
                 provider_cookie_status("manatoki", backend=backend)["stored"]
             )
+
+    def test_exhentai_cookie_policy_filters_domains_and_never_reports_values(self) -> None:
+        class MemoryCredentialBackend:
+            def __init__(self) -> None:
+                self.values: dict[tuple[str, str], str] = {}
+
+            def set_password(self, service: str, username: str, value: str) -> None:
+                self.values[(service, username)] = value
+
+            def get_password(self, service: str, username: str) -> str | None:
+                return self.values.get((service, username))
+
+        policy = provider_cookie_policy("exhentai")
+        self.assertTrue(policy["authenticationRequired"])
+        self.assertFalse(policy["accessRestrictionBypassSupported"])
+        self.assertEqual(
+            policy["recommendedCookieNames"],
+            ["ipb_member_id", "ipb_pass_hash", "igneous"],
+        )
+        assessment = assess_provider_cookies(
+            "exhentai",
+            [
+                {"name": "ipb_member_id", "value": "secret-a", "domain": ".e-hentai.org"},
+                {"name": "ipb_pass_hash", "value": "secret-b", "domain": ".e-hentai.org"},
+                {"name": "session", "value": "unrelated-secret", "domain": ".example.test"},
+            ],
+        )
+        self.assertIsNone(assessment["authenticationReady"])
+        self.assertFalse(assessment["authenticationReadinessVerifiable"])
+        self.assertEqual(assessment["relevantCookieCount"], 2)
+        self.assertEqual(assessment["ignoredCookieCount"], 1)
+        self.assertNotIn("secret", json.dumps(assessment))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "cookies.json"
+            source.write_text(
+                json.dumps(
+                    [
+                        {"name": "ipb_member_id", "value": "secret-a", "domain": ".e-hentai.org"},
+                        {"name": "ipb_pass_hash", "value": "secret-b", "domain": ".e-hentai.org"},
+                        {"name": "session", "value": "unrelated-secret", "domain": ".example.test"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            backend = MemoryCredentialBackend()
+            plan = cookie_import_plan("exhentai", source)
+            self.assertEqual(plan["cookieCount"], 2)
+            self.assertEqual(plan["ignoredCookieCount"], 1)
+            self.assertIsNone(plan["authenticationReady"])
+            imported = import_provider_cookies("exhentai", source, backend=backend)
+            self.assertTrue(imported["executed"])
+            stored_payload = json.loads(
+                backend.values[(toki_core.CREDENTIAL_SERVICE, "cookies:exhentai")]
+            )
+            self.assertEqual(len(stored_payload["cookies"]), 2)
+            self.assertNotIn("unrelated-secret", json.dumps(stored_payload))
+            status = provider_cookie_status("exhentai", backend=backend)
+            self.assertIsNone(status["authenticationReady"])
+            self.assertFalse(status["valuesExposed"])
+            self.assertNotIn("secret-a", json.dumps(status))
+            header = provider_cookie_request_header(
+                "exhentai",
+                "https://api.e-hentai.org/api.php",
+                backend=backend,
+                now_epoch=1,
+            )
+            self.assertIn("ipb_member_id=secret-a", header)
+            self.assertIn("ipb_pass_hash=secret-b", header)
+            with self.assertRaisesRegex(ValueError, "도메인"):
+                provider_cookie_request_header(
+                    "exhentai",
+                    "https://example.test/api",
+                    backend=backend,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            unsafe = Path(temporary) / "unsafe.json"
+            unsafe.write_text(
+                json.dumps(
+                    [{"name": "session", "value": "safe; injected=x", "domain": ".e-hentai.org"}]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "안전하지 않은"):
+                cookie_import_plan("exhentai", unsafe)
 
     def test_public_ip_service_requires_confirmation_plan_and_accepts_injected_response(self) -> None:
         plan = public_ip_check_plan()

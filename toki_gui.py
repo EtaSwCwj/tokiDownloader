@@ -190,6 +190,8 @@ from toki_core import (
     menu_action_availability,
     quick_action_catalog,
     provider_cookie_status,
+    provider_cookie_policy,
+    provider_cookie_request_header,
     pdf_generation_policy_snapshot,
     generate_local_api_token,
     local_api_policy_snapshot,
@@ -2481,7 +2483,7 @@ class HitomiMetadataDialog(QDialog):
         policy = hitomi_metadata_policy_snapshot(owner.config)
         note = QLabel(
             f"현재 방식: {policy['mode']} · 응답 상한 8 MiB. 요청 계획과 로컬 픽스처는 "
-            "오프라인이며 실제 조회는 매번 외부 연결 확인을 받습니다. 쿠키는 사용하지 않습니다."
+            "오프라인이며 실제 조회는 매번 외부 연결 확인을 받습니다. 저장 쿠키 사용은 기본 꺼짐입니다."
         )
         note.setObjectName("mutedLabel")
         note.setWordWrap(True)
@@ -2501,6 +2503,12 @@ class HitomiMetadataDialog(QDialog):
         self.fixture_label = QLabel(self.fixture_path or "선택하지 않음")
         self.fixture_label.setWordWrap(True)
         form.addRow("로컬 픽스처", self.fixture_label)
+        self.use_cookies_checkbox = QCheckBox("OS 보안 저장소의 선택 공급자 쿠키 사용")
+        self.use_cookies_checkbox.setChecked(False)
+        self.use_cookies_checkbox.setToolTip(
+            "CLI: hitomi metadata fetch --input URL --use-cookies --yes --json"
+        )
+        form.addRow("로그인 쿠키", self.use_cookies_checkbox)
         layout.addLayout(form)
 
         actions = QHBoxLayout()
@@ -2669,7 +2677,12 @@ class HitomiMetadataDialog(QDialog):
             "외부 메타데이터 요청",
             f"다음 공급자 주소로 메타데이터만 요청할까요?\n\n"
             f"{plan['request']['url']}\n\n"
-            "이미지 다운로드와 쿠키 사용은 하지 않습니다. ExHentai URL의 갤러리 토큰은 "
+            + (
+                "OS 보안 저장소에서 선택 공급자의 쿠키를 읽어 이 요청에만 사용합니다. "
+                if self.use_cookies_checkbox.isChecked()
+                else "저장된 쿠키는 읽거나 사용하지 않습니다. "
+            )
+            + "이미지 다운로드는 하지 않습니다. ExHentai URL의 갤러리 토큰과 쿠키 값은 "
             "요청 메모리에서만 사용하고 결과·로그에 남기지 않습니다.",
         )
         if answer != QMessageBox.StandardButton.Yes:
@@ -2752,12 +2765,11 @@ class HitomiMetadataDialog(QDialog):
         reference = self.reference_edit.text()
         provider = self._provider()
         config = dict(self.owner.config)
+        use_cookies = self.use_cookies_checkbox.isChecked()
         task = ServiceTask(
             "hitomi-metadata",
-            lambda: fetch_hitomi_metadata(
-                reference,
-                provider_hint=provider,
-                config=config,
+            lambda: self._fetch_metadata_service(
+                reference, provider, config, use_cookies
             ),
         )
         self.fetch_task = task
@@ -2766,6 +2778,32 @@ class HitomiMetadataDialog(QDialog):
         task.signals.finished.connect(self._fetch_finished)
         self.owner.io_thread_pool.start(task)
         self.owner.log("사용자 확인 후 Hitomi 메타데이터 요청 시작")
+
+    @staticmethod
+    def _fetch_metadata_service(
+        reference: str,
+        provider: str,
+        config: dict[str, Any],
+        use_cookies: bool,
+    ) -> dict[str, Any]:
+        fetch_options: dict[str, Any] = {}
+        if use_cookies:
+            plan = hitomi_metadata_request_plan(
+                reference,
+                provider_hint=provider,
+                config=config,
+            )
+            request = plan.get("request") or {}
+            fetch_options["cookie_header"] = provider_cookie_request_header(
+                str(plan["provider"]),
+                str(request.get("url") or ""),
+            )
+        return fetch_hitomi_metadata(
+            reference,
+            provider_hint=provider,
+            config=config,
+            **fetch_options,
+        )
 
     def _fetch_finished(self, _task_id: str, result: object, error: str) -> None:
         self.fetch_task = None
@@ -2814,6 +2852,8 @@ class HitomiMetadataDialog(QDialog):
             "referenceLength": len(self.reference_edit.text()),
             "fixtureSelected": bool(self.fixture_path),
             "fetchRunning": self.fetch_task is not None,
+            "useStoredCookies": self.use_cookies_checkbox.isChecked(),
+            "cookieValuesExposed": False,
             "result": dict(self.last_result),
             "titleSelection": title_selection,
             "metadataFiles": dict(getattr(self, "last_write_result", {})),
@@ -3173,10 +3213,16 @@ class CookieManagerDialog(QDialog):
             ("마나토끼", "manatoki"),
             ("뉴토끼", "newtoki"),
             ("북토끼", "booktoki"),
+            ("Hitomi.la", "hitomi"),
+            ("ExHentai", "exhentai"),
+            ("E-Hentai", "ehentai"),
         ):
             self.provider_combo.addItem(label, value)
-        self.provider_combo.currentIndexChanged.connect(self._reset_summary)
         form.addRow("공급자", self.provider_combo)
+        self.policy_label = QLabel("")
+        self.policy_label.setWordWrap(True)
+        form.addRow("인증 정책", self.policy_label)
+        self.provider_combo.currentIndexChanged.connect(self._reset_summary)
         capability = credential_store_status()
         backend_text = (
             f"사용 가능 · {capability['backend']}"
@@ -3212,12 +3258,20 @@ class CookieManagerDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
         buttons.rejected.connect(self.close)
         layout.addWidget(buttons)
+        self._reset_summary()
 
     def provider(self) -> str:
         return str(self.provider_combo.currentData() or "manatoki")
 
     def _reset_summary(self, _index: int = 0) -> None:
         self.summary_label.setText("쿠키 상태를 아직 읽지 않았습니다.")
+        policy = provider_cookie_policy(self.provider())
+        allowed = ", ".join(policy["allowedDomainSuffixes"]) or "사이트 주소 변경에 따라 제한하지 않음"
+        hints = ", ".join(policy["recommendedCookieNames"]) or "없음"
+        self.policy_label.setText(
+            f"로그인 필수: {'예' if policy['authenticationRequired'] else '아니요'} · "
+            f"허용 도메인: {allowed} · 알려진 이름 힌트: {hints} · 접근 제한 우회 미지원"
+        )
 
     def _confirm(self, title: str, message: str) -> bool:
         return (
@@ -3237,9 +3291,17 @@ class CookieManagerDialog(QDialog):
             QMessageBox.warning(self, "쿠키 상태를 읽을 수 없음", str(error))
             return
         domains = ", ".join(status["domains"]) or "없음"
+        readiness = ""
+        if status["authenticationRequired"]:
+            if status["authenticationReady"] is True:
+                readiness = " · 인증 자료 확인됨"
+            elif status["authenticationReady"] is False:
+                readiness = " · 관련 쿠키 없음"
+            else:
+                readiness = " · 로그인 성공 여부는 실제 요청에서만 확인"
         self.summary_label.setText(
             f"저장: {'예' if status['stored'] else '아니요'} · "
-            f"{status['cookieCount']}개 · 도메인: {domains}"
+            f"{status['cookieCount']}개 · 도메인: {domains}{readiness}"
         )
 
     def _import_cookies(self) -> None:
@@ -3248,14 +3310,31 @@ class CookieManagerDialog(QDialog):
         )
         if not selected:
             return
+        if not self._confirm(
+            "민감한 쿠키 파일 검사",
+            "선택한 파일을 읽어 쿠키 개수와 공급자 적합성을 검사할까요? 쿠키 값은 화면이나 로그에 표시하지 않습니다.",
+        ):
+            return
         try:
             plan = cookie_import_plan(self.provider(), Path(selected))
         except (OSError, ValueError, json.JSONDecodeError) as error:
             QMessageBox.warning(self, "쿠키 파일을 읽을 수 없음", str(error))
             return
+        readiness = ""
+        if plan["authenticationRequired"] and plan["authenticationReady"] is False:
+            missing = ", ".join(plan["missingRequiredCookieNames"])
+            readiness = f"\n주의: 로그인에 필요한 것으로 알려진 쿠키가 부족합니다: {missing}"
+        elif plan["authenticationRequired"] and plan["authenticationReady"] is None:
+            readiness = "\n로그인 성공 여부는 사용자가 승인한 실제 요청에서만 확인할 수 있습니다."
+        ignored = (
+            f"\n다른 도메인의 쿠키 {plan['ignoredCookieCount']}개는 저장하지 않습니다."
+            if plan["ignoredCookieCount"]
+            else ""
+        )
         if not self._confirm(
             "쿠키 가져오기",
-            f"쿠키 {plan['cookieCount']}개를 Windows 보안 저장소에 저장할까요?",
+            f"관련 쿠키 {plan['cookieCount']}개를 Windows 보안 저장소에 저장할까요?"
+            f"{ignored}{readiness}",
         ):
             return
         try:
@@ -3303,6 +3382,10 @@ class CookieManagerDialog(QDialog):
             "open": self.isVisible(),
             "provider": self.provider(),
             "statusRead": "아직" not in self.summary_label.text(),
+            "authenticationRequired": provider_cookie_policy(self.provider())[
+                "authenticationRequired"
+            ],
+            "cookieValuesExposed": False,
         }
 
 

@@ -138,6 +138,7 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd hitomi metadata parse --input "https://hitomi.la/manga/sample-1234567.html" --fixture ".\tests\fixtures\hitomi\galleryinfo_1234567.js" --json
 .\toki-cli.cmd hitomi metadata show --input "https://hitomi.la/manga/sample-1234567.html" --json
 .\toki-cli.cmd hitomi metadata fetch --input "https://hitomi.la/manga/sample-1234567.html" --yes --json
+.\toki-cli.cmd hitomi metadata fetch --input "https://exhentai.org/g/987654/TOKEN/" --use-cookies --yes --json
 .\toki-cli.cmd hitomi metadata close --json
 .\toki-cli.cmd hitomi filenames status --json
 .\toki-cli.cmd hitomi filenames set --mode number_original --json
@@ -286,7 +287,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd public-ip plan --json
 .\toki-cli.cmd public-ip check --yes --json
 .\toki-cli.cmd cookies capabilities --json
-.\toki-cli.cmd cookies plan-import --provider manatoki --input "D:\cookies.json" --json
+.\toki-cli.cmd cookies policy --provider exhentai --json
+.\toki-cli.cmd cookies plan-import --provider exhentai --input "D:\cookies.json" --yes --json
 .\toki-cli.cmd cookies status --provider manatoki --yes --json
 .\toki-cli.cmd cookies import --provider manatoki --input "D:\cookies.json" --yes --json
 .\toki-cli.cmd cookies export --provider manatoki --output "D:\cookies-backup.json" --yes --json
@@ -394,8 +396,10 @@ HTTP 인증 요청에는 프록시 자격증명을 보내지 않습니다. 상�
 
 공급자 쿠키 관리는 선택 설치한 `keyring`을 통해 Windows 자격 증명 저장소를 사용합니다.
 JSON 배열과 Netscape 쿠키 파일을 최대 5 MiB·10,000개 한도로 검사하며
-`cookies plan-import`는 저장하지 않고 개수와 도메인만 보여줍니다. 상태 읽기, 가져오기,
-평문 JSON 내보내기와 초기화는 모두 `--yes`가 필요하고 GUI도 매번 확인합니다. 상태 화면과
+`cookies policy`는 비밀값을 읽지 않고 공급자별 도메인·인증 정책만 보여줍니다.
+`cookies plan-import`는 저장하지 않고 관련 쿠키 개수와 도메인만 보여주지만 민감 파일을
+읽으므로 `--yes`가 필요합니다. 상태 읽기, 가져오기, 평문 JSON 내보내기와 초기화도 모두
+`--yes`가 필요하고 GUI도 매번 확인합니다. 상태 화면과
 로그에는 쿠키 값을 표시하지 않습니다. 내보낸 JSON은 민감한 평문 파일이므로 개인 보안
 경로에서만 보관해야 합니다.
 
@@ -740,7 +744,8 @@ ExHentai 갤러리 토큰은 유효성만 확인하고 결과·로그·설정에
 닫을 수 있습니다. 현재 이 명령은 식별자 분석 전용이며 `hitomi status`가 `networkRequest:
 false`, `download: false`, `metadata: true`, `imageFilenamePolicy: true`,
 `excludedTagPolicy: true`, `japaneseTitlePolicy: true`, `metadataFileGeneration: true`,
-`originalImagePolicy: true`로 구현 범위를 명확히 표시합니다.
+`originalImagePolicy: true`, `userOwnedCookieAuthentication: true`로 구현 범위를 명확히
+표시합니다.
 접근 제한 우회는 구현하지 않습니다. 프로그램 자체 캡처는
 `logs\hitomi-reference-inspector.png`와 `logs\hitomi-provider-settings.png`에 저장됩니다.
 
@@ -762,8 +767,13 @@ ExHentai/E-Hentai는 [공식 gdata API 형식](https://ehwiki.org/wiki/API)의 J
 
 `hitomi metadata plan`은 메서드·엔드포인트와 마스킹한 본문만 계산하고 외부 접속을 하지
 않습니다. `parse --fixture PATH`는 사이트 변경 회귀 검사용 로컬 JS/JSON을 읽으며 한글·공백
-Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실행하고, GUI의 실제 조회
-버튼도 매번 목적지와 쿠키 미사용을 확인한 뒤 제한형 I/O 풀에서 동작합니다. ExHentai
+Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실행하고 기본값은 저장 쿠키를
+읽지 않습니다. 인증이 필요한 사용자 소유 세션을 명시적으로 쓰려면
+`fetch --use-cookies --yes`를 사용하거나 GUI의 `OS 보안 저장소의 선택 공급자 쿠키 사용`을
+체크한 뒤 목적지와 쿠키 읽기를 다시 확인합니다. ExHentai 관련 쿠키는 E-Hentai/ExHentai
+도메인만 보관하며 요청 호스트·경로·Secure·만료 조건에 맞는 값만 해당 요청의 `Cookie`
+헤더에 주입합니다. 쿠키 값은 결과 JSON·상태·설정·로그에 남기지 않고 접근 제한 우회는
+지원하지 않습니다. GUI 조회는 제한형 I/O 풀에서 동작합니다. ExHentai
 갤러리 토큰은 POST 요청 메모리에만 존재하고 계획·결과·설정·로그에는 원문을 남기지
 않습니다. 로컬 검증 화면은 `logs\hitomi-metadata-plan.png`,
 `logs\hitomi-metadata-fixture.png`, `logs\hitomi-metadata-settings.png`에 있습니다. 실제 공급자

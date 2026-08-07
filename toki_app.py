@@ -45,6 +45,7 @@ from hitomi_provider import (
 )
 from toki_core import (
     APP_VERSION,
+    COOKIE_PROVIDERS,
     archive_viewer_policy_snapshot,
     available_ui_languages,
     apply_config_migrations,
@@ -128,6 +129,8 @@ from toki_core import (
     public_ip_check_plan,
     lookup_public_ip,
     provider_cookie_status,
+    provider_cookie_policy,
+    provider_cookie_request_header,
     pdf_generation_policy_snapshot,
     proxy_credential_status,
     plan_image_conversion,
@@ -916,6 +919,11 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "fetch":
             metadata_command.add_argument("--yes", action="store_true", help="외부 요청 확인")
             metadata_command.add_argument("--timeout", type=int, default=30, help="요청 제한 초")
+            metadata_command.add_argument(
+                "--use-cookies",
+                action="store_true",
+                help="확인 후 OS 보안 저장소의 해당 공급자 쿠키 사용",
+            )
     hitomi_metadata_close = hitomi_metadata_commands.add_parser(
         "close", help="열린 메타데이터 대화상자 닫기"
     )
@@ -1637,31 +1645,35 @@ def build_parser() -> argparse.ArgumentParser:
     cookie_commands = cookies.add_subparsers(dest="cookie_command", required=True)
     cookie_capabilities = cookie_commands.add_parser("capabilities", help="보안 저장소 상태")
     cookie_capabilities.add_argument("--json", action="store_true", help="JSON으로 출력")
+    cookie_policy = cookie_commands.add_parser("policy", help="공급자 쿠키 정책 조회")
+    cookie_policy.add_argument("--provider", required=True, choices=COOKIE_PROVIDERS)
+    cookie_policy.add_argument("--json", action="store_true", help="JSON으로 출력")
     cookie_plan = cookie_commands.add_parser("plan-import", help="파일을 저장하지 않고 검사")
-    cookie_plan.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_plan.add_argument("--provider", required=True, choices=COOKIE_PROVIDERS)
     cookie_plan.add_argument("--input", required=True)
+    cookie_plan.add_argument("--yes", action="store_true", help="민감한 쿠키 파일 읽기 확인")
     cookie_plan.add_argument("--json", action="store_true", help="JSON으로 출력")
     cookie_status = cookie_commands.add_parser("status", help="저장된 쿠키 메타데이터")
-    cookie_status.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_status.add_argument("--provider", required=True, choices=COOKIE_PROVIDERS)
     cookie_status.add_argument("--yes", action="store_true", help="보안 저장소 읽기 확인")
     cookie_status.add_argument("--json", action="store_true", help="JSON으로 출력")
     cookie_import = cookie_commands.add_parser("import", help="쿠키를 OS 보안 저장소에 저장")
-    cookie_import.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_import.add_argument("--provider", required=True, choices=COOKIE_PROVIDERS)
     cookie_import.add_argument("--input", required=True)
     cookie_import.add_argument("--yes", action="store_true", help="민감 정보 저장 확인")
     cookie_import.add_argument("--json", action="store_true", help="JSON으로 출력")
     cookie_export = cookie_commands.add_parser("export", help="쿠키 값을 JSON 파일로 내보내기")
-    cookie_export.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_export.add_argument("--provider", required=True, choices=COOKIE_PROVIDERS)
     cookie_export.add_argument("--output", required=True)
     cookie_export.add_argument("--yes", action="store_true", help="평문 민감 파일 생성 확인")
     cookie_export.add_argument("--json", action="store_true", help="JSON으로 출력")
     cookie_clear = cookie_commands.add_parser("clear", help="OS 보안 저장소 쿠키 삭제")
-    cookie_clear.add_argument("--provider", required=True, choices=("manatoki", "newtoki", "booktoki"))
+    cookie_clear.add_argument("--provider", required=True, choices=COOKIE_PROVIDERS)
     cookie_clear.add_argument("--yes", action="store_true", help="삭제 확인")
     cookie_clear.add_argument("--json", action="store_true", help="JSON으로 출력")
     cookie_manage = cookie_commands.add_parser("manage", help="GUI 쿠키 관리 창 제어")
     cookie_manage.add_argument(
-        "--provider", default="manatoki", choices=("manatoki", "newtoki", "booktoki")
+        "--provider", default="manatoki", choices=COOKIE_PROVIDERS
     )
     cookie_manage_window = cookie_manage.add_mutually_exclusive_group(required=True)
     cookie_manage_window.add_argument("--show-gui", action="store_true")
@@ -2565,11 +2577,26 @@ def run_cli(args: argparse.Namespace) -> int:
                                 raise ControlError(
                                     "실제 공급자 메타데이터 요청에는 --yes가 필요합니다."
                                 )
+                            fetch_options: dict[str, Any] = {}
+                            if args.use_cookies:
+                                request_plan = hitomi_metadata_request_plan(
+                                    args.input,
+                                    provider_hint=args.provider,
+                                    config=current,
+                                )
+                                request = request_plan.get("request") or {}
+                                fetch_options["cookie_header"] = (
+                                    provider_cookie_request_header(
+                                        str(request_plan["provider"]),
+                                        str(request.get("url") or ""),
+                                    )
+                                )
                             result = fetch_hitomi_metadata(
                                 args.input,
                                 provider_hint=args.provider,
                                 config=current,
                                 timeout=args.timeout,
+                                **fetch_options,
                             )
                     except HitomiReferenceError as error:
                         result = error.to_dict()
@@ -4267,7 +4294,13 @@ def run_cli(args: argparse.Namespace) -> int:
             )
         elif subcommand == "capabilities":
             result = credential_store_status()
+        elif subcommand == "policy":
+            result = provider_cookie_policy(args.provider)
         elif subcommand == "plan-import":
+            if not args.yes:
+                raise ControlError(
+                    "쿠키 파일에는 민감한 값이 포함됩니다. 읽어서 검사하려면 --yes가 필요합니다."
+                )
             result = cookie_import_plan(args.provider, Path(args.input))
         else:
             if not args.yes:

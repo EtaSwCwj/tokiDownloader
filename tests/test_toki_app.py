@@ -454,6 +454,39 @@ class CliParserTests(unittest.TestCase):
             timeout=12,
         )
 
+        cookie_fetch_args = build_parser().parse_args(
+            [
+                "hitomi", "metadata", "fetch",
+                "--input", "https://exhentai.org/g/987654/abcdef1234/",
+                "--use-cookies", "--yes", "--json",
+            ]
+        )
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            patch(
+                "toki_app.provider_cookie_request_header",
+                return_value="ipb_member_id=member; ipb_pass_hash=secret",
+            ) as cookie_header,
+            patch(
+                "toki_app.fetch_hitomi_metadata",
+                return_value={"ok": True, "networkRequested": True},
+            ) as fetch,
+            redirect_stdout(StringIO()) as output,
+        ):
+            self.assertEqual(run_cli(cookie_fetch_args), 0)
+        cookie_header.assert_called_once_with(
+            "exhentai", "https://api.e-hentai.org/api.php"
+        )
+        fetch.assert_called_once_with(
+            "https://exhentai.org/g/987654/abcdef1234/",
+            provider_hint="auto",
+            config=default_config(),
+            timeout=30,
+            cookie_header="ipb_member_id=member; ipb_pass_hash=secret",
+        )
+        self.assertNotIn("ipb_pass_hash", output.getvalue())
+
         show_args = build_parser().parse_args(
             [
                 "hitomi",
@@ -1004,6 +1037,14 @@ class CliParserTests(unittest.TestCase):
                     "--input", str(source), "--json",
                 ]
             )
+            with self.assertRaisesRegex(toki_app.ControlError, "--yes"):
+                run_cli(plan)
+            plan = build_parser().parse_args(
+                [
+                    "cookies", "plan-import", "--provider", "manatoki",
+                    "--input", str(source), "--yes", "--json",
+                ]
+            )
             with (
                 patch("toki_app.import_provider_cookies") as importer,
                 redirect_stdout(StringIO()),
@@ -1043,6 +1084,29 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(run_cli(manage), 0)
         request.assert_called_once_with(
             {"action": "show_cookie_manager", "provider": "manatoki"}
+        )
+
+        policy = build_parser().parse_args(
+            ["cookies", "policy", "--provider", "exhentai", "--json"]
+        )
+        with redirect_stdout(StringIO()) as output:
+            self.assertEqual(run_cli(policy), 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["authenticationRequired"])
+        self.assertFalse(payload["accessRestrictionBypassSupported"])
+        self.assertFalse(payload["valuesExposed"])
+
+        hitomi_manage = build_parser().parse_args(
+            ["cookies", "manage", "--provider", "exhentai", "--show-gui", "--json"]
+        )
+        with (
+            patch("toki_app.ensure_gui_running"),
+            patch("toki_app.control_request", return_value={"shown": True}) as request,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(hitomi_manage), 0)
+        request.assert_called_once_with(
+            {"action": "show_cookie_manager", "provider": "exhentai"}
         )
     def test_public_ip_cli_plans_without_network_and_requires_yes_for_check(self) -> None:
         plan = build_parser().parse_args(["public-ip", "plan", "--json"])
