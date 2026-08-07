@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import ssl
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -103,6 +106,58 @@ class _SameOriginMetadataRedirectHandler(HTTPRedirectHandler):
                 "메타데이터 요청이 다른 출처로 이동하려 해 차단했습니다.",
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _classify_metadata_request_error(error: Exception) -> HitomiReferenceError:
+    if isinstance(error, HTTPError):
+        status = int(error.code or 0)
+        if status in {401, 403}:
+            code = "hitomi.metadata_authentication"
+        elif status == 404:
+            code = "hitomi.metadata_not_found"
+        elif status == 429:
+            code = "hitomi.metadata_rate_limited"
+        else:
+            code = "hitomi.metadata_http"
+        return HitomiReferenceError(
+            code,
+            f"갤러리 메타데이터 서버가 HTTP {status or '오류'}를 반환했습니다.",
+        )
+
+    reason: Any = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return HitomiReferenceError(
+            "hitomi.metadata_tls",
+            "갤러리 메타데이터 서버 인증서를 확인하지 못했습니다.",
+        )
+    if isinstance(reason, socket.gaierror) or getattr(reason, "winerror", None) in {
+        11001,
+        11002,
+        11003,
+        11004,
+    }:
+        return HitomiReferenceError(
+            "hitomi.metadata_dns",
+            "갤러리 메타데이터 서버의 DNS 주소를 확인하지 못했습니다.",
+        )
+    if isinstance(reason, (TimeoutError, socket.timeout)) or getattr(
+        reason, "winerror", None
+    ) == 10060:
+        return HitomiReferenceError(
+            "hitomi.metadata_timeout",
+            "갤러리 메타데이터 요청 시간이 초과됐습니다.",
+        )
+    if isinstance(reason, ConnectionRefusedError) or getattr(
+        reason, "winerror", None
+    ) == 10061:
+        return HitomiReferenceError(
+            "hitomi.metadata_connection_refused",
+            "갤러리 메타데이터 서버가 연결을 거부했습니다.",
+        )
+    return HitomiReferenceError(
+        "hitomi.metadata_network",
+        f"갤러리 메타데이터 요청에 실패했습니다 ({type(reason).__name__}).",
+    )
 
 
 def hitomi_provider_capabilities() -> dict[str, Any]:
@@ -1259,10 +1314,7 @@ def fetch_hitomi_metadata(
     except HitomiReferenceError:
         raise
     except Exception as error:
-        raise HitomiReferenceError(
-            "hitomi.metadata_network",
-            f"갤러리 메타데이터 요청 실패 ({type(error).__name__})",
-        ) from error
+        raise _classify_metadata_request_error(error) from error
     if len(payload) > HITOMI_METADATA_MAX_BYTES:
         raise HitomiReferenceError(
             "hitomi.metadata_too_large",

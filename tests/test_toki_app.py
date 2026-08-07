@@ -480,6 +480,24 @@ class CliParserTests(unittest.TestCase):
             confirmed=True,
         )
 
+        with (
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.settings_snapshot", return_value=default_config()),
+            patch(
+                "toki_app.fetch_hitomi_metadata",
+                side_effect=toki_app.HitomiReferenceError(
+                    "hitomi.metadata_dns", "DNS 주소를 확인하지 못했습니다."
+                ),
+            ),
+            redirect_stdout(StringIO()) as stdout,
+        ):
+            self.assertEqual(run_cli(confirmed_args), 2)
+        failed = json.loads(stdout.getvalue())
+        self.assertEqual(failed["errorCode"], "hitomi.metadata_dns")
+        self.assertEqual(
+            failed["metadataPolicy"]["decision"], "continue_without_metadata"
+        )
+
         cookie_fetch_args = build_parser().parse_args(
             [
                 "hitomi", "metadata", "fetch",

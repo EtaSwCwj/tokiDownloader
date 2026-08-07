@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import socket
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 from hitomi_provider import (
     HITOMI_METADATA_MAX_BYTES,
@@ -356,6 +359,47 @@ class HitomiReferenceTests(unittest.TestCase):
                 "https://example.invalid/collect",
             )
         self.assertEqual(caught.exception.code, "hitomi.metadata_redirect_blocked")
+
+    def test_metadata_network_failures_have_stable_safe_error_codes(self) -> None:
+        cases = (
+            (URLError(socket.gaierror(11001, "host lookup failed")), "hitomi.metadata_dns"),
+            (URLError(TimeoutError("timed out")), "hitomi.metadata_timeout"),
+            (
+                URLError(ssl.SSLCertVerificationError("certificate verify failed")),
+                "hitomi.metadata_tls",
+            ),
+            (ConnectionRefusedError("refused"), "hitomi.metadata_connection_refused"),
+            (
+                HTTPError(
+                    "https://ltn.hitomi.la/galleries/42.js",
+                    404,
+                    "Not Found",
+                    {},
+                    None,
+                ),
+                "hitomi.metadata_not_found",
+            ),
+            (
+                HTTPError(
+                    "https://api.e-hentai.org/api.php",
+                    403,
+                    "Forbidden",
+                    {},
+                    None,
+                ),
+                "hitomi.metadata_authentication",
+            ),
+        )
+        for raised, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                with self.assertRaises(HitomiReferenceError) as caught:
+                    fetch_hitomi_metadata(
+                        "42",
+                        opener=lambda *_args, raised=raised, **_kwargs: (_ for _ in ()).throw(raised),
+                        confirmed=True,
+                    )
+                self.assertEqual(caught.exception.code, expected_code)
+                self.assertNotIn("ltn.hitomi.la", str(caught.exception))
 
         class ForeignResponse:
             def __enter__(self):

@@ -1013,14 +1013,14 @@ class WorkSchedulerTests(unittest.TestCase):
         with patch(
             "toki_gui.fetch_hitomi_metadata",
             side_effect=toki_gui.HitomiReferenceError(
-                "hitomi.metadata_network", "연결 실패"
+                "hitomi.metadata_dns", "DNS 주소를 확인하지 못했습니다."
             ),
         ):
             result = HitomiMetadataDialog._fetch_metadata_service(
                 reference, "auto", required, False
             )
         self.assertFalse(result["ok"])
-        self.assertEqual(result["errorCode"], "hitomi.metadata_network")
+        self.assertEqual(result["errorCode"], "hitomi.metadata_dns")
         self.assertEqual(result["metadataPolicy"]["decision"], "stop")
         self.assertFalse(result["metadataPolicy"]["shouldContinue"])
 

@@ -816,6 +816,10 @@ Windows 경로를 지원합니다. `fetch --yes`만 실제 외부 요청을 실�
 `logs\hitomi-metadata-mode-final.png`, `logs\hitomi-metadata-required-failure.png`에 있습니다.
 실제 공급자 요청 검증은 사용자 승인 전에는 실행하지 않습니다.
 
+연결 실패는 원문 예외를 그대로 노출하지 않고 DNS, TLS 인증서, 시간 초과, 연결 거부,
+HTTP 인증, 찾을 수 없음, 속도 제한으로 분류한 안정 오류 코드를 반환합니다. URL·쿠키·갤러리
+토큰은 오류 문구에 포함하지 않습니다.
+
 설정 스키마 v18은 Hitomi 이미지 파일명을 `original`, `number`, `number_original` 중 하나로
 저장하며 기본값은 식별성과 자연 정렬을 함께 보존하는 `0001_원본.jpg` 방식입니다. 공용
 파일명 계획은 Windows 금지 문자·예약 장치 이름·경로 구분자를 제거하고, 대소문자까지 같은
