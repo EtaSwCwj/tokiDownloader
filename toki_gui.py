@@ -146,6 +146,7 @@ from toki_core import (
     export_diagnostics,
     export_jobs_snapshot,
     export_provider_cookies,
+    export_shortcut_settings,
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
@@ -154,6 +155,7 @@ from toki_core import (
     import_app_settings,
     import_jobs_snapshot,
     import_provider_cookies,
+    shortcut_import_plan,
     inspect_local_archive,
     inspect_clipboard_url,
     job_database_diagnostics,
@@ -178,6 +180,7 @@ from toki_core import (
     mark_run_cancelled,
     move_job_folder as execute_job_folder_move,
     normalize_image_concurrency,
+    normalize_shortcut_overrides,
     normalize_embedded_browser_url,
     normalize_retry_backoff,
     normalize_retry_count,
@@ -202,6 +205,7 @@ from toki_core import (
     save_jobs,
     save_runs,
     settings_snapshot,
+    shortcut_settings_snapshot,
     store_proxy_credentials,
     set_job_pause_state,
     set_process_tree_paused,
@@ -798,40 +802,214 @@ class RunLogDialog(QDialog):
 
 
 class ShortcutHelpDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("키보드 단축키")
-        self.resize(760, 520)
+    def __init__(self, owner: "MainWindow") -> None:
+        super().__init__(owner)
+        self.owner = owner
+        self.setWindowTitle("키보드 단축키 편집")
+        self.resize(880, 620)
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "키보드로 주요 화면을 이동하고 선택 작품을 제어할 수 있습니다. "
-            "오른쪽 CLI 명령으로 같은 동작을 자동 검증할 수 있습니다."
+            "동작별 단축키를 편집하거나 비활성화할 수 있습니다. 세미콜론으로 최대 4개를 구분하며 "
+            "충돌·단일 문자·종료 키는 저장 전에 차단합니다."
         )
         intro.setWordWrap(True)
         intro.setObjectName("mutedLabel")
         layout.addWidget(intro)
 
-        catalog = keyboard_shortcut_catalog()
-        table = QTableWidget(len(catalog), 3)
-        table.setHorizontalHeaderLabels(("키", "동작", "대응 CLI"))
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setAlternatingRowColors(True)
-        table.verticalHeader().setVisible(False)
-        for row, item in enumerate(catalog):
-            table.setItem(row, 0, QTableWidgetItem(", ".join(item["keys"])))
-            table.setItem(row, 1, QTableWidgetItem(str(item["label"])))
-            table.setItem(row, 2, QTableWidgetItem(str(item["cli"])))
-        header = table.horizontalHeader()
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(("키", "동작", "대응 CLI"))
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
+        header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(table, 1)
+        layout.addWidget(self.table, 1)
+
+        editor = QHBoxLayout()
+        editor.addWidget(QLabel("선택 동작 키"))
+        self.keys_edit = QLineEdit()
+        self.keys_edit.setPlaceholderText("예: Ctrl+Alt+F; F9")
+        self.keys_edit.returnPressed.connect(self._apply_selected)
+        editor.addWidget(self.keys_edit, 1)
+        apply_button = QPushButton("적용")
+        apply_button.setToolTip("CLI: shortcuts --set ACTION --keys KEYS --json")
+        apply_button.clicked.connect(self._apply_selected)
+        disable_button = QPushButton("비활성화")
+        disable_button.setToolTip("CLI: shortcuts --disable ACTION --json")
+        disable_button.clicked.connect(self._disable_selected)
+        default_button = QPushButton("기본값")
+        default_button.setToolTip("CLI: shortcuts --reset ACTION --json")
+        default_button.clicked.connect(self._reset_selected)
+        editor.addWidget(apply_button)
+        editor.addWidget(disable_button)
+        editor.addWidget(default_button)
+        layout.addLayout(editor)
+
+        file_actions = QHBoxLayout()
+        import_button = QPushButton("가져오기...")
+        import_button.setToolTip("CLI: shortcuts --import PATH --execute --yes --json")
+        import_button.clicked.connect(self._import_file)
+        export_button = QPushButton("내보내기...")
+        export_button.setToolTip("CLI: shortcuts --export PATH --json")
+        export_button.clicked.connect(self._export_file)
+        reset_all_button = QPushButton("전체 기본값...")
+        reset_all_button.setToolTip("CLI: shortcuts --reset-all --json")
+        reset_all_button.clicked.connect(self._reset_all)
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("mutedLabel")
+        file_actions.addWidget(import_button)
+        file_actions.addWidget(export_button)
+        file_actions.addWidget(reset_all_button)
+        file_actions.addWidget(self.status_label, 1)
+        layout.addLayout(file_actions)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
         buttons.rejected.connect(self.close)
         layout.addWidget(buttons)
+        self.refresh()
+
+    def selected_action_id(self) -> str:
+        row = self.table.currentRow()
+        if row < 0:
+            return ""
+        item = self.table.item(row, 1)
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def refresh(self, selected_action: str = "") -> None:
+        catalog = keyboard_shortcut_catalog(self.owner.config)
+        selected_action = selected_action or self.selected_action_id()
+        self.table.setRowCount(len(catalog))
+        selected_row = 0
+        for row, item in enumerate(catalog):
+            keys = "; ".join(item["keys"]) if item["keys"] else "사용 안 함"
+            key_item = QTableWidgetItem(keys)
+            if item["overridden"]:
+                key_item.setToolTip(
+                    "사용자 지정" if item["enabled"] else "사용자가 비활성화함"
+                )
+            label_item = QTableWidgetItem(str(item["label"]))
+            label_item.setData(Qt.ItemDataRole.UserRole, str(item["id"]))
+            cli_item = QTableWidgetItem(str(item["cli"]))
+            self.table.setItem(row, 0, key_item)
+            self.table.setItem(row, 1, label_item)
+            self.table.setItem(row, 2, cli_item)
+            if item["id"] == selected_action:
+                selected_row = row
+        if self.table.rowCount():
+            self.table.selectRow(selected_row)
+        snapshot = shortcut_settings_snapshot(self.owner.config)
+        self.status_label.setText(
+            f"사용자 지정 {snapshot['overrideCount']}개 · 비활성 {snapshot['disabledCount']}개"
+        )
+
+    def _selection_changed(self) -> None:
+        action_id = self.selected_action_id()
+        if not action_id:
+            return
+        item = next(
+            item
+            for item in keyboard_shortcut_catalog(self.owner.config)
+            if item["id"] == action_id
+        )
+        self.keys_edit.setText("; ".join(item["keys"]))
+
+    def _overrides(self) -> dict[str, list[str]]:
+        return {
+            key: list(value)
+            for key, value in self.owner.config.get("shortcutOverrides", {}).items()
+        }
+
+    def _apply_overrides(self, overrides: dict[str, list[str]], action_id: str = "") -> None:
+        try:
+            self.owner.apply_shortcut_overrides(overrides)
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, "단축키를 저장할 수 없음", str(error))
+            return
+        self.refresh(action_id)
+
+    def _apply_selected(self) -> None:
+        action_id = self.selected_action_id()
+        if not action_id:
+            return
+        overrides = self._overrides()
+        overrides[action_id] = [
+            part.strip() for part in self.keys_edit.text().split(";") if part.strip()
+        ]
+        self._apply_overrides(overrides, action_id)
+
+    def _disable_selected(self) -> None:
+        action_id = self.selected_action_id()
+        if not action_id:
+            return
+        overrides = self._overrides()
+        overrides[action_id] = []
+        self._apply_overrides(overrides, action_id)
+
+    def _reset_selected(self) -> None:
+        action_id = self.selected_action_id()
+        if not action_id:
+            return
+        overrides = self._overrides()
+        overrides.pop(action_id, None)
+        self._apply_overrides(overrides, action_id)
+
+    def _reset_all(self) -> None:
+        if QMessageBox.question(
+            self,
+            "전체 기본 단축키 복원",
+            "모든 사용자 지정 단축키와 비활성화를 지우고 기본값으로 복원할까요?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_overrides({})
+
+    def _export_file(self) -> None:
+        selected, _filter = QFileDialog.getSaveFileName(
+            self, "단축키 내보내기", "toki-shortcuts.json", "JSON (*.json)"
+        )
+        if not selected:
+            return
+        try:
+            result = export_shortcut_settings(Path(selected))
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "단축키를 내보낼 수 없음", str(error))
+            return
+        self.status_label.setText(f"내보냄: {result['path']}")
+
+    def _import_file(self) -> None:
+        selected, _filter = QFileDialog.getOpenFileName(
+            self, "단축키 가져오기", "", "JSON (*.json)"
+        )
+        if not selected:
+            return
+        try:
+            plan = shortcut_import_plan(Path(selected))
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            QMessageBox.warning(self, "단축키 파일을 읽을 수 없음", str(error))
+            return
+        if QMessageBox.question(
+            self,
+            "단축키 가져오기",
+            f"현재 설정 중 {plan['changedCount']}개 동작이 바뀝니다. 적용할까요?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_overrides(plan["shortcutOverrides"])
+
+    def state_snapshot(self) -> dict[str, Any]:
+        return {
+            "open": self.isVisible(),
+            "selectedAction": self.selected_action_id(),
+            **{
+                key: value
+                for key, value in shortcut_settings_snapshot(self.owner.config).items()
+                if key in {"count", "overrideCount", "disabledCount"}
+            },
+        }
 
 
 class DependencyDiagnosticsDialog(QDialog):
@@ -5679,6 +5857,7 @@ class MainWindow(QMainWindow):
         self.resolved_theme = self._resolve_theme(self.theme_mode)
         self._apply_style()
         self._apply_display_preferences(result)
+        self._apply_keyboard_shortcuts()
         delegate = self.task_list.itemDelegate()
         if isinstance(delegate, JobItemDelegate):
             delegate.set_density(str(result["rowDensity"]))
@@ -5702,6 +5881,60 @@ class MainWindow(QMainWindow):
         )
         QTimer.singleShot(0, self._start_next_job)
         return result
+
+    def _keyboard_action_map(self) -> dict[str, QAction]:
+        candidates = {
+            "download.start": "start_action",
+            "job.stop": "stop_action",
+            "job.pause": "pause_action",
+            "job.resume": "resume_action",
+            "job.rescan_full": "retry_action",
+            "job.rescan_new": "new_scan_action",
+            "job.rescan_range": "range_scan_action",
+            "snapshot.export": "export_jobs_action",
+            "snapshot.import": "import_jobs_action",
+            "group.manage": "group_manager_action",
+            "archive.inspect": "archive_inspection_action",
+            "duplicates.works": "duplicate_works_action",
+            "folder.open": "open_folder_action",
+            "details.open": "details_action",
+            "list.activate": "activate_selected_action",
+            "list.refresh": "refresh_list_action",
+            "focus.url": "focus_url_action",
+            "focus.search": "focus_search_action",
+            "focus.cycle": "focus_cycle_action",
+            "selection.previous": "select_previous_action",
+            "selection.next": "select_next_action",
+            "search.clear": "clear_search_action",
+            "screenshot.capture": "screenshot_action",
+            "settings.open": "settings_action",
+        }
+        return {
+            action_id: action
+            for action_id, attribute in candidates.items()
+            if isinstance((action := getattr(self, attribute, None)), QAction)
+        }
+
+    def _apply_keyboard_shortcuts(self) -> None:
+        for action_id, action in self._keyboard_action_map().items():
+            action.setShortcuts(
+                [
+                    QKeySequence(key)
+                    for key in keyboard_shortcut_keys(action_id, self.config)
+                ]
+            )
+
+    def apply_shortcut_overrides(
+        self, overrides: dict[str, Any]
+    ) -> dict[str, Any]:
+        normalized = normalize_shortcut_overrides(overrides)
+        self.apply_settings({"shortcutOverrides": normalized})
+        snapshot = shortcut_settings_snapshot(self.config)
+        self.log(
+            f"단축키 적용: 사용자 지정 {snapshot['overrideCount']}개, "
+            f"비활성 {snapshot['disabledCount']}개"
+        )
+        return snapshot
 
     def _apply_language_strings(self) -> None:
         menu_keys = (
@@ -7553,6 +7786,7 @@ class MainWindow(QMainWindow):
 
     def show_shortcut_help(self) -> bool:
         if self.active_shortcut_help_dialog:
+            self.active_shortcut_help_dialog.refresh()
             self.active_shortcut_help_dialog.show()
             self.active_shortcut_help_dialog.raise_()
             self.active_shortcut_help_dialog.activateWindow()
@@ -7731,6 +7965,21 @@ class MainWindow(QMainWindow):
             "shortcutHelpOpen": bool(
                 self.active_shortcut_help_dialog
                 and self.active_shortcut_help_dialog.isVisible()
+            ),
+            "shortcutEditor": (
+                self.active_shortcut_help_dialog.state_snapshot()
+                if self.active_shortcut_help_dialog
+                else {
+                    "open": False,
+                    "selectedAction": "",
+                    "count": len(keyboard_shortcut_catalog(self.config)),
+                    "overrideCount": len(self.config.get("shortcutOverrides", {})),
+                    "disabledCount": sum(
+                        1
+                        for keys in self.config.get("shortcutOverrides", {}).values()
+                        if not keys
+                    ),
+                }
             ),
             "performanceDiagnosticsOpen": bool(
                 self.active_performance_dialog
@@ -8287,8 +8536,12 @@ class MainWindow(QMainWindow):
                 str(request.get("message") or ""),
             )
         if action == "keyboard_shortcuts":
-            catalog = keyboard_shortcut_catalog()
-            return {"count": len(catalog), "shortcuts": catalog}
+            return shortcut_settings_snapshot(self.config)
+        if action == "apply_shortcut_overrides":
+            overrides = request.get("shortcutOverrides")
+            if not isinstance(overrides, dict):
+                raise ValueError("단축키 설정이 올바르지 않습니다.")
+            return self.apply_shortcut_overrides(overrides)
         if action == "show_shortcut_help":
             return {"shown": self.show_shortcut_help()}
         if action == "close_shortcut_help":

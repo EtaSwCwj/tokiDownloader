@@ -44,6 +44,7 @@ from toki_core import (
     export_diagnostics,
     export_jobs_snapshot,
     export_provider_cookies,
+    export_shortcut_settings,
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
@@ -74,6 +75,7 @@ from toki_core import (
     normalize_error_category,
     normalize_embedded_browser_url,
     normalize_folder_name_template,
+    normalize_shortcut_overrides,
     normalize_background_image,
     normalize_font_family,
     normalize_proxy_url,
@@ -113,6 +115,8 @@ from toki_core import (
     set_process_tree_paused,
     should_auto_retry,
     settings_snapshot,
+    shortcut_import_plan,
+    shortcut_settings_snapshot,
     store_proxy_credentials,
     thumbnail_cache_path,
     update_app_settings,
@@ -124,6 +128,52 @@ from toki_core import (
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_shortcut_overrides_validate_conflicts_disable_and_portable_export(self) -> None:
+        config = default_config()
+        config["shortcutOverrides"] = {
+            "focus.search": ["Ctrl+Alt+F"],
+            "search.clear": [],
+        }
+        snapshot = shortcut_settings_snapshot(config)
+        by_id = {item["id"]: item for item in snapshot["shortcuts"]}
+        self.assertEqual(by_id["focus.search"]["keys"], ["Ctrl+Alt+F"])
+        self.assertFalse(by_id["search.clear"]["enabled"])
+        self.assertEqual(snapshot["overrideCount"], 2)
+        with self.assertRaisesRegex(ValueError, "중복"):
+            normalize_shortcut_overrides({"focus.search": ["Ctrl+L"]})
+        with self.assertRaisesRegex(ValueError, "단일 문자"):
+            normalize_shortcut_overrides({"focus.search": ["A"]})
+        with self.assertRaisesRegex(ValueError, "종료 키"):
+            normalize_shortcut_overrides({"focus.search": ["Alt+F4"]})
+        with self.assertRaisesRegex(ValueError, "객체"):
+            normalize_shortcut_overrides([])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            exported = root / "shortcuts.json"
+            with patch("toki_core.load_config", return_value=config):
+                result = export_shortcut_settings(exported)
+                plan = shortcut_import_plan(exported)
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["containsSecrets"])
+            self.assertFalse(plan["executed"])
+            self.assertEqual(
+                plan["shortcutOverrides"]["focus.search"], ["Ctrl+Alt+F"]
+            )
+            invalid = root / "invalid.json"
+            invalid.write_text(
+                json.dumps(
+                    {
+                        "format": "tokiDownloader-shortcuts",
+                        "formatVersion": 1,
+                        "shortcutOverrides": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "객체"):
+                shortcut_import_plan(invalid)
+
     def test_embedded_browser_defaults_offline_and_plans_https_navigation(self) -> None:
         capability = embedded_browser_capabilities()
         self.assertEqual(capability["defaultPage"], "offline")

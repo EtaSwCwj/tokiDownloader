@@ -1355,6 +1355,56 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(window_exit, 0)
         shortcut_request.assert_called_once_with({"action": "show_shortcut_help"})
 
+    def test_shortcut_cli_edits_exports_and_guards_import_execution(self) -> None:
+        current = default_config()
+        updated = {**current, "shortcutOverrides": {"focus.search": ["Ctrl+Alt+F"]}}
+        set_args = build_parser().parse_args(
+            [
+                "shortcuts", "--set", "focus.search", "--keys", "Ctrl+Alt+F",
+                "--json",
+            ]
+        )
+        with (
+            patch("toki_app.settings_snapshot", return_value=current),
+            patch("toki_app.gui_is_running", return_value=False),
+            patch("toki_app.update_app_settings", return_value=updated) as update,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(run_cli(set_args), 0)
+        update.assert_called_once_with(
+            {"shortcutOverrides": {"focus.search": ["Ctrl+Alt+F"]}}
+        )
+
+        invalid_combinations = (
+            (["shortcuts", "--keys", "Ctrl+F"], "--keys"),
+            (["shortcuts", "--execute"], "--execute"),
+            (["shortcuts", "--yes"], "--yes"),
+            (["shortcuts", "--reset", "unknown.action"], "지원하지 않는"),
+        )
+        for arguments, message in invalid_combinations:
+            with self.subTest(arguments=arguments):
+                parsed = build_parser().parse_args(arguments)
+                with self.assertRaisesRegex(toki_app.ControlError, message):
+                    run_cli(parsed)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "shortcuts.json"
+            source.write_text(
+                json.dumps(
+                    {
+                        "format": "tokiDownloader-shortcuts",
+                        "formatVersion": 1,
+                        "shortcutOverrides": {"focus.search": ["Ctrl+Alt+F"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            guarded = build_parser().parse_args(
+                ["shortcuts", "--import", str(source), "--execute", "--json"]
+            )
+            with self.assertRaisesRegex(toki_app.ControlError, "--yes"):
+                run_cli(guarded)
+
         focus = build_parser().parse_args(
             ["focus", "--target", "next", "--json"]
         )

@@ -827,6 +827,7 @@ class WorkSchedulerTests(unittest.TestCase):
         harness._apply_style = lambda: None
         display_updates = []
         harness._apply_display_preferences = lambda values: display_updates.append(values)
+        harness._apply_keyboard_shortcuts = lambda: None
         harness._configure_tray = lambda: None
         harness.resolved_theme = "light"
         harness.theme_mode = "system"
@@ -859,6 +860,23 @@ class WorkSchedulerTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_shortcut_override_ipc_applies_validated_live_settings(self) -> None:
+        calls = []
+        harness = type("ShortcutOverrideHarness", (), {})()
+        harness.apply_shortcut_overrides = (
+            lambda overrides: calls.append(overrides)
+            or {"overrideCount": len(overrides), "disabledCount": 0}
+        )
+        result = MainWindow._handle_control_action(
+            harness,
+            {
+                "action": "apply_shortcut_overrides",
+                "shortcutOverrides": {"focus.search": ["Ctrl+Alt+F"]},
+            },
+        )
+        self.assertEqual(result["overrideCount"], 1)
+        self.assertEqual(calls, [{"focus.search": ["Ctrl+Alt+F"]}])
 
     def test_image_conversion_gui_execution_uses_confirmed_cli_contract(self) -> None:
         job = DownloadJob(

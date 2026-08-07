@@ -62,6 +62,7 @@ from toki_core import (
     export_app_settings,
     export_jobs_snapshot,
     export_provider_cookies,
+    export_shortcut_settings,
     find_duplicate_works,
     find_duplicate_images,
     folder_name_template_preview,
@@ -69,6 +70,7 @@ from toki_core import (
     import_app_settings,
     import_jobs_snapshot,
     import_provider_cookies,
+    import_shortcut_settings,
     inspect_local_archive,
     inspect_clipboard_url,
     load_job_by_id,
@@ -94,6 +96,7 @@ from toki_core import (
     provider_cookie_status,
     proxy_credential_status,
     plan_image_conversion,
+    parse_shortcut_keys_text,
     update_job_markers,
     open_in_explorer,
     read_log_tail,
@@ -109,6 +112,8 @@ from toki_core import (
     save_config,
     save_jobs,
     settings_snapshot,
+    shortcut_import_plan,
+    shortcut_settings_snapshot,
     store_proxy_credentials,
     should_auto_retry,
     update_app_settings,
@@ -752,13 +757,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     shortcuts = subparsers.add_parser("shortcuts", help="키보드 단축키와 대응 CLI 조회")
     shortcuts.add_argument("--json", action="store_true", help="JSON으로 출력")
-    shortcut_window = shortcuts.add_mutually_exclusive_group()
-    shortcut_window.add_argument(
+    shortcut_action = shortcuts.add_mutually_exclusive_group()
+    shortcut_action.add_argument(
         "--show-gui", action="store_true", help="GUI 단축키 안내창 열기"
     )
-    shortcut_window.add_argument(
+    shortcut_action.add_argument(
         "--close", action="store_true", help="GUI 단축키 안내창 닫기"
     )
+    shortcut_action.add_argument("--set", metavar="ACTION", help="동작 단축키 덮어쓰기")
+    shortcut_action.add_argument("--disable", metavar="ACTION", help="동작 단축키 비활성화")
+    shortcut_action.add_argument("--reset", metavar="ACTION", help="동작 기본 단축키 복원")
+    shortcut_action.add_argument("--reset-all", action="store_true", help="모든 기본 단축키 복원")
+    shortcut_action.add_argument("--export", dest="export_path", metavar="PATH", help="단축키 JSON 내보내기")
+    shortcut_action.add_argument("--import", dest="import_path", metavar="PATH", help="단축키 JSON 검사 또는 가져오기")
+    shortcuts.add_argument("--keys", help="세미콜론으로 구분한 단축키; --set과 함께 사용")
+    shortcuts.add_argument("--execute", action="store_true", help="--import 결과 실제 적용")
+    shortcuts.add_argument("--yes", action="store_true", help="가져오기 적용 확인")
 
     focus = subparsers.add_parser("focus", help="GUI 키보드 포커스와 작품 선택 이동")
     focus.add_argument(
@@ -1617,18 +1631,77 @@ def run_cli(args: argparse.Namespace) -> int:
                 )
         return 0 if result.get("ok") else 2
     if command == "shortcuts":
+        if args.keys is not None and not args.set:
+            raise ControlError("--keys는 --set과 함께 사용해주세요.")
+        if args.execute and not args.import_path:
+            raise ControlError("--execute는 --import와 함께 사용해주세요.")
+        if args.yes and not (args.import_path and args.execute):
+            raise ControlError("--yes는 --import --execute와 함께 사용해주세요.")
         if args.show_gui or args.close:
             ensure_gui_running()
             action = "close_shortcut_help" if args.close else "show_shortcut_help"
             result = control_request({"action": action})
             print_json(result)
             return 0
-        catalog = keyboard_shortcut_catalog()
-        result = {"count": len(catalog), "shortcuts": catalog}
+        if args.export_path:
+            result = export_shortcut_settings(Path(args.export_path))
+        elif args.import_path:
+            if args.execute and not args.yes:
+                raise ControlError("단축키 가져오기를 적용하려면 --yes가 필요합니다.")
+            plan = shortcut_import_plan(Path(args.import_path))
+            if not args.execute:
+                result = plan
+            elif gui_is_running():
+                saved = control_request(
+                    {
+                        "action": "apply_shortcut_overrides",
+                        "shortcutOverrides": plan["shortcutOverrides"],
+                    }
+                )
+                result = {**plan, "executed": True, "saved": saved}
+            else:
+                result = import_shortcut_settings(
+                    Path(args.import_path), execute=True
+                )
+        elif args.set or args.disable or args.reset or args.reset_all:
+            if args.set and args.keys is None:
+                raise ControlError("--set에는 --keys가 필요합니다.")
+            current = settings_snapshot()
+            overrides = {
+                key: list(value)
+                for key, value in current["shortcutOverrides"].items()
+            }
+            if args.set:
+                overrides[args.set] = parse_shortcut_keys_text(args.keys)
+            elif args.disable:
+                overrides[args.disable] = []
+            elif args.reset:
+                known_actions = {
+                    item["id"] for item in shortcut_settings_snapshot(current)["shortcuts"]
+                }
+                if args.reset not in known_actions:
+                    raise ControlError(
+                        f"지원하지 않는 단축키 동작입니다: {args.reset}"
+                    )
+                overrides.pop(args.reset, None)
+            else:
+                overrides = {}
+            if gui_is_running():
+                saved = control_request(
+                    {
+                        "action": "apply_shortcut_overrides",
+                        "shortcutOverrides": overrides,
+                    }
+                )
+            else:
+                saved = update_app_settings({"shortcutOverrides": overrides})
+            result = {"saved": True, **shortcut_settings_snapshot(saved)}
+        else:
+            result = shortcut_settings_snapshot()
         if args.json:
             print_json(result)
         else:
-            for item in catalog:
+            for item in result.get("shortcuts", []):
                 print(f"{', '.join(item['keys'])} | {item['label']} | {item['cli']}")
         return 0
     if command == "focus":

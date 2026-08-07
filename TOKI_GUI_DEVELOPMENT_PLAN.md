@@ -407,6 +407,14 @@ stderr, PID, 중지와 완료 신호는 기존 GUI 계약을 유지한다. 프�
 `logs/keyboard-shortcuts.png`, `logs/keyboard-navigation.png`에서 안내창과 선택 강조를 직접
 확인했다.
 
+2026-08-07 단축키 편집 확장: 설정 스키마 v6의 `shortcutOverrides`로 현재 24개 동작을
+편집·비활성화·기본값 복원하고 실행 중 QAction에 즉시 반영한다. 충돌, 잘못된 키, 단일 문자와
+`Alt+F4`를 공용 서비스에서 거부하며 `shortcuts --set|--disable|--reset|--reset-all|--export|--import`
+CLI가 GUI와 같은 경로를 사용한다. JSON 가져오기는 미리보기 후 `--execute --yes`로만 적용되고
+내보내기에는 비밀값이 없다. 실제 GUI에 `Ctrl+Alt+F`를 임시 적용해 상태 조회로 확인한 뒤
+기본값으로 복원했고 `logs/shortcut-editor-gui.png`에서 편집창 대비를 확인했다. Python
+173건과 Node 16건을 통과했다.
+
 2026-08-07 DPI·다중 모니터 복원: Qt 논리 좌표와 모니터 이름·배율·상대 위치를 저장해
 정상적인 음수 좌표를 보존하고, 저장된 모니터가 분리됐거나 창이 전부 화면 밖에 있을 때만
 주 화면의 보이는 영역으로 보정한다. `window --screen NAME --center --safe`와

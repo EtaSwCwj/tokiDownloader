@@ -42,7 +42,7 @@ THUMBNAIL_CACHE_DIR = ROOT_DIR / ".cache" / "thumbnails"
 CONTROL_SERVER_NAME = "tokiDownloaderGUI"
 EVENT_PREFIX = "@@TOKI@@"
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 5
+CONFIG_SCHEMA_VERSION = 6
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -100,6 +100,7 @@ SETTING_KEYS = frozenset(
         "speedLimitKib",
         "providerPolicies",
         "quickActions",
+        "shortcutOverrides",
         "completionAction",
         "completionCountdownSeconds",
         "clipboardMonitor",
@@ -377,6 +378,7 @@ def default_config() -> dict[str, Any]:
             "folder.open",
             "settings.open",
         ],
+        "shortcutOverrides": {},
         "completionAction": "none",
         "completionCountdownSeconds": 15,
         "clipboardMonitor": False,
@@ -1359,6 +1361,11 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         source.get("quickActions"),
         defaults["quickActions"],
     )
+    normalized["shortcutOverrides"] = _safe_normalize(
+        normalize_shortcut_overrides,
+        source.get("shortcutOverrides"),
+        defaults["shortcutOverrides"],
+    )
     normalized["completionAction"] = _safe_normalize(
         normalize_completion_action,
         source.get("completionAction"),
@@ -1546,6 +1553,7 @@ def validate_app_setting_updates(
         "thumbnailSize": normalize_thumbnail_size,
         "windowOpacity": normalize_window_opacity,
         "quickActions": normalize_quick_actions,
+        "shortcutOverrides": normalize_shortcut_overrides,
         "completionAction": normalize_completion_action,
         "completionCountdownSeconds": normalize_completion_countdown,
     }
@@ -2104,19 +2112,195 @@ def downloader_event_update_policy(event_name: str) -> dict[str, Any]:
     }
 
 
-def keyboard_shortcut_catalog() -> list[dict[str, Any]]:
+def normalize_shortcut_sequence(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 80:
+        raise ValueError("단축키는 1~80자로 입력해주세요.")
+    try:
+        from PyQt6.QtGui import QKeySequence
+    except ImportError as error:
+        raise RuntimeError("단축키 검증에는 PyQt6가 필요합니다.") from error
+    sequence = QKeySequence.fromString(
+        raw, QKeySequence.SequenceFormat.PortableText
+    )
+    portable = sequence.toString(QKeySequence.SequenceFormat.PortableText)
+    if not portable:
+        raise ValueError(f"인식할 수 없는 단축키입니다: {raw}")
+    if sequence.count() != 1:
+        raise ValueError("한 항목에는 단일 키 조합만 사용할 수 있습니다.")
+    if portable.casefold() == "alt+f4":
+        raise ValueError("Alt+F4는 프로그램 종료 키라 지정할 수 없습니다.")
+    safe_unmodified = {
+        "return", "enter", "escape", "tab", "backspace", "delete", "insert",
+        "home", "end", "pageup", "pagedown", "up", "down", "left", "right",
+    }
+    if "+" not in portable and not re.fullmatch(r"F(?:[1-9]|[12][0-9]|3[0-5])", portable):
+        if portable.casefold() not in safe_unmodified:
+            raise ValueError("입력 중 오작동을 막기 위해 단일 문자에는 Ctrl·Alt·Shift·Meta가 필요합니다.")
+    return portable
+
+
+def normalize_shortcut_overrides(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        raise ValueError("단축키 설정은 동작별 배열을 담은 객체여야 합니다.")
+    source = value
+    known_ids = {str(item["id"]) for item in KEYBOARD_SHORTCUTS}
+    unknown = sorted(set(map(str, source)) - known_ids)
+    if unknown:
+        raise ValueError(f"지원하지 않는 단축키 동작입니다: {', '.join(unknown)}")
+    normalized: dict[str, list[str]] = {}
+    for action_id, raw_keys in source.items():
+        if not isinstance(raw_keys, (list, tuple)):
+            raise ValueError(f"{action_id} 단축키는 배열이어야 합니다.")
+        if len(raw_keys) > 4:
+            raise ValueError("동작 하나에는 단축키를 최대 4개 지정할 수 있습니다.")
+        keys: list[str] = []
+        for raw_key in raw_keys:
+            key = normalize_shortcut_sequence(str(raw_key))
+            if key.casefold() not in {existing.casefold() for existing in keys}:
+                keys.append(key)
+        normalized[str(action_id)] = keys
+    effective: dict[str, list[str]] = {}
+    for item in KEYBOARD_SHORTCUTS:
+        action_id = str(item["id"])
+        effective[action_id] = list(
+            normalized.get(action_id, list(item["keys"]))
+        )
+    owners: dict[str, str] = {}
+    for action_id, keys in effective.items():
+        for key in keys:
+            folded = key.casefold()
+            previous = owners.get(folded)
+            if previous and previous != action_id:
+                raise ValueError(
+                    f"단축키 {key}가 {previous}와 {action_id}에 중복 지정되었습니다."
+                )
+            owners[folded] = action_id
+    return normalized
+
+
+def parse_shortcut_keys_text(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(";") if part.strip()]
+
+
+def keyboard_shortcut_catalog(
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    source = normalize_config(config) if config is not None else load_config()
+    overrides = normalize_shortcut_overrides(source.get("shortcutOverrides"))
     return [
-        {**item, "keys": list(item["keys"])}
+        {
+            **item,
+            "defaultKeys": list(item["keys"]),
+            "keys": list(overrides.get(str(item["id"]), list(item["keys"]))),
+            "overridden": str(item["id"]) in overrides,
+            "enabled": bool(overrides.get(str(item["id"]), list(item["keys"]))),
+        }
         for item in KEYBOARD_SHORTCUTS
     ]
 
 
-def keyboard_shortcut_keys(action_id: str) -> list[str]:
+def keyboard_shortcut_keys(
+    action_id: str,
+    config: dict[str, Any] | None = None,
+) -> list[str]:
     normalized = str(action_id or "").strip()
-    for item in KEYBOARD_SHORTCUTS:
+    for item in keyboard_shortcut_catalog(config):
         if item["id"] == normalized:
             return list(item["keys"])
     raise ValueError(f"지원하지 않는 단축키 동작입니다: {action_id}")
+
+
+def shortcut_settings_snapshot(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = normalize_config(config) if config is not None else load_config()
+    overrides = normalize_shortcut_overrides(source.get("shortcutOverrides"))
+    catalog = keyboard_shortcut_catalog(source)
+    return {
+        "count": len(catalog),
+        "overrideCount": len(overrides),
+        "disabledCount": sum(1 for keys in overrides.values() if not keys),
+        "shortcutOverrides": overrides,
+        "shortcuts": catalog,
+    }
+
+
+def export_shortcut_settings(output_path: Path) -> dict[str, Any]:
+    target = Path(output_path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = shortcut_settings_snapshot()
+    payload = {
+        "format": "tokiDownloader-shortcuts",
+        "formatVersion": 1,
+        "appVersion": APP_VERSION,
+        "shortcutOverrides": snapshot["shortcutOverrides"],
+    }
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, target)
+    return {
+        "ok": True,
+        "path": str(target),
+        "overrideCount": snapshot["overrideCount"],
+        "containsSecrets": False,
+    }
+
+
+def shortcut_import_plan(input_path: Path) -> dict[str, Any]:
+    source_path = Path(input_path).expanduser().resolve()
+    if not source_path.is_file():
+        raise ValueError(f"단축키 파일을 찾을 수 없습니다: {source_path}")
+    if source_path.stat().st_size > 1024 * 1024:
+        raise ValueError("단축키 파일은 1 MiB 이하여야 합니다.")
+    payload = json.loads(source_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict) or payload.get("format") != "tokiDownloader-shortcuts":
+        raise ValueError("tokiDownloader 단축키 파일 형식이 아닙니다.")
+    if int(payload.get("formatVersion") or 0) != 1:
+        raise ValueError("지원하지 않는 단축키 파일 버전입니다.")
+    overrides = normalize_shortcut_overrides(payload.get("shortcutOverrides"))
+    current_config = load_config()
+    before = shortcut_settings_snapshot(current_config)
+    after_config = dict(current_config)
+    after_config["shortcutOverrides"] = overrides
+    after = shortcut_settings_snapshot(after_config)
+    changed = [
+        item["id"]
+        for item in after["shortcuts"]
+        if item["keys"]
+        != next(
+            before_item["keys"]
+            for before_item in before["shortcuts"]
+            if before_item["id"] == item["id"]
+        )
+    ]
+    return {
+        "ok": True,
+        "inputPath": str(source_path),
+        "shortcutOverrides": overrides,
+        "changedActions": changed,
+        "changedCount": len(changed),
+        "executed": False,
+    }
+
+
+def import_shortcut_settings(input_path: Path, *, execute: bool = False) -> dict[str, Any]:
+    plan = shortcut_import_plan(input_path)
+    if not execute:
+        return plan
+    saved = update_app_settings(
+        {"shortcutOverrides": plan["shortcutOverrides"]}
+    )
+    return {
+        **plan,
+        "shortcutOverrides": saved["shortcutOverrides"],
+        "executed": True,
+    }
 
 
 def menu_action_availability(

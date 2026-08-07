@@ -506,7 +506,13 @@ SQLite에서 현재 페이지를 다시 읽고 목록용
 `--preview auto` 또는 `refresh-list`를 실행하면 실제 목록 상태로 돌아갑니다.
 현재 상태는 `status --json`의 `listViewState`에도 포함됩니다.
 
-`도움말 → 키보드 단축키...`는 24개 기본 키와 각 동작의 대응 CLI를 한 표에 표시합니다.
+`도움말 → 키보드 단축키...`는 24개 기본 키와 각 동작의 대응 CLI를 한 표에 표시하고,
+선택 동작의 키를 즉시 편집·비활성화·기본값 복원할 수 있습니다. 키 여러 개는 세미콜론으로
+구분해 최대 4개까지 지정합니다. 다른 동작과의 충돌, 수정 키 없는 단일 문자와 `Alt+F4`는
+저장 전에 거부하며 빈 키 목록은 해당 동작을 비활성화합니다. JSON 파일 가져오기는 먼저
+변경 개수를 보여주고 확인 뒤 적용하며, 내보내기 파일에는 단축키 덮어쓰기만 들어가고
+쿠키·프록시 인증 같은 비밀값은 포함하지 않습니다.
+
 `Ctrl+L`은 URL, `Ctrl+F`는 작품 검색, `F6`은 URL → 검색 → 목록 → 로그 순서로 포커스를
 옮깁니다. 목록에서는 방향키로 이동하고 Enter로 상세 정보를 열며, `Ctrl+Shift+Up/Down`은
 다른 입력에 포커스가 있어도 이전·다음 작품을 순환 선택합니다. 검색란의 Escape는 검색어를
@@ -516,6 +522,19 @@ SQLite에서 현재 페이지를 다시 읽고 목록용
 `actions`에서 검사할 수 있습니다. `shortcuts --json|--show-gui|--close`와
 `focus --target url|search|list|log|next|previous|next-section [--clear]`로 같은 기능을
 조회·실행할 수 있고 `status --json`의 `keyboard`에서 포커스와 선택 작업 ID를 확인합니다.
+
+```powershell
+.\toki-cli.cmd shortcuts --set focus.search --keys "Ctrl+Alt+F;F9" --json
+.\toki-cli.cmd shortcuts --disable search.clear --json
+.\toki-cli.cmd shortcuts --reset focus.search --json
+.\toki-cli.cmd shortcuts --reset-all --json
+.\toki-cli.cmd shortcuts --export ".\toki-shortcuts.json" --json
+.\toki-cli.cmd shortcuts --import ".\toki-shortcuts.json" --json
+.\toki-cli.cmd shortcuts --import ".\toki-shortcuts.json" --execute --yes --json
+```
+
+가져오기는 기본적으로 읽기 전용 미리보기이며 실제 적용은 `--execute --yes`를 함께 지정해야
+합니다. GUI가 실행 중이면 같은 설정을 IPC로 적용해 QAction 키가 즉시 바뀝니다.
 
 `self-test --json`은 Python/Node 구문, 필수 파일, 단위 테스트와 GUI IPC 및 화면 캡처를
 한 번에 검사합니다. GUI가 꺼져 있으면 점검용으로 시작했다가 자동 종료하며, 이미 실행
