@@ -14,7 +14,11 @@ import {
     selectEpisodeLinks,
     validateImageBuffer,
 } from './downloader_policy.js';
-import { classifyDownloaderError } from './downloader_errors.js';
+import {
+    ERROR_CATEGORIES,
+    classifyDownloaderError,
+    createDownloaderError,
+} from './downloader_errors.js';
 import {
     DEFAULT_FOLDER_TEMPLATE,
     buildInferredEpisodeTitleIndex,
@@ -26,6 +30,7 @@ import {
     isLegacyEpisodeFolderCandidate,
     mergeEpisodeManifestRecords,
     renderFolderTemplate,
+    resolveEpisodeCollectionNames,
     sanitizePathSegment,
     uniqueEpisodeFolderName,
     validateEpisodeDestinationPath,
@@ -419,15 +424,32 @@ function prepareEpisodeManifest(links, state) {
         }
     }
     const inferredTitleIndex = buildInferredEpisodeTitleIndex(state.episodes);
-    const preparedLinks = links.map(item => {
-        const base = buildEpisodeManifestRecord(
+    const freshRecords = links.map(item => buildEpisodeManifestRecord(
+        {
+            number: Number.parseInt(item.num),
+            sourceUrl: item.src,
+            sourceTitle: item.fileName,
+        },
+        info.contentTitle,
+    ));
+    const collectionNaming = resolveEpisodeCollectionNames(
+        freshRecords,
+        info.contentTitle,
+    );
+    if (collectionNaming.conflicts.length > 0) {
+        throw createDownloaderError(
+            '회차 목록에 서로 충돌하는 소수점/분할 회차 표기가 있어 폴더명을 안전하게 결정할 수 없습니다.',
             {
-                number: Number.parseInt(item.num),
-                sourceUrl: item.src,
-                sourceTitle: item.fileName,
+                errorCode: 'ambiguous_episode_sibling_naming',
+                category: ERROR_CATEGORIES.SITE_STRUCTURE,
+                retryable: false,
+                diagnostics: { conflicts: collectionNaming.conflicts },
+                suggestion: '충돌한 회차 제목을 확인한 뒤 명명 규칙을 명시적으로 정리하세요.',
             },
-            info.contentTitle,
         );
+    }
+    const preparedLinks = links.map((item, index) => {
+        const base = collectionNaming.records[index];
         return {
             item,
             base,
@@ -502,6 +524,7 @@ function prepareEpisodeManifest(links, state) {
             },
             info.contentTitle,
         );
+        record.displayTitle = base.displayTitle;
         const destinationPath = path.join(getContentPath(), record.folderName);
         if (
             info.site !== 'booktoki'

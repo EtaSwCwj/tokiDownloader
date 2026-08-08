@@ -6504,6 +6504,15 @@ _EPISODE_RENAME_TRANSACTION = re.compile(
     re.IGNORECASE,
 )
 _KNOWN_R18_ARTIFACT_WORK_TITLE = "남녀비 139의 평행세계는 의외로 평범"
+_EPISODE_CONTEXT_RANGE = re.compile(
+    r"\d+(?:\.\d+)?\s*[~～–—]\s*\d+(?:\.\d+)?\s*화"
+)
+_EPISODE_CONTEXT_TOKEN = re.compile(
+    r"(?<![\d.])(?P<number>\d+)"
+    r"(?:(?P<decimal>\.(?P<decimal_digits>\d+))|"
+    r"(?P<hyphen_separator>\s*-\s*)(?P<hyphen_digits>\d+))?"
+    r"(?P<unit_spacing>\s*)화"
+)
 _WINDOWS_SAFE_EPISODE_COMPONENT_UTF16_UNITS = 240
 _WINDOWS_SAFE_EPISODE_PATH_UTF16_UNITS = 248
 _LEGACY_EPISODE_INLINE_HTML_TAG = re.compile(
@@ -6890,6 +6899,203 @@ def _episode_rename_suffix(
         # full suffix.  Never manufacture an N화 label from the storage ordinal.
         return original, "source_title"
     return "", "unsafe"
+
+
+def _episode_suffix_context_text(value: str) -> str:
+    return unicodedata.normalize(
+        "NFKC",
+        _episode_rename_normalized_text(value),
+    ).casefold()
+
+
+def _episode_suffix_context_token(value: str) -> dict[str, Any] | None:
+    """Parse one sortable episode token without treating ranges as parts."""
+
+    suffix = str(value or "")
+    if _EPISODE_CONTEXT_RANGE.search(suffix):
+        return None
+    matches = list(_EPISODE_CONTEXT_TOKEN.finditer(suffix))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    decimal = str(match.group("decimal") or "")
+    hyphen_separator = str(match.group("hyphen_separator") or "")
+    variant_digits = str(
+        match.group("decimal_digits") or match.group("hyphen_digits") or ""
+    )
+    kind = "decimal" if decimal else "hyphen" if hyphen_separator else "base"
+    return {
+        "kind": kind,
+        "number": int(match.group("number")),
+        "numberText": match.group("number"),
+        "part": int(variant_digits) if variant_digits else None,
+        "variantDigits": variant_digits,
+        "hyphenSeparator": hyphen_separator,
+        "unitSpacing": str(match.group("unit_spacing") or ""),
+        "start": match.start(),
+        "end": match.end(),
+        "prefix": suffix[: match.start()],
+        "tail": suffix[match.end() :],
+        "context": (
+            int(match.group("number")),
+            _episode_suffix_context_text(suffix[: match.start()]),
+            _episode_suffix_context_text(suffix[match.end() :]),
+        ),
+    }
+
+
+def _plan_contextual_episode_suffixes(suffixes: list[str]) -> list[dict[str, Any]]:
+    """Plan only the disambiguating rename needed by sibling episode labels."""
+
+    parsed = [_episode_suffix_context_token(value) for value in suffixes]
+    siblings: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
+    for item in parsed:
+        if item is not None:
+            siblings.setdefault(item["context"], []).append(item)
+
+    decisions: list[dict[str, Any]] = []
+    for suffix, item in zip(suffixes, parsed, strict=True):
+        decision = {
+            "suffix": suffix,
+            "applied": False,
+            "reason": "",
+            "conflict": False,
+            "conflictCode": "",
+            "conflictReason": "",
+        }
+        if item is None or item["kind"] != "base":
+            decisions.append(decision)
+            continue
+
+        related = siblings.get(item["context"], [])
+        bases = [candidate for candidate in related if candidate["kind"] == "base"]
+        decimals = [
+            candidate for candidate in related if candidate["kind"] == "decimal"
+        ]
+        hyphen_ones = [
+            candidate
+            for candidate in related
+            if candidate["kind"] == "hyphen" and candidate["variantDigits"] == "1"
+        ]
+        hyphen_twos = [
+            candidate
+            for candidate in related
+            if candidate["kind"] == "hyphen" and candidate["variantDigits"] == "2"
+        ]
+        if not decimals and not hyphen_twos:
+            decisions.append(decision)
+            continue
+        if len(bases) != 1:
+            decision.update(
+                {
+                    "conflict": True,
+                    "conflictCode": "duplicate_base_episode",
+                    "conflictReason": (
+                        "같은 문맥의 기본 회차가 둘 이상 있어 안전하게 변경할 수 없습니다."
+                    ),
+                }
+            )
+            decisions.append(decision)
+            continue
+        if any(
+            re.fullmatch(r"0+", candidate["variantDigits"]) is not None
+            for candidate in decimals
+        ):
+            decision.update(
+                {
+                    "conflict": True,
+                    "conflictCode": "decimal_zero_already_exists",
+                    "conflictReason": (
+                        "같은 문맥의 소수점 0 회차가 이미 있어 기본 회차를 "
+                        "안전하게 변경할 수 없습니다."
+                    ),
+                }
+            )
+            decisions.append(decision)
+            continue
+        replacements: list[tuple[str, str]] = []
+        if decimals:
+            replacements.append(
+                (
+                    f"{item['numberText']}.0{item['unitSpacing']}화",
+                    "decimal_sibling",
+                )
+            )
+        if hyphen_twos and hyphen_ones:
+            decision.update(
+                {
+                    "conflict": True,
+                    "conflictCode": "hyphen_part_one_already_exists",
+                    "conflictReason": (
+                        "같은 문맥의 -1 회차가 이미 있어 기본 회차를 "
+                        "-1 회차로 안전하게 변경할 수 없습니다."
+                    ),
+                }
+            )
+            decisions.append(decision)
+            continue
+        if decimals and hyphen_twos:
+            decision.update(
+                {
+                    "conflict": True,
+                    "conflictCode": "mixed_decimal_hyphen_siblings",
+                    "conflictReason": (
+                        "같은 문맥에 소수 회차와 -2 회차가 함께 있어 "
+                        "기본 회차명을 안전하게 결정할 수 없습니다."
+                    ),
+                }
+            )
+            decisions.append(decision)
+            continue
+        if hyphen_twos:
+            separators = {
+                candidate["hyphenSeparator"] for candidate in hyphen_twos
+            }
+            if len(separators) != 1:
+                decision.update(
+                    {
+                        "conflict": True,
+                        "conflictCode": "ambiguous_hyphen_style",
+                        "conflictReason": (
+                            "같은 문맥의 -2 회차 구분자 형식이 서로 달라 "
+                            "기본 회차명을 안전하게 결정할 수 없습니다."
+                        ),
+                    }
+                )
+                decisions.append(decision)
+                continue
+            separator = next(iter(separators))
+            replacements.append(
+                (
+                    f"{item['numberText']}{separator}1{item['unitSpacing']}화",
+                    "hyphen_part_sibling",
+                )
+            )
+        distinct_replacements = {replacement for replacement, _reason in replacements}
+        if len(distinct_replacements) > 1:
+            decision.update(
+                {
+                    "conflict": True,
+                    "conflictCode": "mixed_decimal_hyphen_siblings",
+                    "conflictReason": (
+                        "같은 문맥에 소수 회차와 -2 회차가 함께 있어 "
+                        "기본 회차명을 안전하게 결정할 수 없습니다."
+                    ),
+                }
+            )
+        elif replacements:
+            replacement, reason = replacements[0]
+            decision.update(
+                {
+                    "suffix": (
+                        f"{suffix[:item['start']]}{replacement}{suffix[item['end'] :]}"
+                    ),
+                    "applied": True,
+                    "reason": reason,
+                }
+            )
+        decisions.append(decision)
+    return decisions
 
 
 def _episode_rename_work_title(
@@ -7309,6 +7515,77 @@ def plan_episode_folder_rename(
             }
         )
 
+    contextual_decisions = _plan_contextual_episode_suffixes(
+        [
+            "" if mapping["unsafeSuffix"] else str(mapping["suffix"])
+            for mapping in mappings
+        ]
+    )
+    target_counts = {}
+    unsafe_count = 0
+    for mapping, decision in zip(mappings, contextual_decisions, strict=True):
+        unsafe_suffix = bool(mapping["unsafeSuffix"] or decision["conflict"])
+        suffix = str(decision["suffix"])
+        unsafe_reason = str(mapping["unsafeReason"])
+        if decision["conflict"]:
+            unsafe_reason = str(decision["conflictReason"])
+        display_title = (
+            sanitize_windows_path_segment(f"{work_title} {suffix}", "회차")
+            if not unsafe_suffix
+            else ""
+        )
+        target = (output_path / display_title).resolve() if display_title else None
+        if target is not None:
+            try:
+                target.relative_to(output_path)
+            except ValueError as error:
+                raise ValueError("회차 폴더명이 작품 폴더 밖을 가리킵니다.") from error
+        source = Path(mapping["source"])
+        same_path = bool(
+            target is not None
+            and os.path.normcase(str(source)) == os.path.normcase(str(target))
+        )
+        component_utf16_units = _windows_utf16_units(display_title)
+        destination_utf16_units = _windows_utf16_units(target) if target else 0
+        component_too_long = (
+            component_utf16_units
+            > _WINDOWS_SAFE_EPISODE_COMPONENT_UTF16_UNITS
+        )
+        absolute_path_too_long = (
+            destination_utf16_units > _WINDOWS_SAFE_EPISODE_PATH_UTF16_UNITS
+        )
+        if target is not None:
+            target_key = os.path.normcase(str(target))
+            target_counts[target_key] = target_counts.get(target_key, 0) + 1
+        if unsafe_suffix:
+            unsafe_count += 1
+        mapping.update(
+            {
+                "displayTitle": display_title,
+                "folderName": display_title,
+                "destination": str(target) if target is not None else "",
+                "destinationFolderName": display_title,
+                "suffix": suffix,
+                "contextualSuffixApplied": bool(decision["applied"]),
+                "contextualSuffixReason": str(decision["reason"]),
+                "contextualSuffixConflict": bool(decision["conflict"]),
+                "contextualSuffixConflictCode": str(decision["conflictCode"]),
+                "unsafeSuffix": unsafe_suffix,
+                "unsafeReason": unsafe_reason,
+                "samePath": same_path,
+                "componentUtf16Units": component_utf16_units,
+                "destinationUtf16Units": destination_utf16_units,
+                "componentTooLong": component_too_long,
+                "absolutePathTooLong": absolute_path_too_long,
+                "pathTooLong": (
+                    not same_path and (component_too_long or absolute_path_too_long)
+                ),
+                "conflict": bool(
+                    target is not None and target.exists() and not same_path
+                ),
+            }
+        )
+
     duplicate_targets = {
         target for target, count in target_counts.items() if count > 1
     }
@@ -7322,6 +7599,8 @@ def plan_episode_folder_rename(
         )
 
     def conflict_type(mapping: dict[str, Any]) -> str:
+        if mapping.get("contextualSuffixConflict"):
+            return "contextual_suffix_conflict"
         if mapping["unsafeSuffix"]:
             return "unsafe_suffix"
         if mapping["duplicateTarget"]:
@@ -7361,6 +7640,12 @@ def plan_episode_folder_rename(
             "componentUtf16Units": mapping["componentUtf16Units"],
             "destinationUtf16Units": mapping["destinationUtf16Units"],
             "unsafeSuffix": mapping["unsafeSuffix"],
+            "contextualSuffixConflict": mapping.get(
+                "contextualSuffixConflict", False
+            ),
+            "contextualSuffixConflictCode": mapping.get(
+                "contextualSuffixConflictCode", ""
+            ),
             "message": conflict_message(mapping),
         }
         for mapping in mappings

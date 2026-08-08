@@ -17,6 +17,7 @@ import {
     isLegacyEpisodeFolderCandidate,
     mergeEpisodeManifestRecords,
     renderFolderTemplate,
+    resolveEpisodeCollectionNames,
     sanitizePathSegment,
     uniqueEpisodeFolderName,
     validateEpisodeDestinationPath,
@@ -86,6 +87,109 @@ test('episode folder names restore the full work title and keep the episode suff
             && error?.category === 'site_structure'
             && error?.retryable === false,
     );
+});
+
+test('collection naming adds a decimal base only beside a same-context decimal sibling', () => {
+    const workTitle = '작품 제목';
+    const records = [
+        buildEpisodeManifestRecord({ number: 1, sourceTitle: '작품 제목 141화' }, workTitle),
+        buildEpisodeManifestRecord({ number: 2, sourceTitle: '작품 제목 141.5화' }, workTitle),
+        buildEpisodeManifestRecord({ number: 3, sourceTitle: '작품 제목 142화' }, workTitle),
+    ];
+    assert.equal(records[0].folderName, '작품 제목 141화');
+
+    const result = resolveEpisodeCollectionNames(records, workTitle);
+    assert.deepEqual(result.conflicts, []);
+    assert.equal(result.records[0].displayTitle, '작품 제목 141.0화');
+    assert.equal(result.records[0].folderName, '작품 제목 141.0화');
+    assert.equal(result.records[1].folderName, '작품 제목 141.5화');
+    assert.equal(result.records[2].folderName, '작품 제목 142화');
+});
+
+test('collection naming isolates special contexts and ignores range labels', () => {
+    const workTitle = '작품 제목';
+    const records = [
+        buildEpisodeManifestRecord({ number: 1, sourceTitle: '작품 제목 1화' }, workTitle),
+        buildEpisodeManifestRecord({ number: 2, sourceTitle: '작품 제목 R-18 미쿠 1.5화' }, workTitle),
+        buildEpisodeManifestRecord({ number: 3, sourceTitle: '작품 제목 1~5화' }, workTitle),
+        buildEpisodeManifestRecord({ number: 4, sourceTitle: '작품 제목 2화 본편' }, workTitle),
+        buildEpisodeManifestRecord({ number: 5, sourceTitle: '작품 제목 2.5화 부록' }, workTitle),
+    ];
+    const result = resolveEpisodeCollectionNames(records, workTitle);
+    assert.deepEqual(result.conflicts, []);
+    assert.deepEqual(
+        result.records.map(record => record.folderName),
+        [
+            '작품 제목 1화',
+            '작품 제목 R-18 미쿠 1.5화',
+            '작품 제목 1~5화',
+            '작품 제목 2화 본편',
+            '작품 제목 2.5화 부록',
+        ],
+    );
+});
+
+test('collection naming infers hyphen part one only from an exact part-two sibling', () => {
+    const workTitle = '작품 제목';
+    const make = (number, suffix) => buildEpisodeManifestRecord(
+        { number, sourceTitle: `${workTitle} ${suffix}` },
+        workTitle,
+    );
+    const result = resolveEpisodeCollectionNames([
+        make(1, '12화'),
+        make(2, '12 - 2화'),
+        make(3, '13화'),
+        make(4, '13-5화'),
+    ], workTitle);
+    assert.deepEqual(result.conflicts, []);
+    assert.equal(result.records[0].folderName, '작품 제목 12 - 1화');
+    assert.equal(result.records[1].folderName, '작품 제목 12 - 2화');
+    assert.equal(result.records[2].folderName, '작품 제목 13화');
+    assert.equal(result.records[3].folderName, '작품 제목 13-5화');
+});
+
+test('ambiguous sibling conventions are surfaced without guessing a base name', () => {
+    const workTitle = '작품 제목';
+    const make = (number, suffix) => buildEpisodeManifestRecord(
+        { number, sourceTitle: `${workTitle} ${suffix}` },
+        workTitle,
+    );
+    const mixed = resolveEpisodeCollectionNames([
+        make(1, '141화'),
+        make(2, '141.5화'),
+        make(3, '141-2화'),
+    ], workTitle);
+    assert.equal(mixed.records[0].folderName, '작품 제목 141화');
+    assert.equal(mixed.conflicts[0].reason, 'mixed_decimal_hyphen_siblings');
+
+    const occupied = resolveEpisodeCollectionNames([
+        make(1, '142화'),
+        make(2, '142-1화'),
+        make(3, '142-2화'),
+    ], workTitle);
+    assert.equal(occupied.records[0].folderName, '작품 제목 142화');
+    assert.equal(occupied.conflicts[0].reason, 'hyphen_part_one_already_exists');
+});
+
+test('duplicate base labels without rewrite siblings remain collision-resolvable', () => {
+    const workTitle = '작품 제목';
+    const records = [1, 2].map(number => buildEpisodeManifestRecord(
+        {
+            number,
+            sourceTitle: `${workTitle} 특별편 7화`,
+            sourceUrl: `https://example.test/episode-${number}`,
+        },
+        workTitle,
+    ));
+    const result = resolveEpisodeCollectionNames(records, workTitle);
+    assert.deepEqual(result.conflicts, []);
+    assert.deepEqual(
+        result.records.map(record => record.folderName),
+        ['작품 제목 특별편 7화', '작품 제목 특별편 7화'],
+    );
+    const used = new Set();
+    assert.equal(uniqueEpisodeFolderName(result.records[0].folderName, 1, used), '작품 제목 특별편 7화');
+    assert.equal(uniqueEpisodeFolderName(result.records[1].folderName, 2, used), '작품 제목 특별편 7화 [0002]');
 });
 
 test('episode suffix extraction matches the shared Python migration cases', () => {

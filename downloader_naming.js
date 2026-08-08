@@ -237,6 +237,146 @@ function extractEpisodeSuffix(workTitle, sourceTitle, episodeNumber = 0) {
     return source;
 }
 
+function normalizeEpisodeSiblingContext(value) {
+    return normalizeDisplayText(value).normalize('NFKC').toLowerCase();
+}
+
+function parseEpisodeSiblingToken(value) {
+    const suffix = normalizeDisplayText(value);
+    // Tilde and dash ranges are collection labels, not individual episode siblings.
+    if (/\d+(?:\.\d+)?\s*[~～–—]\s*\d+(?:\.\d+)?\s*화/.test(suffix))
+        return null;
+
+    const pattern = /(^|[^\d.])(\d+)(?:(\.(\d+))|(\s*-\s*)(\d+))?(\s*)화/g;
+    const matches = [];
+    let match;
+    while ((match = pattern.exec(suffix)) !== null) {
+        const boundary = match[1];
+        const tokenStart = match.index + boundary.length;
+        matches.push({
+            tokenStart,
+            tokenEnd: pattern.lastIndex,
+            mainText: match[2],
+            mainKey: match[2].replace(/^0+(?=\d)/, ''),
+            variantKind: match[3] ? 'decimal' : match[5] ? 'hyphen' : 'base',
+            variantDigits: match[4] || match[6] || '',
+            hyphenSeparator: match[5] || '',
+            unitSpacing: match[7] || '',
+        });
+    }
+    if (matches.length !== 1)
+        return null;
+    const parsed = matches[0];
+    parsed.suffix = suffix;
+    parsed.prefix = suffix.slice(0, parsed.tokenStart);
+    parsed.postfix = suffix.slice(parsed.tokenEnd);
+    parsed.contextKey = [
+        parsed.mainKey,
+        normalizeEpisodeSiblingContext(parsed.prefix),
+        normalizeEpisodeSiblingContext(parsed.postfix),
+    ].join('\u0000');
+    return parsed;
+}
+
+function resolveEpisodeCollectionNames(records, workTitle = '') {
+    const work = normalizeDisplayText(workTitle) || '제목 없음';
+    const resolved = (records || []).map(record => ({ ...record }));
+    const groups = new Map();
+
+    for (let index = 0; index < resolved.length; index++) {
+        const record = resolved[index];
+        const suffix = extractEpisodeSuffix(work, record.sourceTitle, record.number);
+        const parsed = parseEpisodeSiblingToken(suffix);
+        if (!parsed)
+            continue;
+        if (!groups.has(parsed.contextKey))
+            groups.set(parsed.contextKey, []);
+        groups.get(parsed.contextKey).push({ index, record, parsed });
+    }
+
+    const conflicts = [];
+    for (const entries of groups.values()) {
+        const bases = entries.filter(entry => entry.parsed.variantKind === 'base');
+        const decimals = entries.filter(entry => entry.parsed.variantKind === 'decimal');
+        const hyphenOnes = entries.filter(entry => (
+            entry.parsed.variantKind === 'hyphen'
+            && entry.parsed.variantDigits === '1'
+        ));
+        const hyphenTwos = entries.filter(entry => (
+            entry.parsed.variantKind === 'hyphen'
+            && entry.parsed.variantDigits === '2'
+        ));
+        if (bases.length === 0)
+            continue;
+
+        const needsDecimalBase = decimals.length > 0;
+        const hasHyphenPartTwo = hyphenTwos.length > 0;
+        if (!needsDecimalBase && !hasHyphenPartTwo)
+            continue;
+
+        const conflict = reason => conflicts.push({
+            reason,
+            episode: bases[0].parsed.mainText,
+            prefix: bases[0].parsed.prefix,
+            postfix: bases[0].parsed.postfix,
+            sourceTitles: entries.map(entry => entry.record.sourceTitle),
+        });
+        if (bases.length !== 1) {
+            conflict('duplicate_base_episode');
+            continue;
+        }
+        if (decimals.some(entry => /^0+$/.test(entry.parsed.variantDigits))) {
+            conflict('decimal_zero_already_exists');
+            continue;
+        }
+        if (hyphenTwos.length > 0 && hyphenOnes.length > 0) {
+            conflict('hyphen_part_one_already_exists');
+            continue;
+        }
+
+        const needsHyphenBase = hasHyphenPartTwo && hyphenOnes.length === 0;
+        if (needsDecimalBase && needsHyphenBase) {
+            conflict('mixed_decimal_hyphen_siblings');
+            continue;
+        }
+        if (!needsDecimalBase && !needsHyphenBase)
+            continue;
+
+        const base = bases[0];
+        let replacementCore;
+        if (needsDecimalBase) {
+            replacementCore = `${base.parsed.mainText}.0`;
+        }
+        else {
+            const separators = new Set(
+                hyphenTwos.map(entry => entry.parsed.hyphenSeparator),
+            );
+            if (separators.size !== 1) {
+                conflict('ambiguous_hyphen_style');
+                continue;
+            }
+            replacementCore = `${base.parsed.mainText}${[...separators][0]}1`;
+        }
+        const adjustedSuffix = (
+            base.parsed.suffix.slice(0, base.parsed.tokenStart)
+            + replacementCore
+            + base.parsed.unitSpacing
+            + '화'
+            + base.parsed.suffix.slice(base.parsed.tokenEnd)
+        );
+        const displayTitle = normalizeDisplayText(`${work} ${adjustedSuffix}`);
+        resolved[base.index] = {
+            ...base.record,
+            displayTitle,
+            folderName: sanitizePathSegment(
+                displayTitle,
+                `회차 ${String(base.record.number || '').padStart(4, '0')}`,
+            ),
+        };
+    }
+    return { records: resolved, conflicts };
+}
+
 function windowsUtf16Units(value) {
     // JavaScript string length is defined in UTF-16 code units, matching Windows.
     return String(value ?? '').length;
@@ -633,6 +773,7 @@ export {
     isLegacyEpisodeFolderCandidate,
     mergeEpisodeManifestRecords,
     renderFolderTemplate,
+    resolveEpisodeCollectionNames,
     sanitizePathSegment,
     uniqueEpisodeFolderName,
     validateEpisodeDestinationPath,

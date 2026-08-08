@@ -123,6 +123,113 @@ class EpisodeFolderMigrationTests(unittest.TestCase):
                 self.assertEqual(source, item.get("expectedSource", "source_title"))
                 self.assertEqual(suffix, item["expectedSuffix"])
 
+    def test_contextual_suffix_plan_only_changes_matching_sibling_groups(
+        self,
+    ) -> None:
+        suffixes = [
+            "141화",
+            "141.5화",
+            "200화",
+            "1~5화",
+            "R-18 1화",
+            "1.5화",
+        ]
+
+        decisions = toki_core._plan_contextual_episode_suffixes(suffixes)
+
+        self.assertEqual(
+            [item["suffix"] for item in decisions],
+            [
+                "141.0화",
+                "141.5화",
+                "200화",
+                "1~5화",
+                "R-18 1화",
+                "1.5화",
+            ],
+        )
+        self.assertTrue(decisions[0]["applied"])
+        self.assertEqual(decisions[0]["reason"], "decimal_sibling")
+        self.assertFalse(any(item["conflict"] for item in decisions))
+
+    def test_contextual_suffix_plan_handles_hyphen_parts_without_guessing(
+        self,
+    ) -> None:
+        suffixes = [
+            "50화",
+            "50 - 2화",
+            "60화",
+            "60-1화",
+            "60-2화",
+            "70화",
+            "70.5화",
+            "70-2화",
+        ]
+
+        decisions = toki_core._plan_contextual_episode_suffixes(suffixes)
+
+        self.assertEqual(decisions[0]["suffix"], "50 - 1화")
+        self.assertEqual(decisions[0]["reason"], "hyphen_part_sibling")
+        self.assertTrue(decisions[2]["conflict"])
+        self.assertEqual(
+            decisions[2]["conflictCode"], "hyphen_part_one_already_exists"
+        )
+        self.assertIn("-1 회차가 이미", decisions[2]["conflictReason"])
+        self.assertTrue(decisions[5]["conflict"])
+        self.assertEqual(
+            decisions[5]["conflictCode"], "mixed_decimal_hyphen_siblings"
+        )
+        self.assertEqual(decisions[5]["suffix"], "70화")
+        self.assertEqual(
+            [decisions[index]["suffix"] for index in (1, 3, 4, 6, 7)],
+            ["50 - 2화", "60-1화", "60-2화", "70.5화", "70-2화"],
+        )
+
+    def test_contextual_suffix_plan_rejects_zero_decimal_and_mixed_hyphen_styles(
+        self,
+    ) -> None:
+        suffixes = [
+            "80화",
+            "80-2화",
+            "80 - 2화",
+            "90화",
+            "90.0화",
+            "91화",
+            "91.00화",
+        ]
+
+        decisions = toki_core._plan_contextual_episode_suffixes(suffixes)
+
+        self.assertTrue(decisions[0]["conflict"])
+        self.assertEqual(decisions[0]["conflictCode"], "ambiguous_hyphen_style")
+        self.assertTrue(decisions[3]["conflict"])
+        self.assertEqual(
+            decisions[3]["conflictCode"], "decimal_zero_already_exists"
+        )
+        self.assertTrue(decisions[5]["conflict"])
+        self.assertEqual(
+            decisions[5]["conflictCode"], "decimal_zero_already_exists"
+        )
+
+    def test_duplicate_base_suffixes_are_safe_until_a_variant_requires_rewrite(
+        self,
+    ) -> None:
+        unchanged = toki_core._plan_contextual_episode_suffixes(
+            ["100화", "100화"]
+        )
+        demanded = toki_core._plan_contextual_episode_suffixes(
+            ["101화", "101화", "101.5화"]
+        )
+
+        self.assertEqual([item["suffix"] for item in unchanged], ["100화", "100화"])
+        self.assertFalse(any(item["conflict"] for item in unchanged))
+        self.assertTrue(demanded[0]["conflict"])
+        self.assertTrue(demanded[1]["conflict"])
+        self.assertEqual(
+            demanded[0]["conflictCode"],
+            "duplicate_base_episode",
+        )
+
     def test_r18_artifact_repair_is_gated_to_the_known_work(self) -> None:
         work_title = "전생한 용사의 기록"
         source_name = "0001 전생한 용사의 …8 용사 1화"
@@ -610,6 +717,260 @@ class EpisodeFolderMigrationTests(unittest.TestCase):
         self.assertFalse((output / target_name).exists())
         self.assertFalse(Path(result["stateBackupPath"]).exists())
         self.assertFalse(Path(result["metadataBackupPath"]).exists())
+
+    def test_modern_integer_folder_with_decimal_sibling_migrates_idempotently(
+        self,
+    ) -> None:
+        source_name = f"{WORK_TITLE} 141화"
+        decimal_name = f"{WORK_TITLE} 141.5화"
+        target_name = f"{WORK_TITLE} 141.0화"
+        records = [
+            {
+                "number": number,
+                "sourceId": source_id,
+                "sourceUrl": f"https://newtoki1.org{source_id}",
+                "sourceTitle": folder_name,
+                "displayTitle": folder_name,
+                "folderName": folder_name,
+            }
+            for number, source_id, folder_name in (
+                (141, "/manhwa/34360/episode-141", source_name),
+                (142, "/manhwa/34360/episode-141-5", decimal_name),
+            )
+        ]
+        job, output = self.make_work(
+            [source_name, decimal_name],
+            state_payload={
+                "version": 2,
+                "completedEpisodes": [141, 142],
+                "completedEpisodeIds": [item["sourceId"] for item in records],
+                "episodes": records,
+            },
+            metadata_payload={"episodes": records},
+        )
+        original_image = (output / source_name / "image0000.jpg").read_bytes()
+
+        plan = plan_episode_folder_rename(job.job_id)
+
+        self.assertTrue(plan["canExecute"])
+        self.assertEqual(plan["folderCount"], 2)
+        self.assertEqual(plan["renameCount"], 1)
+        self.assertEqual(plan["unchangedCount"], 1)
+        mappings = {item["sourceFolderName"]: item for item in plan["mappings"]}
+        self.assertEqual(mappings[source_name]["sourceDiscovery"], "state")
+        self.assertEqual(mappings[source_name]["suffix"], "141.0화")
+        self.assertTrue(mappings[source_name]["contextualSuffixApplied"])
+        self.assertEqual(
+            mappings[source_name]["contextualSuffixReason"], "decimal_sibling"
+        )
+        self.assertEqual(mappings[source_name]["destinationFolderName"], target_name)
+        self.assertEqual(mappings[decimal_name]["destinationFolderName"], decimal_name)
+        self.assertFalse(mappings[decimal_name]["contextualSuffixApplied"])
+
+        result = rename_episode_folders(job.job_id)
+
+        self.assertEqual(result["renamedCount"], 1)
+        self.assertFalse((output / source_name).exists())
+        self.assertTrue((output / decimal_name).is_dir())
+        self.assertEqual(
+            (output / target_name / "image0000.jpg").read_bytes(),
+            original_image,
+        )
+        state = json.loads((output / ".toki-state.json").read_text(encoding="utf-8"))
+        metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["completedEpisodes"], [141, 142])
+        self.assertEqual(
+            state["completedEpisodeIds"],
+            sorted(item["sourceId"] for item in records),
+        )
+        episodes = {item["sourceId"]: item for item in state["episodes"]}
+        base_episode = episodes[records[0]["sourceId"]]
+        decimal_episode = episodes[records[1]["sourceId"]]
+        self.assertEqual(base_episode["sourceTitle"], source_name)
+        self.assertEqual(base_episode["displayTitle"], target_name)
+        self.assertEqual(base_episode["folderName"], target_name)
+        self.assertEqual(decimal_episode["folderName"], decimal_name)
+        self.assertEqual(metadata["episodes"], state["episodes"])
+
+        repeated = rename_episode_folders(job.job_id)
+        self.assertEqual(repeated["renamedCount"], 0)
+        self.assertTrue((output / target_name).is_dir())
+
+    def test_modern_base_with_second_part_migrates_to_first_part_idempotently(
+        self,
+    ) -> None:
+        source_name = f"{WORK_TITLE} 88화"
+        second_name = f"{WORK_TITLE} 88 - 2화"
+        target_name = f"{WORK_TITLE} 88 - 1화"
+        records = [
+            {
+                "number": number,
+                "sourceId": source_id,
+                "sourceTitle": folder_name,
+                "displayTitle": folder_name,
+                "folderName": folder_name,
+            }
+            for number, source_id, folder_name in (
+                (88, "episode-88", source_name),
+                (89, "episode-88-part-2", second_name),
+            )
+        ]
+        job, output = self.make_work(
+            [source_name, second_name],
+            state_payload={
+                "version": 2,
+                "completedEpisodes": [88, 89],
+                "completedEpisodeIds": [item["sourceId"] for item in records],
+                "episodes": records,
+            },
+            metadata_payload={"episodes": records},
+        )
+
+        plan = plan_episode_folder_rename(job.job_id)
+
+        self.assertTrue(plan["canExecute"])
+        self.assertEqual(plan["renameCount"], 1)
+        mappings = {item["sourceFolderName"]: item for item in plan["mappings"]}
+        self.assertEqual(mappings[source_name]["destinationFolderName"], target_name)
+        self.assertEqual(
+            mappings[source_name]["contextualSuffixReason"],
+            "hyphen_part_sibling",
+        )
+        self.assertEqual(mappings[second_name]["destinationFolderName"], second_name)
+
+        rename_episode_folders(job.job_id)
+
+        self.assertFalse((output / source_name).exists())
+        self.assertTrue((output / target_name).is_dir())
+        self.assertTrue((output / second_name).is_dir())
+        state = json.loads((output / ".toki-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            {item["sourceId"]: item["folderName"] for item in state["episodes"]},
+            {"episode-88": target_name, "episode-88-part-2": second_name},
+        )
+        repeated = plan_episode_folder_rename(job.job_id)
+        self.assertTrue(repeated["canExecute"])
+        self.assertEqual(repeated["renameCount"], 0)
+
+    def test_contextual_suffix_conflict_blocks_mixed_decimal_and_hyphen_rules(
+        self,
+    ) -> None:
+        folders = [
+            f"{WORK_TITLE} 70화",
+            f"{WORK_TITLE} 70.5화",
+            f"{WORK_TITLE} 70-2화",
+        ]
+        records = [
+            {
+                "number": index,
+                "sourceId": f"episode-70-{index}",
+                "sourceTitle": folder_name,
+                "folderName": folder_name,
+            }
+            for index, folder_name in enumerate(folders, start=1)
+        ]
+        job, output = self.make_work(
+            folders,
+            state_payload={"version": 2, "episodes": records},
+            metadata_payload={"episodes": records},
+        )
+
+        plan = plan_episode_folder_rename(job.job_id)
+
+        self.assertFalse(plan["canExecute"])
+        self.assertEqual(plan["unsafeSuffixCount"], 1)
+        self.assertIn(
+            "contextual_suffix_conflict",
+            {item["type"] for item in plan["conflicts"]},
+        )
+        base = next(
+            item for item in plan["mappings"] if item["sourceFolderName"] == folders[0]
+        )
+        self.assertTrue(base["contextualSuffixConflict"])
+        self.assertEqual(
+            base["contextualSuffixConflictCode"],
+            "mixed_decimal_hyphen_siblings",
+        )
+        self.assertEqual(base["destinationFolderName"], "")
+        with self.assertRaisesRegex(ValueError, "신뢰할 수 있는 회차 접미사"):
+            rename_episode_folders(job.job_id)
+        self.assertTrue(all((output / folder_name).is_dir() for folder_name in folders))
+
+    def test_contextual_suffix_target_that_already_exists_is_a_conflict(self) -> None:
+        folders = [f"{WORK_TITLE} 71화", f"{WORK_TITLE} 71.5화"]
+        target_name = f"{WORK_TITLE} 71.0화"
+        records = [
+            {
+                "number": index,
+                "sourceId": f"episode-71-{index}",
+                "sourceTitle": folder_name,
+                "folderName": folder_name,
+            }
+            for index, folder_name in enumerate(folders, start=1)
+        ]
+        job, output = self.make_work(
+            folders,
+            state_payload={"version": 2, "episodes": records},
+            metadata_payload={"episodes": records},
+        )
+        existing_target = output / target_name
+        existing_target.mkdir()
+        (existing_target / "keep.txt").write_text("keep", encoding="utf-8")
+
+        plan = plan_episode_folder_rename(job.job_id)
+
+        self.assertFalse(plan["canExecute"])
+        base = next(
+            item for item in plan["mappings"] if item["sourceFolderName"] == folders[0]
+        )
+        self.assertEqual(base["destinationFolderName"], target_name)
+        self.assertTrue(base["conflict"])
+        self.assertFalse(base["duplicateTarget"])
+        self.assertIn(
+            "path_conflict",
+            {item["type"] for item in plan["conflicts"]},
+        )
+        with self.assertRaises(FileExistsError):
+            rename_episode_folders(job.job_id)
+        self.assertTrue(all((output / folder_name).is_dir() for folder_name in folders))
+        self.assertEqual((existing_target / "keep.txt").read_text(encoding="utf-8"), "keep")
+
+    def test_explicit_decimal_zero_sibling_is_a_contextual_conflict(self) -> None:
+        folders = [f"{WORK_TITLE} 72화", f"{WORK_TITLE} 72.00화"]
+        records = [
+            {
+                "number": index,
+                "sourceId": f"episode-72-{index}",
+                "sourceTitle": folder_name,
+                "folderName": folder_name,
+            }
+            for index, folder_name in enumerate(folders, start=1)
+        ]
+        job, output = self.make_work(
+            folders,
+            state_payload={"version": 2, "episodes": records},
+            metadata_payload={"episodes": records},
+        )
+
+        plan = plan_episode_folder_rename(job.job_id)
+
+        self.assertFalse(plan["canExecute"])
+        base = next(
+            item for item in plan["mappings"] if item["sourceFolderName"] == folders[0]
+        )
+        self.assertTrue(base["contextualSuffixConflict"])
+        self.assertEqual(
+            base["contextualSuffixConflictCode"],
+            "decimal_zero_already_exists",
+        )
+        self.assertEqual(base["destinationFolderName"], "")
+        self.assertIn(
+            "contextual_suffix_conflict",
+            {item["type"] for item in plan["conflicts"]},
+        )
+        with self.assertRaisesRegex(ValueError, "신뢰할 수 있는 회차 접미사"):
+            rename_episode_folders(job.job_id)
+        self.assertTrue(all((output / folder_name).is_dir() for folder_name in folders))
 
     def test_snapshot_plan_never_reads_or_changes_jobs_database(self) -> None:
         source_name = "0001 남녀비 139의 …로 평범 1~5화"
