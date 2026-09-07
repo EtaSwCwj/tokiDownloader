@@ -7292,7 +7292,7 @@ def plan_episode_folder_rename(
         except (TypeError, ValueError):
             continue
         if number > 0:
-            records_by_number.setdefault(number, []).append(dict(item))
+            records_by_number.setdefault(number, []).append(item)
 
     recovery = _episode_rename_recovery_info(output_path)
     if recovery["required"]:
@@ -7386,6 +7386,7 @@ def plan_episode_folder_rename(
     sources.sort(key=lambda item: (item[0], item[1].name.casefold()))
 
     mappings: list[dict[str, Any]] = []
+    represented_records: set[int] = set()
     target_counts: dict[str, int] = {}
     number_counts: dict[int, int] = {}
     unsafe_count = 0
@@ -7455,6 +7456,8 @@ def plan_episode_folder_rename(
                 source_title = str(
                     record.get("sourceTitle") or source_title
                 ).strip()
+        if record:
+            represented_records.add(id(record))
         target = (output_path / display_title).resolve() if display_title else None
         if target is not None:
             try:
@@ -7515,12 +7518,26 @@ def plan_episode_folder_rename(
             }
         )
 
+    # A range-only download still belongs to the full episode catalog. Include
+    # absent siblings, but never count a mapped catalog record twice.
+    contextual_suffixes = [
+        "" if mapping["unsafeSuffix"] else str(mapping["suffix"])
+        for mapping in mappings
+    ]
+    for records in records_by_number.values():
+        for record in records:
+            if id(record) in represented_records:
+                continue
+            suffix, source = _episode_rename_suffix(
+                str(record.get("sourceTitle") or record.get("displayTitle") or ""),
+                number=record["number"],
+                work_title=work_title,
+            )
+            if source != "unsafe":
+                contextual_suffixes.append(suffix)
     contextual_decisions = _plan_contextual_episode_suffixes(
-        [
-            "" if mapping["unsafeSuffix"] else str(mapping["suffix"])
-            for mapping in mappings
-        ]
-    )
+        contextual_suffixes
+    )[:len(mappings)]
     target_counts = {}
     unsafe_count = 0
     for mapping, decision in zip(mappings, contextual_decisions, strict=True):
@@ -8559,9 +8576,36 @@ def discover_episode_folders(
         else:
             legacy_fallbacks.append(episode)
 
+    fallbacks_by_number: dict[int, list[EpisodeManifestEntry]] = {}
     for episode in legacy_fallbacks:
-        for folder in legacy_by_number.get(episode.number, []):
-            add_manifest_folder(episode, folder, "legacy-fallback")
+        if episode.record_valid:
+            fallbacks_by_number.setdefault(episode.number, []).append(episode)
+    for number, candidates in fallbacks_by_number.items():
+        for folder in legacy_by_number.get(number, []):
+            if folder in consumed_paths:
+                continue
+            matches = [
+                episode for episode in candidates
+                if any(
+                    _episode_rename_titles_match(folder.name, title, number)
+                    for title in (
+                        episode.source_title, episode.display_title,
+                        episode.folder_name, *episode.folder_hints,
+                    )
+                )
+            ]
+            identities = {
+                ("id", episode.source_id) if episode.source_id else
+                ("title", _episode_rename_title_identity(
+                    episode.source_title or episode.display_title or episode.folder_name,
+                    number,
+                ))
+                for episode in matches
+            }
+            # An ordinal alone is not evidence of chapter identity. Ambiguous
+            # title matches remain idless instead of claiming either source ID.
+            if len(identities) == 1:
+                add_manifest_folder(matches[0], folder, "legacy-fallback")
 
     work_titles = _modern_episode_recovery_titles(root)
     used_recovery_numbers = {
@@ -8621,6 +8665,45 @@ def discover_episode_folders(
     return discovered
 
 
+def _webp_container_valid(handle: Any, header: bytes, size: int) -> bool:
+    """Bounded-memory container check, matching downloader_policy.js (not decoding)."""
+    if (
+        size < 20 or header[:4] != b"RIFF" or header[8:12] != b"WEBP"
+        or int.from_bytes(header[4:8], "little") + 8 != size
+    ):
+        return False
+
+    def chunks_complete(start: int, end: int, frame: bool = False) -> bool:
+        offset = start
+        has_image = False
+        while offset < end:
+            if offset + 8 > end:
+                return False
+            handle.seek(offset)
+            chunk = handle.read(8)
+            if len(chunk) != 8:
+                return False
+            kind = chunk[:4]
+            length = int.from_bytes(chunk[4:8], "little")
+            next_offset = offset + 8 + length + length % 2
+            if next_offset > end:
+                return False
+            if kind in {b"VP8 ", b"VP8L"}:
+                if length < (10 if kind == b"VP8 " else 5):
+                    return False
+                has_image = True
+            if kind == b"ANMF":
+                if frame or length < 24 or not chunks_complete(
+                    offset + 24, offset + 8 + length, True
+                ):
+                    return False
+                has_image = True
+            offset = next_offset
+        return offset == end and has_image
+
+    return chunks_complete(12, size)
+
+
 def _image_signature_valid(path: Path) -> bool:
     try:
         size = path.stat().st_size
@@ -8628,6 +8711,8 @@ def _image_signature_valid(path: Path) -> bool:
             return False
         with path.open("rb") as handle:
             header = handle.read(16)
+            if path.suffix.lower() == ".webp":
+                return _webp_container_valid(handle, header, size)
             tail = b""
             if path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
                 handle.seek(max(0, size - 16))
@@ -8641,8 +8726,6 @@ def _image_signature_valid(path: Path) -> bool:
         return header.startswith(b"\x89PNG\r\n\x1a\n") and b"IEND" in tail
     if extension == ".gif":
         return header.startswith((b"GIF87a", b"GIF89a"))
-    if extension == ".webp":
-        return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
     if extension == ".bmp":
         return header.startswith(b"BM")
     if extension == ".avif":
@@ -8755,7 +8838,7 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
                     add_issue("image_empty", child_path, "이미지 파일 크기가 0바이트입니다.")
                 elif not _image_signature_valid(child_path):
                     invalid_image_count += 1
-                    add_issue("image_invalid", child_path, "확장자와 이미지 서명이 맞지 않습니다.")
+                    add_issue("image_invalid", child_path, "이미지 서명 또는 파일 구조가 올바르지 않습니다.")
         if episode_image_count == 0:
             empty_episode_count += 1
             add_issue("episode_empty", episode_path, "회차 폴더에 지원 이미지가 없습니다.")
@@ -8921,6 +9004,8 @@ def list_job_episode_images(
     job_id: str,
     episode: int | None = None,
     *,
+    episode_id: str | None = None,
+    episode_folder: str | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -8935,18 +9020,33 @@ def list_job_episode_images(
     clean_limit = max(1, min(1000, int(limit)))
     clean_offset = max(0, int(offset))
 
-    episode_folders: dict[int, list[Path]] = {}
-    for episode_folder in discover_episode_folders(output_path):
-        episode_folders.setdefault(episode_folder.number, []).append(
-            episode_folder.path
-        )
-    available_episodes = sorted(episode_folders)
-    if not available_episodes:
+    folders = discover_episode_folders(output_path)
+    available_episodes = sorted({folder.number for folder in folders})
+    if not folders:
         raise FileNotFoundError("미리 볼 회차 폴더가 없습니다.")
+    if episode_id is not None and episode_folder is not None:
+        raise ValueError("--episode-id와 --episode-folder는 함께 지정할 수 없습니다.")
     requested_episode = int(episode or 0)
-    selected_episode = requested_episode or available_episodes[0]
-    if selected_episode not in episode_folders:
-        raise ValueError(f"{selected_episode}번 회차 폴더를 찾을 수 없습니다.")
+    candidates = [
+        folder for folder in folders
+        if (not requested_episode or folder.number == requested_episode)
+        and (episode_id is None or folder.source_id == episode_id)
+        and (episode_folder is None or folder.folder_name == episode_folder)
+    ]
+    if not candidates:
+        raise ValueError("지정한 회차 폴더를 찾을 수 없습니다.")
+    explicit_selection = bool(requested_episode) or episode_id is not None or episode_folder is not None
+    if len(candidates) > 1 and explicit_selection:
+        choices = "; ".join(
+            f"{folder.folder_name} (ID: {folder.source_id or '없음'})"
+            for folder in candidates
+        )
+        raise ValueError(
+            "회차 선택이 중복됩니다. --episode-id 또는 --episode-folder로 "
+            f"구분해주세요: {choices}"
+        )
+    selected = candidates[0]
+    selected_episode = selected.number
 
     def natural_key(path: Path) -> list[tuple[int, Any]]:
         return [
@@ -8955,14 +9055,13 @@ def list_job_episode_images(
         ]
 
     images: list[Path] = []
-    for folder in sorted(episode_folders[selected_episode], key=natural_key):
-        with os.scandir(folder) as children:
-            images.extend(
-                Path(child.path)
-                for child in children
-                if child.is_file(follow_symlinks=False)
-                and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
-            )
+    with os.scandir(selected.path) as children:
+        images.extend(
+            Path(child.path)
+            for child in children
+            if child.is_file(follow_symlinks=False)
+            and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
+        )
     images.sort(key=natural_key)
     page = images[clean_offset : clean_offset + clean_limit]
     return {
@@ -8971,8 +9070,19 @@ def list_job_episode_images(
         "title": job.title,
         "outputPath": str(output_path),
         "episode": selected_episode,
+        "episodeId": selected.source_id,
+        "episodeFolder": selected.folder_name,
         "availableEpisodes": available_episodes,
-        "episodeFolders": [str(path) for path in episode_folders[selected_episode]],
+        "episodeEntries": [
+            {
+                "number": folder.number,
+                "sourceId": folder.source_id,
+                "folderName": folder.folder_name,
+                "displayTitle": folder.display_title or folder.folder_name,
+            }
+            for folder in folders
+        ],
+        "episodeFolders": [str(selected.path)],
         "total": len(images),
         "limit": clean_limit,
         "offset": clean_offset,

@@ -69,7 +69,7 @@ export function detectImageFormat(value) {
 export function validateImageBuffer(
     value,
     extension = '',
-    { tail = null, totalSize = null } = {},
+    { tail = null, totalSize = null, readAt = null } = {},
 ) {
     const bytes = asBuffer(value);
     const ending = tail === null
@@ -104,6 +104,8 @@ export function validateImageBuffer(
         && !ending.includes(Buffer.from('IEND', 'ascii'))
     )
         reason = 'missing_end_marker';
+    else if (detectedFormat === 'webp')
+        reason = webpContainerValidationReason(bytes, size, readAt);
     return {
         valid: !reason,
         reason,
@@ -112,6 +114,43 @@ export function validateImageBuffer(
         expectedFormat,
         detectedFormat,
     };
+}
+
+// Check container completeness without decoding or loading compressed payloads.
+// Existing-file callers supply random-access reads; downloads use the full buffer.
+function webpContainerValidationReason(header, size, readAt) {
+    if (size < 20 || header.readUInt32LE(4) + 8 !== size)
+        return 'invalid_webp_size';
+    const read = readAt || ((offset, length) => header.subarray(offset, offset + length));
+    function chunksComplete(start, end, frame = false) {
+        let offset = start;
+        let hasImage = false;
+        while (offset < end) {
+            if (offset + 8 > end)
+                return false;
+            const chunk = asBuffer(read(offset, 8));
+            if (chunk.length !== 8)
+                return false;
+            const kind = ascii(chunk, 0, 4);
+            const length = chunk.readUInt32LE(4);
+            const next = offset + 8 + length + (length % 2);
+            if (next > end)
+                return false;
+            if (kind === 'VP8 ' || kind === 'VP8L') {
+                if (length < (kind === 'VP8 ' ? 10 : 5))
+                    return false;
+                hasImage = true;
+            }
+            if (kind === 'ANMF') {
+                if (frame || length < 24 || !chunksComplete(offset + 24, offset + 8 + length, true))
+                    return false;
+                hasImage = true;
+            }
+            offset = next;
+        }
+        return offset === end && hasImage;
+    }
+    return chunksComplete(12, size) ? '' : 'invalid_webp_chunks';
 }
 
 export function requireEpisodeImages(images, context = {}) {

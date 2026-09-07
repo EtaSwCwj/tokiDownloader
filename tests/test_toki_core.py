@@ -2743,7 +2743,7 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(pdf["episodeCount"], 2)
         self.assertEqual(pdf["sourceCount"], 2)
 
-    def test_state_v2_uses_legacy_numbered_folder_when_exact_folder_is_missing(self) -> None:
+    def test_unmatched_legacy_folder_keeps_numeric_only_completion_without_identity(self) -> None:
         workspace = Path(self.temp_dir.name)
         output = workspace / "마나토끼" / "[작가][그룹] 이전 자료"
         legacy = output / "0001 축약된 이전 제목"
@@ -2786,7 +2786,9 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertTrue(manifest.valid)
         self.assertEqual(len(discovered), 1)
         self.assertEqual(discovered[0].path, legacy.resolve())
-        self.assertEqual(discovered[0].discovery, "legacy-fallback")
+        self.assertEqual(discovered[0].discovery, "legacy")
+        self.assertEqual(discovered[0].source_id, "")
+        self.assertEqual(discovered[0].display_title, "")
         self.assertTrue(verify_job_files(job.job_id)["healthy"])
 
     def test_episode_discovery_keeps_state_v1_numbered_folder_compatibility(self) -> None:

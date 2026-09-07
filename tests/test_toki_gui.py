@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import os
 import subprocess
 import sys
@@ -10,7 +11,7 @@ from collections import deque
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -271,6 +272,69 @@ class WorkSchedulerTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls.qt_app = QApplication.instance() or QApplication(["toki-gui-tests"])
+
+    def test_image_preview_worker_decodes_valid_webp_when_qt_rejects_it(self) -> None:
+        samples = json.loads((Path(__file__).parent / "fixtures/webp_validation_samples.json").read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "lossless.webp"
+            payload = base64.b64decode(samples["lossless"])
+            path.write_bytes(payload)
+            failed_reader = Mock()
+            failed_reader.read.return_value = toki_gui.QImage()
+            failed_reader.errorString.return_value = "Qt decode failed"
+            for data, expected_valid in ((payload, True), (payload[:20], False)):
+                path.write_bytes(data)
+                task = toki_gui.ImageLoadTask(str(path))
+                received = []
+                task.signals.loaded.connect(lambda *args: received.append(args))
+                with patch.object(toki_gui, "QImageReader", return_value=failed_reader):
+                    task.run()
+                self.assertEqual(len(received), 1)
+                self.assertEqual(not received[0][1].isNull(), expected_valid)
+                self.assertEqual(not received[0][2], expected_valid)
+                self.assertEqual(path.read_bytes(), data)
+
+    def test_image_preview_combo_uses_folder_identity_for_same_ordinal(self) -> None:
+        owner = QMainWindow()
+        owner.start_image_preview = Mock(return_value={"started": True})
+        result = {
+            "jobId": "preview-work", "title": "작품", "episode": 1,
+            "episodeFolder": "작품 140화", "availableEpisodes": [1],
+            "episodeEntries": [
+                {"number": 1, "sourceId": "source-a", "folderName": "작품 140화"},
+                {"number": 1, "sourceId": "source-b", "folderName": "작품 140-2화"},
+            ],
+            "total": 0, "images": [],
+        }
+        dialog = toki_gui.ImagePreviewDialog(owner, result)
+        try:
+            self.assertEqual(dialog.episode_combo.count(), 2)
+            self.assertEqual(dialog.episode_combo.itemText(1), "작품 140-2화")
+            dialog.episode_combo.setCurrentIndex(1)
+            owner.start_image_preview.assert_called_once_with(
+                "preview-work", episode_folder="작품 140-2화"
+            )
+            self.assertEqual(dialog.episode_combo.currentData(), result["episodeFolder"])
+            owner.start_image_preview.reset_mock()
+            owner.start_image_preview.return_value = {"started": False, "alreadyRunning": True}
+            dialog.episode_combo.setCurrentIndex(1)
+            owner.start_image_preview.assert_called_once()
+            self.assertEqual(dialog.episode_combo.currentData(), result["episodeFolder"])
+        finally:
+            dialog.close()
+            owner.close()
+
+    def test_image_preview_control_forwards_identity_selectors(self) -> None:
+        harness = SimpleNamespace(start_image_preview=Mock(return_value={"started": True}))
+        for field, keyword, value in (
+            ("episodeId", "episode_id", "source-b"),
+            ("episodeFolder", "episode_folder", "작품 140-2화"),
+        ):
+            harness.start_image_preview.reset_mock()
+            MainWindow._handle_control_action(harness, {
+                "action": "preview_images", "jobId": "preview-work", field: value,
+            })
+            harness.start_image_preview.assert_called_once_with("preview-work", None, **{keyword: value})
 
     def _job_context_menu_snapshot(
         self,

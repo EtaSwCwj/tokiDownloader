@@ -288,6 +288,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd verify-files --close
 .\toki-cli.cmd preview --job 작업ID --episode 1 --json
 .\toki-cli.cmd preview --job 작업ID --episode 1 --show-gui
+.\toki-cli.cmd preview --job 작업ID --episode-id "/manhwa/작품ID/회차ID" --json
+.\toki-cli.cmd preview --job 작업ID --episode-folder "전체 작품명 140-2화" --show-gui
 .\toki-cli.cmd preview --close
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --dry-run --json
 .\toki-cli.cmd convert-images --job 작업ID --format webp --quality 85 --execute --yes --progress-json
@@ -1044,6 +1046,8 @@ UTF-16 code unit 기준으로 회차 폴더명 240, 전체 목적지 248을 안�
 기본 회차를 `140-1화`로 정리합니다. 일반 정수 회차, `1~5화` 같은 합본, `R-18`처럼
 문맥이 다른 외전은 그대로 둡니다. 소수형과 분할형이 한 기본 회차에 동시에 나타나거나
 `.0`·`-1` 목적지가 이미 있으면 추측하지 않고 충돌로 보고합니다.
+범위 다운로드로 일부 폴더만 있어도 state·metadata의 전체 회차 목록을 함께 비교하므로,
+아직 받지 않은 소수·분할 형제 때문에 붙은 `.0`·`-1`을 다시 정수로 되돌리지 않습니다.
 manifest에 없는 숫자 접두어 폴더는 구형 `image####` 파일 증거가 있어야 이관 대상으로
 인정하므로 `2024 개인 메모` 같은 일반 폴더를 회차로 추측하지 않습니다. 오래된 같은 순번
 record도 원본 제목이 일치할 때만 source ID를 승계합니다. state 또는 명시 완료 목록이 없으면
@@ -1067,6 +1071,8 @@ worker는 백그라운드에서 계속될 수 있습니다. CLI JSON의 `operati
 `numberInferred: true`로 남기며, 다음 사이트 검사에서 유일한 전체 회차명이 일치할 때 실제
 순번과 source ID로 승격합니다. GUI에서는 작품 우클릭
 `로컬 메타데이터 재생성...`에서 같은 기능을 확인 후 실행할 수 있습니다.
+구형 순번 폴더를 manifest의 회차에 연결할 때도 정규화한 제목이 유일하게 일치해야 합니다.
+번호만 같거나 서로 다른 source ID가 같은 제목을 주장하면 ID를 승계하지 않습니다.
 
 `verify-files`는 작품 폴더를 변경하지 않는 읽기 전용 검사입니다. 완료 상태 대비 누락
 회차, 같은 번호의 중복 폴더, 이미지가 없는 회차, 0바이트 파일, JPG·PNG·WebP·GIF·BMP·
@@ -1074,7 +1080,10 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 회차 폴더가 있는데 `.toki-state.json`이 없으면 `state_missing` 문제로 보고해 정상으로
 오판하지 않습니다.
 전체 재검사에서도 기존 이미지는 확장자·signature와 JPEG/PNG 종단 표식이 유효할 때만
-건너뜁니다. 0바이트, 잘린 파일 또는 HTML 응답은 새 버퍼를 검증한 뒤 원자 교체하며,
+건너뜁니다. WebP는 RIFF 선언 길이, 각 청크의 경계·패딩, 이미지 청크와 애니메이션 프레임
+구조도 검사합니다. 기존 파일은 청크 헤더만 읽어 메모리 사용을 제한합니다. 이 검사는
+모든 압축 데이터를 디코딩하는 완전성 검사는 아닙니다. 0바이트, 검출된 잘림 또는 HTML
+응답은 새 버퍼를 검증한 뒤 원자 교체하며,
 페이지에서 유효 이미지가 0개면 해당 회차를 완료 상태로 기록하지 않습니다.
 문제가 없으면 종료 코드 0, 문제가 발견되면 결과 JSON을 출력한 뒤 종료 코드 2를 사용합니다.
 `--issue-limit`으로 상세 문제 배열 크기를 제한할 수 있어 수천 파일에서도 출력이 무한히
@@ -1087,6 +1096,12 @@ AVIF 이미지 서명 불일치, 손상된 `metadata.json`과 `.toki-state.json`
 선택과 이미지 목록, 원본 열기 버튼을 제공하며 선택한 한 장만 최대 1400×1000 크기로 Qt
 스레드 풀에서 축소 디코딩합니다. 따라서 작품 전체 이미지나 한 회차의 모든 이미지를 GUI
 메인 스레드에서 한꺼번에 읽지 않습니다.
+번호가 중복돼도 이미지는 한 폴더씩만 반환하며, GUI 선택 목록에는 실제 회차 폴더명이
+각각 표시됩니다. `--episode N`이 둘 이상을 가리키면 구분이 필요하다는 오류를 반환합니다.
+`--episode-id SOURCE_ID` 또는 `--episode-folder "정확한 폴더명"`으로 선택하세요. JSON의
+`episodeEntries`에 선택 가능한 번호·ID·폴더명, `episodeId`·`episodeFolder`에 현재 선택을
+반환합니다. Qt가 정상 WebP를 읽지 못하면 같은 이미지 worker에서 Pillow로 재시도합니다.
+Pillow도 실패하거나 설치돼 있지 않으면 오류를 표시하고 원본 파일은 변경하지 않습니다.
 
 `convert-images`는 JPG·PNG·WebP 변환을 지원하며 결과를 작품 폴더 아래
 `_converted\형식\기존 회차 폴더`에 생성합니다. 최대 너비나 높이를 지정하면 가로세로 비율을

@@ -1758,6 +1758,24 @@ class ImageLoadTask(QRunnable):
         reader.setAutoTransform(True)
         image = reader.read()
         error = reader.errorString() if image.isNull() else ""
+        if image.isNull():
+            # Some valid lossless WebP streams are rejected by Qt's decoder.
+            # Keep the optional fallback inside this image worker, never the UI.
+            try:
+                from PIL import Image, ImageOps
+
+                with Image.open(self.path) as source:
+                    oriented = ImageOps.exif_transpose(source)
+                    oriented.thumbnail((1400, 1000), Image.Resampling.LANCZOS)
+                    rgba = oriented.convert("RGBA")
+                    image = QImage(
+                        rgba.tobytes(), rgba.width, rgba.height, rgba.width * 4,
+                        QImage.Format.Format_RGBA8888,
+                    ).copy()
+                if not image.isNull():
+                    error = ""
+            except Exception as fallback_error:
+                error = f"{error}; Pillow: {fallback_error}"
         if not image.isNull() and (image.width() > 1400 or image.height() > 1000):
             image = image.scaled(
                 QSize(1400, 1000),
@@ -1799,9 +1817,11 @@ class ImagePreviewDialog(QDialog):
         toolbar.addWidget(QLabel(str(result.get("title") or "작품")), 1)
         toolbar.addWidget(QLabel("회차"))
         self.episode_combo = QComboBox()
-        for episode in result.get("availableEpisodes") or []:
-            self.episode_combo.addItem(str(episode), int(episode))
-        selected_index = self.episode_combo.findData(int(result.get("episode") or 0))
+        for entry in result.get("episodeEntries") or []:
+            self.episode_combo.addItem(entry["folderName"], entry["folderName"])
+        self.episode_combo.setMinimumContentsLength(20)
+        self.episode_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        selected_index = self.episode_combo.findData(result.get("episodeFolder"))
         if selected_index >= 0:
             self.episode_combo.setCurrentIndex(selected_index)
         toolbar.addWidget(self.episode_combo)
@@ -1868,10 +1888,19 @@ class ImagePreviewDialog(QDialog):
         self.preview_label.setPixmap(pixmap)
 
     def _episode_changed(self, _index: int) -> None:
-        episode = self.episode_combo.currentData()
-        if episode is None or int(episode) == int(self.result.get("episode") or 0):
+        folder = self.episode_combo.currentData()
+        if folder is None or folder == self.result.get("episodeFolder"):
             return
-        self.owner.start_image_preview(self.result["jobId"], int(episode))
+        self.owner.start_image_preview(
+            self.result["jobId"], episode_folder=str(folder)
+        )
+        # Keep the selector consistent until the replacement dialog is ready,
+        # including when the worker is busy or the requested folder disappears.
+        self.episode_combo.blockSignals(True)
+        self.episode_combo.setCurrentIndex(
+            self.episode_combo.findData(self.result.get("episodeFolder"))
+        )
+        self.episode_combo.blockSignals(False)
 
     def _open_current(self) -> None:
         if self.current_path:
@@ -10046,7 +10075,8 @@ class MainWindow(QMainWindow):
         return True
 
     def start_image_preview(
-        self, job_id: str | None = None, episode: int | None = None
+        self, job_id: str | None = None, episode: int | None = None,
+        *, episode_id: str | None = None, episode_folder: str | None = None,
     ) -> dict[str, Any]:
         job = self.selected_job(job_id)
         if not job:
@@ -10075,7 +10105,10 @@ class MainWindow(QMainWindow):
             }
         task = ServiceTask(
             job.job_id,
-            lambda: list_job_episode_images(job.job_id, episode, limit=200),
+            lambda: list_job_episode_images(
+                job.job_id, episode, episode_id=episode_id,
+                episode_folder=episode_folder, limit=200,
+            ),
         )
         task.signals.finished.connect(self._image_preview_finished)
         self.image_preview_processes[job.job_id] = task
@@ -10085,6 +10118,8 @@ class MainWindow(QMainWindow):
             "started": True,
             "jobId": job.job_id,
             "episode": episode,
+            "episodeId": episode_id,
+            "episodeFolder": episode_folder,
             "resources": admission,
         }
 
@@ -12071,7 +12106,7 @@ class MainWindow(QMainWindow):
             "toki-cli.cmd rebuild-metadata --job ID --dry-run --json\n"
             "toki-cli.cmd rebuild-metadata --job ID --execute --yes --json\n"
             "toki-cli.cmd verify-files --job ID [--json|--show-gui]\n"
-            "toki-cli.cmd preview --job ID [--episode N] [--json|--show-gui]\n"
+            "toki-cli.cmd preview --job ID [--episode N] [--episode-id ID|--episode-folder NAME] [--json|--show-gui]\n"
             "toki-cli.cmd convert-images --job ID --format jpg|png|webp [--max-width N --max-height N --exclude-ext EXT] [--dry-run|--execute --yes|--show-gui]\n"
             "toki-cli.cmd image-processing status|set [options]\n"
             "toki-cli.cmd hitomi status|inspect|close|server status|set|plan|metadata status|set|plan|parse|fetch|show|close|metadata-files status|set|plan|write|filenames status|set|plan|images status|set|plan|tags status|set|evaluate|title status|set|select [options]\n"
@@ -13000,9 +13035,15 @@ class MainWindow(QMainWindow):
             return {"closed": self.close_file_verification()}
         if action == "preview_images":
             episode = request.get("episode")
+            selection = {}
+            if request.get("episodeId") is not None:
+                selection["episode_id"] = str(request["episodeId"])
+            if request.get("episodeFolder") is not None:
+                selection["episode_folder"] = str(request["episodeFolder"])
             return self.start_image_preview(
                 str(request.get("jobId") or ""),
                 int(episode) if episode is not None else None,
+                **selection,
             )
         if action == "close_image_preview":
             return {"closed": self.close_image_preview()}

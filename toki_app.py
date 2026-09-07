@@ -2080,6 +2080,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preview.add_argument("--job", help="작업 ID")
     preview.add_argument("--episode", type=int, help="회차 번호(생략 시 첫 보유 회차)")
+    preview_identity = preview.add_mutually_exclusive_group()
+    preview_identity.add_argument("--episode-id", help="미리 볼 회차의 sourceId")
+    preview_identity.add_argument("--episode-folder", help="미리 볼 회차의 정확한 폴더명")
     preview.add_argument("--limit", type=int, default=200, help="가져올 이미지 수(최대 1000)")
     preview.add_argument("--offset", type=int, default=0, help="건너뛸 이미지 수")
     preview_window = preview.add_mutually_exclusive_group()
@@ -4332,6 +4335,11 @@ def run_cli(args: argparse.Namespace) -> int:
             return 0
         if not args.job:
             raise ControlError("이미지 미리보기에는 --job 작업ID가 필요합니다.")
+        selection = {}
+        if args.episode_id is not None:
+            selection["episode_id"] = args.episode_id
+        if args.episode_folder is not None:
+            selection["episode_folder"] = args.episode_folder
         if args.show_gui:
             ensure_gui_running()
             print_json(
@@ -4340,6 +4348,8 @@ def run_cli(args: argparse.Namespace) -> int:
                         "action": "preview_images",
                         "jobId": args.job,
                         "episode": args.episode,
+                        **({"episodeId": args.episode_id} if args.episode_id is not None else {}),
+                        **({"episodeFolder": args.episode_folder} if args.episode_folder is not None else {}),
                     }
                 )
             )
@@ -4349,6 +4359,7 @@ def run_cli(args: argparse.Namespace) -> int:
             args.episode,
             limit=args.limit,
             offset=args.offset,
+            **selection,
         )
         if args.json:
             payload = {"ok": True, **result}
@@ -4358,6 +4369,8 @@ def run_cli(args: argparse.Namespace) -> int:
                 print_json(payload)
         else:
             print(f"작품: {result['title']} | 회차: {result['episode']}")
+            if result.get("episodeFolder"):
+                print(f"회차 폴더: {result['episodeFolder']}")
             print(f"이미지 {len(result['images'])} / 전체 {result['total']}")
             for image in result["images"]:
                 print(f"{image['index']}: {image['name']} ({image['size']} bytes)")

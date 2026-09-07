@@ -3345,6 +3345,23 @@ class CliParserTests(unittest.TestCase):
             {"action": "preview_images", "jobId": "job-1", "episode": 12}
         )
 
+        for option, field, value in (
+            ("--episode-id", "episodeId", "source-b"),
+            ("--episode-folder", "episodeFolder", "작품 140-2화"),
+        ):
+            args = build_parser().parse_args([
+                "preview", "--job", "job-1", option, value, "--show-gui",
+            ])
+            with (
+                patch("toki_app.ensure_gui_running"),
+                patch("toki_app.control_request", return_value={"started": True}) as request,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(run_cli(args), 0)
+            request.assert_called_once_with({
+                "action": "preview_images", "jobId": "job-1", "episode": None, field: value,
+            })
+
         close_gui = build_parser().parse_args(["preview", "--close"])
         with (
             patch("toki_app.ensure_gui_running"),

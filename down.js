@@ -667,21 +667,26 @@ function existingImageFileValidation(filePath) {
                 tailLength,
                 Math.max(0, stat.size - tailLength),
             );
+            return {
+                ...validateImageBuffer(
+                    header.subarray(0, bytesRead),
+                    path.extname(filePath),
+                    {
+                        tail: tail.subarray(0, tailBytesRead),
+                        totalSize: stat.size,
+                        readAt: (offset, length) => {
+                            const chunk = Buffer.allocUnsafe(length);
+                            const count = fs.readSync(descriptor, chunk, 0, length, offset);
+                            return chunk.subarray(0, count);
+                        },
+                    },
+                ),
+                size: stat.size,
+            };
         }
         finally {
             fs.closeSync(descriptor);
         }
-        return {
-            ...validateImageBuffer(
-                header.subarray(0, bytesRead),
-                path.extname(filePath),
-                {
-                    tail: tail.subarray(0, tailBytesRead),
-                    totalSize: stat.size,
-                },
-            ),
-            size: stat.size,
-        };
     }
     catch (error) {
         return { valid: false, reason: 'image_read_failed', size: 0, error };

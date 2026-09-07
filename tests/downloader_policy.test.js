@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import webpSamples from './fixtures/webp_validation_samples.json' with { type: 'json' };
 
 import {
     detectImageFormat,
@@ -25,7 +26,7 @@ const imageSignatures = new Map([
         0xae, 0x42, 0x60, 0x82,
     ])],
     ['.gif', Buffer.from('GIF89a', 'ascii')],
-    ['.webp', Buffer.from('RIFF\x00\x00\x00\x00WEBP', 'binary')],
+    ['.webp', Buffer.from(webpSamples.lossy, 'base64')],
     ['.bmp', Buffer.from('BM', 'ascii')],
     ['.avif', Buffer.concat([
         Buffer.from([0x00, 0x00, 0x00, 0x18]),

@@ -293,6 +293,8 @@ rename-episodes --job ID --execute --yes --json
 rebuild-metadata --job ID --json
 verify-files --job ID --json
 preview --job ID --episode EPISODE
+preview --job ID --episode-id SOURCE_ID
+preview --job ID --episode-folder "FOLDER_NAME"
 convert-images --job ID --format FORMAT --dry-run --json
 convert-images --job ID --format FORMAT --execute --yes --progress-json
 convert-images --close
@@ -331,6 +333,13 @@ state v2와 272개 manifest로 완료했으며 임시 결과는 검증 후 삭�
 없을 때 기본 회차를 `N-1화`로 계산한다. 합본 범위, R-18과 서로 다른 부제 문맥은 격리하며,
 `.0`·`-1`의 기존 점유나 소수형·분할형 혼용은 충돌로 차단한다. 신규 다운로드의 목록 기반
 manifest 준비와 기존 폴더의 `rename-episodes`가 같은 규칙을 사용한다.
+
+2026-09-08 검수 후 보강: 구형 순번 폴더에는 유일하게 일치하는 제목이 있을 때만 원본 ID를
+연결한다. 폴더명 정리는 다운로드하지 않은 state·metadata 회차도 문맥에 포함해 `.0`·`-1`을
+보존한다. WebP는 Node 저장/재검사와 Python 파일 검사에서 RIFF 길이 및 청크 경계를
+확인한다. 미리보기는 번호가 중복돼도 한 폴더씩 구분하며 CLI·GUI·IPC에서 ID/폴더 선택을
+지원한다. Qt가 읽지 못하는 정상 이미지에는 worker 안에서 Pillow 디코더를 보조 사용한다.
+구현 근거와 검증은 [개발 이력](docs/development-history/2026-09-08-episode-review-fixes.md)에 기록한다.
 
 2026-08-08 회차 이름변경 제어 계약 보강: GUI와 CLI의 계획·실행은 I/O worker만 사용하며
 동기 control action은 제거했다. dry-run worker에는 현재 GUI 작품의 불변 snapshot만 넘겨
