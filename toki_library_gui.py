@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, QTimer, pyqtSignal, QItemSelection, QItemSelectionModel
 from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QCheckBox, QPlainTextEdit, QPushButton, QHBoxLayout, QMessageBox, QMenu
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QButtonGroup, QGridLayout, QCheckBox, QPlainTextEdit, QPushButton, QHBoxLayout, QMessageBox, QMenu
 
 import toki_core as core
 from toki_library import archive_library_items, delete_library_items, restore_library_trash
@@ -41,17 +41,37 @@ class LibraryDialog(QDialog):
         self.setWindowTitle("선택 작품 ZIP 압축" if archive else "선택 작품 처리 · Delete")
         self.resize(740, 560)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"선택한 작품 {len(ids)}개 · 처리 종류를 고른 뒤 대상 확인"))
-        self.action_combo = QComboBox()
-        choices = [("회차별 ZIP 압축", "archive")] if archive else [
-            ("목록만 삭제 — 다운로드 파일 보존", "delete:records"),
-            ("다운로드 파일 삭제 — 압축·목록 보존, 앱 휴지통으로 이동", "delete:files"),
-            ("압축 파일만 삭제 — 원본·목록 보존, 앱 휴지통으로 이동", "delete:archives"),
-            ("다운로드 취소 — 선택한 대기·진행 작업 중지", "cancel-downloads"),
-        ]
-        for text, action in choices:
-            self.action_combo.addItem(text, action)
-        layout.addWidget(self.action_combo)
+        layout.addWidget(QLabel(f"선택한 작품 {len(ids)}개 · " + (
+            "회차별 ZIP 압축" if archive else "작업 버튼을 누르면 대상을 미리 확인합니다."
+        )))
+        self.selected_action = "archive" if archive else ""
+        self.action_buttons = {}
+        self.action_group = QButtonGroup(self)
+        self.action_group.setExclusive(True)
+        if not archive:
+            choices = [
+                ("목록만 삭제\n다운로드 파일 보존", "delete:records"),
+                ("다운로드 파일 삭제\n압축·목록 보존 · 앱 휴지통으로 이동", "delete:files"),
+                ("압축 파일만 삭제\n원본·목록 보존 · 앱 휴지통으로 이동", "delete:archives"),
+                ("다운로드 취소\n선택한 대기·진행 작업 중지", "cancel-downloads"),
+            ]
+            grid = QGridLayout()
+            for index, (text, action) in enumerate(choices):
+                button = QPushButton(text)
+                button.setObjectName("library_" + action.replace(":", "_"))
+                button.setCheckable(True)
+                button.setAutoDefault(False)
+                button.setStyleSheet(
+                    "QPushButton { min-height: 60px; padding: 6px 10px; }"
+                    "QPushButton:checked { background: #2f7de1; color: white; border: 2px solid #6ab2ff; }"
+                )
+                button.clicked.connect(lambda _checked, action=action: self.select_action(action, preview=True))
+                self.action_group.addButton(button)
+                self.action_buttons[action] = button
+                grid.addWidget(button, index // 2, index % 2)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            layout.addLayout(grid)
         self.remove_originals = QCheckBox("ZIP 무결성 검사 성공 후 원본 정리 (ZIP에서 복원 가능)")
         self.remove_originals.setChecked(bool(owner.config.get("archiveRemoveOriginals", True)))
         self.remove_originals.setVisible(archive)
@@ -61,10 +81,14 @@ class LibraryDialog(QDialog):
         layout.addWidget(self.info)
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
+        self.details.setPlaceholderText("위에서 원하는 작업 버튼을 눌러주세요. 아직 어떤 파일도 변경하지 않았습니다.")
         layout.addWidget(self.details, 1)
         buttons = QHBoxLayout()
         self.preview_button = QPushButton("대상 미리보기")
+        self.preview_button.setStyleSheet("QPushButton:disabled { color: #7a8492; }")
+        self.preview_button.setEnabled(archive)
         self.execute_button = QPushButton("확인 후 실행")
+        self.execute_button.setStyleSheet("QPushButton:disabled { color: #7a8492; }")
         self.execute_button.setEnabled(False)
         self.stop_button = QPushButton("압축 중지")
         self.stop_button.setVisible(archive)
@@ -77,15 +101,32 @@ class LibraryDialog(QDialog):
         self.execute_button.clicked.connect(lambda: self.start(True))
         self.stop_button.clicked.connect(lambda: owner.cancel_library_operation(self.operation_id))
         close.clicked.connect(self.close)
-        self.action_combo.currentIndexChanged.connect(self.invalidate)
         self.remove_originals.toggled.connect(self.invalidate)
+
+    def select_action(self, action, *, preview=False):
+        if action not in self.action_buttons and not (self.selected_action == "archive" and action == "archive"):
+            raise ValueError(f"이 창에서 선택할 수 없는 작업입니다: {action}")
+        self.selected_action = action
+        if action in self.action_buttons:
+            self.action_buttons[action].setChecked(True)
+        self.invalidate()
+        self.preview_button.setEnabled(True)
+        if preview:
+            self.start(False)
+
+    def set_action_buttons_enabled(self, enabled):
+        for button in self.action_buttons.values():
+            button.setEnabled(enabled)
 
     def invalidate(self, *_args):
         self.plan = None
         self.execute_button.setEnabled(False)
+        self.details.clear()
 
     def start(self, execute):
-        action = self.action_combo.currentData()
+        action = self.selected_action
+        if not action or (execute and (not self.plan or self.plan.get("executed"))):
+            return
         if execute and QMessageBox.question(self, "선택한 대상 처리 확인", self.details.toPlainText()[:1800] + "\n\n위 대상을 처리할까요?") != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -96,7 +137,7 @@ class LibraryDialog(QDialog):
             self.operation_id = response["operationId"]
             self.preview_button.setEnabled(False)
             self.execute_button.setEnabled(False)
-            self.action_combo.setEnabled(False)
+            self.set_action_buttons_enabled(False)
             self.remove_originals.setEnabled(False)
             self.stop_button.setEnabled(execute and action == "archive")
             self.details.setPlainText("처리 중… 진행 상황은 실행 로그에도 기록됩니다.")
@@ -105,7 +146,7 @@ class LibraryDialog(QDialog):
 
     def completed(self, result, error):
         self.preview_button.setEnabled(True)
-        self.action_combo.setEnabled(True)
+        self.set_action_buttons_enabled(True)
         self.remove_originals.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.plan = result if not error else None
@@ -192,9 +233,7 @@ class LibraryWindowMixin:
             self.active_library_dialog.close()
         dialog = LibraryDialog(self, ids, archive)
         if operation:
-            index = dialog.action_combo.findData(operation)
-            if index >= 0:
-                dialog.action_combo.setCurrentIndex(index)
+            dialog.select_action(operation)
         self.active_library_dialog = dialog
         dialog.show()
         if preview:

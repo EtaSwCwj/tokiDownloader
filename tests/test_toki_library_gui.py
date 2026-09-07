@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QThreadPool, Qt
-from PyQt6.QtWidgets import QApplication, QMainWindow, QListView, QVBoxLayout, QWidget, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMainWindow, QListView, QVBoxLayout, QWidget, QMessageBox, QComboBox
 from PyQt6.QtTest import QTest
 
 import toki_core as core
@@ -87,9 +87,11 @@ class LibraryGuiTests(unittest.TestCase):
             self.app.processEvents()
             dialog = window.active_library_dialog
             self.assertIsNotNone(dialog)
-            self.assertEqual(dialog.action_combo.count(), 4)
+            self.assertEqual(len(dialog.action_buttons), 4)
+            self.assertEqual(dialog.findChildren(QComboBox), [])
             self.assertFalse(dialog.execute_button.isEnabled())
-            dialog.preview_button.click()
+            self.assertFalse(dialog.preview_button.isEnabled())
+            dialog.action_buttons["delete:records"].click()
             self.wait_task(window)
             self.assertTrue(dialog.execute_button.isEnabled())
             self.assertIsNotNone(core.load_job_by_id("a"))
@@ -100,6 +102,51 @@ class LibraryGuiTests(unittest.TestCase):
             self.assertIsNone(core.load_job_by_id("a"))
             self.assertIsNone(core.load_job_by_id("b"))
             self.assertTrue(root_a.exists() and root_b.exists())
+        finally:
+            if window.active_library_dialog:
+                window.active_library_dialog.close()
+            window.io_thread_pool.waitForDone()
+            window.close()
+
+    def test_action_buttons_preview_each_operation_without_deleting(self):
+        job, root, episode = self.work()
+        window = Harness([job])
+        try:
+            window.show_library_dialog([job.job_id])
+            dialog = window.active_library_dialog
+            for action in ("delete:records", "delete:files", "delete:archives", "cancel-downloads"):
+                with self.subTest(action=action):
+                    dialog.action_buttons[action].click()
+                    self.wait_task(window)
+                    self.assertEqual(dialog.selected_action, action)
+                    self.assertEqual(sum(b.isChecked() for b in dialog.action_buttons.values()), 1)
+                    self.assertFalse(dialog.plan["executed"])
+                    self.assertTrue(dialog.execute_button.isEnabled())
+                    self.assertIsNotNone(core.load_job_by_id(job.job_id))
+                    self.assertEqual(len(list(episode.glob("*.jpg"))), 3)
+                    self.assertFalse((root / ".toki-trash").exists())
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                dialog.execute_button.click()
+            self.assertFalse(window.library_tasks)
+            self.assertFalse(dialog.plan["executed"])
+        finally:
+            if window.active_library_dialog:
+                window.active_library_dialog.close()
+            window.io_thread_pool.waitForDone()
+            window.close()
+
+    def test_cli_dialog_choice_selects_button_and_can_preview(self):
+        job, root, _ = self.work()
+        window = Harness([job])
+        try:
+            window.show_library_dialog([job.job_id], operation="delete:files", preview=True)
+            self.app.processEvents()
+            self.wait_task(window)
+            dialog = window.active_library_dialog
+            self.assertTrue(dialog.action_buttons["delete:files"].isChecked())
+            self.assertEqual(dialog.plan["kind"], "files")
+            self.assertFalse(dialog.plan["executed"])
+            self.assertFalse((root / ".toki-trash").exists())
         finally:
             if window.active_library_dialog:
                 window.active_library_dialog.close()
