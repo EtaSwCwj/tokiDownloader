@@ -16,9 +16,11 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import psutil
+from toki_library_gui import LibraryWindowMixin
 from PyQt6.QtCore import (
     QAbstractListModel,
     QEvent,
+    QItemSelectionModel,
     QModelIndex,
     QObject,
     QPoint,
@@ -1840,6 +1842,8 @@ class ImagePreviewDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, image)
         content.addWidget(self.image_list)
         self.preview_label = QLabel("이미지를 선택해주세요.")
+        if result.get("archivePath") and not result.get("images"):
+            self.preview_label.setText("이 회차의 원본은 ZIP에 보관되어 있습니다.\n아래 ZIP 뷰어 열기로 감상하세요.")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(520, 480)
         self.preview_label.setObjectName("previewSurface")
@@ -1852,6 +1856,9 @@ class ImagePreviewDialog(QDialog):
         )
         footer.addWidget(self.page_label, 1)
         open_button = QPushButton("원본 이미지 열기")
+        if result.get("archivePath") and not result.get("images"):
+            open_button.setText("ZIP 뷰어 열기")
+            self.page_label.setText(f"ZIP 보관 이미지 {result.get('archivedImageCount', 0)}장")
         open_button.clicked.connect(self._open_current)
         footer.addWidget(open_button)
         close_button = QPushButton("닫기")
@@ -1903,6 +1910,12 @@ class ImagePreviewDialog(QDialog):
         self.episode_combo.blockSignals(False)
 
     def _open_current(self) -> None:
+        if self.result.get("archivePath") and not self.result.get("images"):
+            try:
+                open_archive_with_viewer(Path(self.result["archivePath"]), execute=True)
+            except Exception as error:
+                QMessageBox.warning(self, "ZIP 뷰어 실행 실패", str(error))
+            return
         if self.current_path:
             open_in_explorer(self.current_path)
 
@@ -3578,7 +3591,7 @@ class SettingsDialog(QDialog):
         "일반 언어 한국어 저장 폴더 폴더명 템플릿 미리보기 경로 브라우저 로그 트레이 알림 닫기 최소화 완료 후 종료 시스템 종료 카운트다운 클립보드 URL 감지 중복 확인",
         "네트워크 동시 작품 이미지 연결 재시도 대기 백오프 프록시 HTTP HTTPS SOCKS 속도 제한 공급자 요청 간격 공인 IP 확인",
         "디스플레이 화면 테마 밝게 어둡게 목록 아이콘 밀도 표지 썸네일 크기 항상 위 투명도 배율 배경 이미지 글꼴 진행률 빠른 실행 도구",
-        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 압축 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
+        "고급 로그 파일 크기 보존 순환 기록 소리 알림음 메시지 상자 작업 완료 오류 미리보기 이미지 리사이즈 너비 높이 제외 확장자 파일 유형 ZIP 압축 원본 정리 연결 프로그램 뷰어 자동 저장 주기 불완전 복구 시작 페이지 크기 메모리 작품 상한 스크롤 속도 지연 로딩 저사양 절전 방지 다운로드 전원 PDF 생성 회차 메모리 사용량 표시 RAM 시스템 자식 프로세스 HTTP API 로컬 포트 토큰",
         "공급자 toki newtoki manatoki booktoki hitomi exhentai 서버 자동 수동 우선순위 갤러리 정보 id 메타데이터 metadata.json info.txt 파일 저장 이미지 파일명 원본 숫자 이미지 품질 최적화 제외 태그 규칙 일본어 제목 우선 youtube yt-dlp ffmpeg 형식 해상도 컨테이너 비디오 오디오 코덱 선호 언어 자막 트랙 썸네일 설명 정보 json 포함 채널 재생목록 순서 역순 챕터 마커 업로드 날짜 수정 시간 mtime 의존성 플러그인",
     )
 
@@ -3946,6 +3959,12 @@ class SettingsDialog(QDialog):
             "CLI: pdf set --automatic on|off"
         )
         advanced_form.addRow("PDF 자동 생성", self.pdf_generation_check)
+        self.archive_after_check = QCheckBox("다운로드 완료 후 회차별 ZIP 생성")
+        self.archive_after_check.setToolTip("CLI: config set --key archiveAfterDownload --value true --json")
+        advanced_form.addRow("ZIP 자동 압축", self.archive_after_check)
+        self.archive_remove_check = QCheckBox("ZIP 검증 성공 후 원본 정리 (ZIP에서 복원 가능)")
+        self.archive_remove_check.setToolTip("CLI: config set --key archiveRemoveOriginals --value true --json")
+        advanced_form.addRow("압축 후 원본", self.archive_remove_check)
         self.memory_display_check = QCheckBox(
             "상태 표시줄에 시스템 사용률과 앱·자식 작업 메모리 표시"
         )
@@ -4419,6 +4438,7 @@ class SettingsDialog(QDialog):
     def _scroll_advanced_search(self, query: str) -> None:
         lowered = str(query or "").casefold()
         targets = (
+            (("zip", "ZIP", "자동 압축", "원본 정리"), self.archive_after_check),
             (("토큰", "상태"), self.local_api_status_label),
             (("http", "HTTP", "api", "API", "로컬", "포트"), self.local_api_check),
             (("메모리 사용량", "ram", "RAM", "자식 프로세스"), self.memory_display_check),
@@ -4625,6 +4645,8 @@ class SettingsDialog(QDialog):
             bool(values["preventSleepDuringDownloads"])
         )
         self.pdf_generation_check.setChecked(bool(values["pdfGenerationEnabled"]))
+        self.archive_after_check.setChecked(bool(values["archiveAfterDownload"]))
+        self.archive_remove_check.setChecked(bool(values["archiveRemoveOriginals"]))
         self.memory_display_check.setChecked(bool(values["memoryDisplayEnabled"]))
         self.local_api_check.setChecked(bool(values["localApiEnabled"]))
         self.local_api_port_spin.setValue(int(values["localApiPort"]))
@@ -4920,6 +4942,8 @@ class SettingsDialog(QDialog):
             "lowSpecMode": self.low_spec_mode_check.isChecked(),
             "preventSleepDuringDownloads": self.prevent_sleep_check.isChecked(),
             "pdfGenerationEnabled": self.pdf_generation_check.isChecked(),
+            "archiveAfterDownload": self.archive_after_check.isChecked(),
+            "archiveRemoveOriginals": self.archive_remove_check.isChecked(),
             "memoryDisplayEnabled": self.memory_display_check.isChecked(),
             "localApiEnabled": self.local_api_check.isChecked(),
             "localApiPort": self.local_api_port_spin.value(),
@@ -5515,10 +5539,11 @@ class BackgroundWidget(QWidget):
         painter.fillRect(self.rect(), overlay)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(LibraryWindowMixin, QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.config = load_config()
+        self.initialize_library()
         self.strings = load_ui_strings(self.config.get("uiLanguage"))
         self.theme_mode = str(self.config.get("theme") or "system")
         self.resolved_theme = self._resolve_theme(self.theme_mode)
@@ -6140,6 +6165,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.task_list.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self.setup_library_selection()
         self.task_list.setUniformItemSizes(True)
         self.task_list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.task_list.setResizeMode(QListView.ResizeMode.Adjust)
@@ -6147,7 +6173,7 @@ class MainWindow(QMainWindow):
         self.task_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.task_list.setToolTip(
-            "한 번 클릭하면 선택, Enter는 상세 정보, 더블클릭은 다운로드 폴더 열기입니다."
+            "Ctrl+클릭: 복수 선택 · Shift+클릭: 범위 · Ctrl+A: 로딩된 목록 전체 · Delete: 선택 작품 처리 · 더블클릭: 폴더 열기"
         )
         self.task_list.setAccessibleName("다운로드 작업 목록")
         self.task_list.addAction(self.activate_selected_action)
@@ -6793,6 +6819,7 @@ class MainWindow(QMainWindow):
         self._flush_job_history()
         selected = self.selected_job()
         selected_key = selected.work_key if selected else ""
+        selected_ids = self.selected_job_ids() if hasattr(self, "selected_job_ids") else []
         self.history_query = self.search_edit.text().strip()
         self.history_state = str(self.state_filter_combo.currentData() or "")
         self.history_sort = str(self.sort_combo.currentData() or "updated")
@@ -6829,6 +6856,9 @@ class MainWindow(QMainWindow):
             self.task_list.setCurrentIndex(self.task_model.index(row, 0))
         elif display_jobs:
             self.task_list.setCurrentIndex(self.task_model.index(0, 0))
+        if selected_ids:
+            loaded_ids = {job.job_id for job in display_jobs}
+            self.select_library_jobs([job_id for job_id in selected_ids if job_id in loaded_ids])
         self._update_summary()
         return self._update_list_view_state()
 
@@ -7659,6 +7689,8 @@ class MainWindow(QMainWindow):
             self.active_detail_dialog.refresh()
         self._update_active_summary()
         self._notify_job_result(job)
+        if job.state == "완료" and hasattr(self, "queue_auto_archive"):
+            self.queue_auto_archive(job)
         if (
             job.state == "완료"
             and job.provider != "youtube"
@@ -7961,9 +7993,10 @@ class MainWindow(QMainWindow):
             work_key=work_key,
             output_path=output_path,
         )
-        for registered_job_id, context in getattr(
-            self, "episode_rename_tasks", {}
-        ).items():
+        for registered_job_id, context in [
+            *getattr(self, "episode_rename_tasks", {}).items(),
+            *getattr(self, "library_jobs", {}).items(),
+        ]:
             if not bool(getattr(context, "execute", False)):
                 continue
             active = MainWindow._context_mutation_identity(
@@ -7976,7 +8009,7 @@ class MainWindow(QMainWindow):
                 return {
                     "errorCode": "episode_rename_in_progress",
                     "error": (
-                        "같은 작품 또는 저장 폴더의 회차 폴더명 정리가 실행 중입니다. "
+                        "같은 작품 또는 저장 폴더의 압축/삭제/회차 폴더명 정리가 실행 중입니다. "
                         "완료 후 다시 시도해주세요."
                     ),
                     "conflictJobId": active[0] or registered_job_id,
@@ -8057,6 +8090,7 @@ class MainWindow(QMainWindow):
         for pending_pdf_job_id in getattr(self, "pending_pdf_jobs", set()):
             record("pdfQueued", pending_pdf_job_id)
         for name, registry in (
+            ("libraryOperation", getattr(self, "library_jobs", {})),
             ("fileVerification", getattr(self, "file_verify_processes", {})),
             ("imagePreview", getattr(self, "image_preview_processes", {})),
             ("duplicateImages", getattr(self, "duplicate_image_tasks", {})),
@@ -8769,9 +8803,9 @@ class MainWindow(QMainWindow):
             str(self.config.get("completionAction") or "none"),
             int(self.config.get("completionCountdownSeconds") or 15),
             active_count=(
-                len(self.active_contexts) + len(self.pdf_generation_processes)
+                len(self.active_contexts) + len(self.pdf_generation_processes) + len(getattr(self, "library_tasks", {}))
             ),
-            pending_count=len(self.pending_jobs) + len(self.pending_pdf_jobs),
+            pending_count=len(self.pending_jobs) + len(self.pending_pdf_jobs) + len(getattr(self, "pending_auto_archives", set())),
             armed=self.completion_action_armed,
         )
         dialog = self.active_completion_dialog
@@ -10909,11 +10943,15 @@ class MainWindow(QMainWindow):
         index = self.task_list.indexAt(position)
         if not index.isValid():
             return
-        self.task_list.setCurrentIndex(index)
+        if not self.task_list.selectionModel().isSelected(index):
+            self.task_list.setCurrentIndex(index)
         job = self.task_model.job_at(index.row())
         if not job:
             return
         global_position = self.task_list.viewport().mapToGlobal(position)
+        if len(self.selected_job_ids()) > 1:
+            self.library_context_menu(global_position)
+            return
         self._popup_job_context_menu(job, global_position)
 
     def show_job_context_menu_for_job(self, job_id: str | None = None) -> bool:
@@ -11322,6 +11360,8 @@ class MainWindow(QMainWindow):
             "copy.id",
         )
 
+        if hasattr(self, "show_library_dialog"):
+            mark(menu.addAction("회차별 ZIP 압축...", lambda: self.show_library_dialog([job.job_id], archive=True)), "archive.create")
         menu.addSeparator()
         remove_action = mark(
             menu.addAction(
@@ -11611,6 +11651,8 @@ class MainWindow(QMainWindow):
         )
         if notification_box:
             screenshot = notification_box.grab()
+        elif getattr(self, "active_library_dialog", None) and self.active_library_dialog.isVisible():
+            screenshot = self.active_library_dialog.grab()
         elif (
             self.active_application_identity_dialog
             and self.active_application_identity_dialog.isVisible()
@@ -12806,6 +12848,26 @@ class MainWindow(QMainWindow):
             )
 
     def _handle_control_action(self, request: dict[str, Any]) -> Any:
+        library_action = request.get("action", "")
+        if library_action == "library_select":
+            return self.select_library_jobs(request.get("jobIds"), bool(request.get("clear")))
+        if library_action == "library_status":
+            return self.library_snapshot()
+        if library_action == "library_cancel":
+            return self.cancel_library_operation(str(request.get("operationId") or ""))
+        if library_action == "library_dialog":
+            return self.show_library_dialog(request.get("jobIds"), bool(request.get("archive")),
+                                            request.get("operation"), bool(request.get("preview")))
+        if library_action == "library_close":
+            if self.active_library_dialog:
+                self.active_library_dialog.close()
+            return {"closed": True}
+        if library_action == "library_start":
+            return self.start_library_operation(
+                request.get("jobIds") or [], str(request.get("operation") or ""),
+                execute=bool(request.get("execute")), remove_originals=bool(request.get("removeOriginals")),
+                plan_token=request.get("planToken"), manifest=request.get("manifest"),
+            )
         action = request.get("action")
         if action == "ping":
             return {"pong": True}
@@ -13316,6 +13378,15 @@ class MainWindow(QMainWindow):
             self.hide()
             event.ignore()
             self.statusBar().showMessage("시스템 트레이로 숨겼습니다.", 3000)
+            return
+        if getattr(self, "library_tasks", {}):
+            for context in self.library_tasks.values():
+                if context.action == "archive":
+                    context.cancel.set()
+            self.exit_requested = True
+            self.statusBar().showMessage("파일 처리를 안전하게 마친 뒤 종료합니다.")
+            event.ignore()
+            QTimer.singleShot(500, self.close)
             return
         if self.episode_rename_tasks:
             first_request = not self.exit_after_episode_rename

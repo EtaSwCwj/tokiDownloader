@@ -76,7 +76,52 @@ Windows 자격 증명 저장소 기반 쿠키 관리까지 사용하려면
 YouTube 선택 공급자를 사용하려면 `setup-gui.cmd -WithYouTube`로 yt-dlp를 설치하고,
 영상·오디오 병합이나 포함 기능에는 FFmpeg도 PATH에서 사용할 수 있게 준비합니다.
 
-### GUI 제어 CLI
+### 복수 선택·삭제·ZIP 압축
+
+목록에서 **Ctrl+클릭**으로 여러 작품, **Shift+클릭**으로 범위를 선택합니다. **Ctrl+A**는
+현재 로딩된 목록을 선택합니다. **Delete**는 즉시 지우지 않고 다운로드 취소·목록만 삭제·
+다운로드 파일 삭제·압축 파일만 삭제 중 선택하는 창을 엽니다. 선택 후 대상 미리보기와
+최종 확인을 거칩니다. 파일 삭제는 작품 폴더의 `.toki-trash`로 이동해 복구할 수 있습니다.
+목록 삭제는 파일을 보존하지만 해당 작품과 실행 기록을 DB에서 제거합니다.
+
+선택한 작품을 우클릭해 **회차별 ZIP 압축...**을 실행할 수 있습니다. 결과는 작품 폴더의
+`_archives` 안에 회차별 ZIP으로 저장됩니다. ZIP 안의 페이지는 자연 숫자 순서로 읽어
+`000001.jpg`, `000002.jpg`처럼 이름을 매깁니다. 원본 정리를 선택하면 ZIP 작성·CRC 검사·
+카탈로그 저장이 성공한 뒤에만 해당 페이지 원본을 지웁니다. 기존 회차 전체 제목과
+`141.0`/`141.5`, `140-1`/`140-2` 이름 규칙은 ZIP 이름에도 유지됩니다. 회차 사이의
+자연 숫자 정렬은 연결한 뷰어의 이름순/자연순 정렬을 사용합니다. 원본은 ZIP에서 복원할 수
+있습니다. 압축 뷰어는 설정의 압축 파일 연결 프로그램을 사용합니다.
+
+설정 → 고급의 **ZIP 자동 압축**을 켜면 이후 다운로드가 끝난 회차를 자동 압축합니다.
+**압축 후 원본**에서 원본 보존 여부를 고릅니다. 기본 자동 압축은 꺼져 있으며,
+원본 정리 선택은 켜져 있습니다. ZIP만 남은 회차도 파일 검사·미리보기·다운로더의 완료
+판정에서 인식합니다. 변경된 ZIP이나 기존 사용자 ZIP은 자동으로 덮어쓰지 않습니다.
+완료 기록을 확인할 수 없는 회차는 압축 대상에서 제외합니다. 따라서 부분 다운로드나
+불완전한 상태 파일이 압축만으로 완료 처리되지 않습니다. `.toki-trash`는 앱 전용 보관함으로
+Windows 휴지통과 다르며, 복구 전까지 디스크 공간을 계속 사용합니다.
+
+```powershell
+.\toki-cli.cmd library select --job 작품ID1 --job 작품ID2 --json
+.\toki-cli.cmd library delete --job 작품ID1 --job 작품ID2 --kind files --dry-run --json
+.\toki-cli.cmd library delete --job 작품ID1 --kind archives --execute --yes --wait --json
+.\toki-cli.cmd library archive --job 작품ID1 --remove-originals --execute --yes --wait --json
+.\toki-cli.cmd library archive --job 작품ID1 --show-gui
+.\toki-cli.cmd library cancel-downloads --job 작품ID1 --execute --yes --wait
+.\toki-cli.cmd library status --json
+.\toki-cli.cmd library cancel --operation 작업ID --json
+.\toki-cli.cmd library restore --manifest "작품폴더\.toki-trash\삭제ID\manifest.json" --dry-run --json
+.\toki-cli.cmd library restore --manifest "작품폴더\.toki-trash\삭제ID\manifest.json" --execute --yes --wait --json
+.\toki-cli.cmd config set --key archiveAfterDownload --value true --json
+.\toki-cli.cmd config set --key archiveRemoveOriginals --value true --json
+```
+
+`library delete --kind records|files|archives`는 기본 미리보기이고 실행에는 `--execute --yes`가
+필요합니다. `--plan-token`에 미리보기의 `planToken`을 넣으면 대상 변경 시 실행을 중단합니다.
+GUI가 실행 중이면 작업을 GUI I/O worker로 전달하며 `--wait` 없이 실행한 요청은
+`operationId`로 결과를 조회할 수 있습니다. 파일 복구는 새 파일을 덮어쓰지 않으며,
+완료 상태 파일은 이후 다운로드 이력을 덮어쓰지 않도록 복구하지 않습니다.
+
+### 기타 GUI 제어 CLI
 
 GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니다. GUI가 꺼져 있을 때
 `download`를 실행하면 GUI를 자동으로 시작하고 그 대기열에 작업을 추가합니다.

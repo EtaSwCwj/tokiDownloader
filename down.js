@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { ProxyAgent } from 'proxy-agent';
+import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import {
     episodeStateUsesStableIds,
     normalizeAndSortEpisodeLinks,
@@ -405,6 +406,7 @@ function isLegacyEpisodeFolder(folderName, number) {
     return new RegExp(`^0*${Number.parseInt(number)}(?:\\s|$)`).test(String(folderName || ''));
 }
 function prepareEpisodeManifest(links, state) {
+    const archived = loadArchivedEpisodes(getContentPath());
     const entries = contentEntries();
     const directories = new Set(
         entries.filter(entry => entry.isDirectory()).map(entry => entry.name.toLowerCase()),
@@ -532,6 +534,7 @@ function prepareEpisodeManifest(links, state) {
         )
             validateEpisodeDestinationPath(record.folderName, destinationPath);
         item.sourceId = record.sourceId;
+        item.archiveExists = hasArchivedEpisode(archived, record);
         item.episode = record;
         item.legacyFolder = isLegacyEpisodeFolder(record.folderName, record.number);
         item.numericFallbackVerified = Boolean(
@@ -552,13 +555,14 @@ function prepareEpisodeManifest(links, state) {
                     && new RegExp(`^0*${record.number}(?:\\s|$)`).test(entry.name)
                     && entry.name.toLowerCase().endsWith('.txt')
                 ))
-                : directories.has(record.folderName.toLowerCase())
+                : directories.has(record.folderName.toLowerCase()) || item.archiveExists
         );
         manifest.push(record);
     }
     return mergeEpisodeManifestRecords(manifest, state.episodes);
 }
 function loadEpisodeCompletion(state, links, manifest) {
+    const archived = loadArchivedEpisodes(getContentPath());
     const entries = contentEntries();
     const directoryNames = new Set(
         entries.filter(entry => entry.isDirectory()).map(entry => entry.name.toLowerCase()),
@@ -570,7 +574,7 @@ function loadEpisodeCompletion(state, links, manifest) {
                 && new RegExp(`^0*${Number(record.number)}(?:\\s|$)`).test(entry.name)
                 && entry.name.toLowerCase().endsWith('.txt')
             ))
-            : directoryNames.has(String(record.folderName || '').toLowerCase())
+            : directoryNames.has(String(record.folderName || '').toLowerCase()) || hasArchivedEpisode(archived, record)
     );
     const physicalNumbers = new Set();
     const physicalEpisodeIds = new Set();
@@ -971,9 +975,9 @@ async function main() {
             completedEpisodeFallbacks,
             preferEpisodeIds,
         });
-        link = selection.links;
-        skippedExistingEpisodes = selection.skippedExistingEpisodes;
-        if (!info.metadataOnly && info.scanMode !== 'new' && link.length === 0)
+        link = selection.links.filter(item => !item.archiveExists);
+        skippedExistingEpisodes = selection.skippedExistingEpisodes + selection.links.length - link.length;
+        if (!info.metadataOnly && info.scanMode !== 'new' && selection.links.length === 0)
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
         info.metadata.episodeCount = totalEpisodeCount;

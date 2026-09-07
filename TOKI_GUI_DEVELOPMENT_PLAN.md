@@ -137,6 +137,13 @@ CLI에서도 실행하거나 결과를 검증할 수 있어야 한다.
 - [x] 완료/오류 기록 일괄 정리
 - [x] 목록 새로고침과 썸네일 캐시 갱신
 - [x] 우클릭 메뉴와 상단 메뉴에 실제 구현 기능 연결
+- [x] Ctrl/Shift 복수 선택과 Delete 처리 선택창, 선택 유지 및 일괄 CLI
+
+2026-09-08 복수 선택: 가상화 목록에 ExtendedSelection을 적용했다. Ctrl+A는 로딩된
+범위만 선택하며 필터/새로고침 시 남은 선택을 복원한다. Delete는 다운로드 취소·목록
+기록만 삭제·다운로드 파일 삭제·압축 파일만 삭제 중 고르는 창을 열고, 파일 처리는
+미리보기와 최종 확인 뒤 worker에서 실행한다. `library select|delete|cancel-downloads`
+CLI와 `--show-gui --dry-run`이 같은 경로를 사용한다.
 
 구현 메모: `list --query --status --sort --json`은 GUI 실행 여부와 관계없이 같은 SQLite
 조회 서비스를 사용한다. `--apply-gui`를 추가하면 GUI 필터 컨트롤과 가상화 목록에도
@@ -283,6 +290,18 @@ set-concurrency --works N --images N
 - [x] 이미지 미리보기
 - [x] 지원 이미지 형식 변환 기능 검토 및 구현
 - [x] 파일 작업 진행률, 취소와 실패 복구
+- [x] 회차별 ZIP 생성, 완료 후 자동 압축 및 검증 후 원본 정리 옵션
+- [x] ZIP 전용 회차의 다운로드 완료 판정·파일 검사·미리보기 연결
+- [x] 선택 파일의 앱 휴지통 이동과 덮어쓰기 없는 복구 CLI
+
+2026-09-08 ZIP/삭제: `toki_library.py` 공용 서비스와 `library` CLI·GUI를 연결했다.
+ZIP은 회차 전체 이름을 유지하며 내부 페이지는 자연순으로 읽어 6자리 번호로 저장한다.
+완료 기록이 확인되는 회차만 처리하고 CRC 검사·카탈로그 저장 뒤 원본을 선택 정리한다.
+실패/취소 시 원본을 보존하며 원본 일부 정리 후 재실행해도 완전한 ZIP을 부분 원본으로
+덮어쓰지 않는다. 검증된 ZIP만 남아도 다운로드 완료로 인식한다. 기본 자동 압축은 꺼져
+있고 설정 → 고급에서 켠다. 파일 삭제는 `.toki-trash`로 이동하며 복구 전까지 공간을
+사용한다. GUI worker·작품 잠금·계획 토큰으로 다운로드/변환/이동과의 충돌을 방지한다.
+검증 범위와 제한은 [개발 이력](docs/development-history/2026-09-08-library-batch-archive.md)에 기록했다.
 
 필수 CLI 예시:
 
@@ -299,6 +318,9 @@ convert-images --job ID --format FORMAT --dry-run --json
 convert-images --job ID --format FORMAT --execute --yes --progress-json
 convert-images --close
 cancel-conversion --job ID
+library archive --job ID --remove-originals --execute --yes --wait --json
+library delete --job ID --job OTHER_ID --kind files --dry-run --json
+library restore --manifest PATH --dry-run --json
 ```
 
 완료 조건:

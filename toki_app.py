@@ -2258,10 +2258,15 @@ def build_parser() -> argparse.ArgumentParser:
     self_test.add_argument("--timeout", type=int, default=120, help="GUI 점검 대기 초")
     quit_parser = subparsers.add_parser("quit", help="GUI 종료")
     quit_parser.add_argument("--force", action="store_true", help="실행 작업도 중지하고 종료")
+    from toki_library_cli import configure_library_cli
+    configure_library_cli(subparsers)
     return parser
 
 
 def run_cli(args: argparse.Namespace) -> int:
+    if args.command == "library":
+        from toki_library_cli import run_library_cli
+        return run_library_cli(args, sys.modules[__name__])
     command = args.command
     if command == "download":
         provider = detect_download_provider(args.url)

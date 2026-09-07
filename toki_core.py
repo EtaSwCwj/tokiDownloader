@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
 import psutil
+from toki_archive_catalog import archived_episodes
 
 from hitomi_provider import (
     HITOMI_SERVER_IDS,
@@ -285,6 +286,8 @@ SETTING_KEYS = frozenset(
         "lowSpecMode",
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
+        "archiveAfterDownload",
+        "archiveRemoveOriginals",
         "memoryDisplayEnabled",
         "localApiEnabled",
         "localApiPort",
@@ -617,6 +620,8 @@ def default_config() -> dict[str, Any]:
         "lowSpecMode": False,
         "preventSleepDuringDownloads": False,
         "pdfGenerationEnabled": False,
+        "archiveAfterDownload": False,
+        "archiveRemoveOriginals": True,
         "memoryDisplayEnabled": True,
         "localApiEnabled": False,
         "localApiPort": 8765,
@@ -1794,6 +1799,8 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "lowSpecMode",
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
+        "archiveAfterDownload",
+        "archiveRemoveOriginals",
         "memoryDisplayEnabled",
         "localApiEnabled",
         "hitomiPreferJapaneseTitle",
@@ -2178,6 +2185,8 @@ def validate_app_setting_updates(
         "lowSpecMode",
         "preventSleepDuringDownloads",
         "pdfGenerationEnabled",
+        "archiveAfterDownload",
+        "archiveRemoveOriginals",
         "memoryDisplayEnabled",
         "localApiEnabled",
         "hitomiPreferJapaneseTitle",
@@ -8076,6 +8085,14 @@ def plan_metadata_rebuild(job_id: str) -> dict[str, Any]:
             cover_file = candidate.name
 
     discovered_episodes = discover_episode_folders(output_path)
+    discovered_names = {episode.folder_name for episode in discovered_episodes}
+    for item in archived_episodes(output_path):
+        if item["folderName"] not in discovered_names:
+            discovered_episodes.append(EpisodeFolderEntry(
+                number=int(item["number"]), path=Path(item["archivePath"]), folder_name=item["folderName"],
+                source_id=item.get("sourceId", ""), source_title=item.get("sourceTitle", ""),
+                display_title=item["folderName"], discovery="archive",
+            ))
     rebuilt_episodes = [
         {
             "number": episode.number,
@@ -8506,7 +8523,7 @@ def discover_episode_folders(
         Path(entry.path).resolve()
         for entry in os.scandir(root)
         if entry.is_dir(follow_symlinks=False)
-        and entry.name not in {"_converted", "_pdf"}
+        and entry.name not in {"_converted", "_pdf", "_archives", ".toki-trash"}
     ]
     physical_folders.sort(key=_episode_path_sort_key)
     by_name: dict[str, list[Path]] = {}
@@ -8803,6 +8820,7 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
         add_issue("state_invalid", state_path, "완료 회차 상태 파일을 읽을 수 없습니다.")
 
     episode_folders: dict[int, list[EpisodeFolderEntry]] = {}
+    archived = {item["folderName"]: item for item in archived_episodes(output_path, verify_crc=True)}
     image_count = 0
     other_file_count = 0
     zero_byte_count = 0
@@ -8839,10 +8857,20 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
                 elif not _image_signature_valid(child_path):
                     invalid_image_count += 1
                     add_issue("image_invalid", child_path, "이미지 서명 또는 파일 구조가 올바르지 않습니다.")
-        if episode_image_count == 0:
+        if episode_image_count == 0 and episode_folder.folder_name not in archived:
             empty_episode_count += 1
             add_issue("episode_empty", episode_path, "회차 폴더에 지원 이미지가 없습니다.")
 
+    physical_folder_names = {folder.folder_name for folders in episode_folders.values() for folder in folders}
+    archived_image_count = 0
+    for name, item in archived.items():
+        if name not in physical_folder_names:
+            episode_folders.setdefault(int(item["number"]), []).append(EpisodeFolderEntry(
+                number=int(item["number"]), path=Path(item["archivePath"]), folder_name=name,
+                source_id=item.get("sourceId", ""), source_title=item.get("sourceTitle", name),
+                display_title=name, discovery="archive",
+            ))
+        archived_image_count += int(item.get("imageCount", 0))
     physical_episodes = set(episode_folders)
 
     def episode_identity(folder: EpisodeFolderEntry) -> tuple[str, str] | None:
@@ -8972,6 +9000,8 @@ def verify_job_files(job_id: str, issue_limit: int = 500) -> dict[str, Any]:
             "uniqueEpisodes": len(physical_episode_identities),
             "expectedEpisodes": expected_episode_count,
             "images": image_count,
+            "archivedEpisodes": len(archived),
+            "archivedImages": archived_image_count,
             "otherFiles": other_file_count,
             "emptyEpisodes": empty_episode_count,
             "zeroByteImages": zero_byte_count,
@@ -9021,6 +9051,16 @@ def list_job_episode_images(
     clean_offset = max(0, int(offset))
 
     folders = discover_episode_folders(output_path)
+    archive_by_folder = {item["folderName"]: item for item in archived_episodes(output_path)}
+    existing_names = {folder.folder_name for folder in folders}
+    for name, item in archive_by_folder.items():
+        if name not in existing_names:
+            folders.append(EpisodeFolderEntry(
+                number=int(item["number"]), path=Path(item["archivePath"]), folder_name=name,
+                source_id=item.get("sourceId", ""), source_title=item.get("sourceTitle", name),
+                display_title=name, discovery="archive",
+            ))
+    folders.sort(key=lambda folder: (folder.number, _episode_path_sort_key(Path(folder.folder_name))))
     available_episodes = sorted({folder.number for folder in folders})
     if not folders:
         raise FileNotFoundError("미리 볼 회차 폴더가 없습니다.")
@@ -9055,13 +9095,14 @@ def list_job_episode_images(
         ]
 
     images: list[Path] = []
-    with os.scandir(selected.path) as children:
-        images.extend(
-            Path(child.path)
-            for child in children
-            if child.is_file(follow_symlinks=False)
-            and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
-        )
+    if selected.path.is_dir():
+        with os.scandir(selected.path) as children:
+            images.extend(
+                Path(child.path)
+                for child in children
+                if child.is_file(follow_symlinks=False)
+                and Path(child.name).suffix.lower() in IMAGE_EXTENSIONS
+            )
     images.sort(key=natural_key)
     page = images[clean_offset : clean_offset + clean_limit]
     return {
@@ -9071,6 +9112,8 @@ def list_job_episode_images(
         "outputPath": str(output_path),
         "episode": selected_episode,
         "episodeId": selected.source_id,
+        "archivePath": archive_by_folder.get(selected.folder_name, {}).get("archivePath", ""),
+        "archivedImageCount": archive_by_folder.get(selected.folder_name, {}).get("imageCount", 0),
         "episodeFolder": selected.folder_name,
         "availableEpisodes": available_episodes,
         "episodeEntries": [
