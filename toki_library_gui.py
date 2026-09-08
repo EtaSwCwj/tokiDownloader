@@ -38,11 +38,12 @@ class LibraryDialog(QDialog):
         self.owner, self.ids = owner, list(ids)
         self.operation_id = ""
         self.plan = None
+        self.confirm_after_preview = False
         self.setWindowTitle("선택 작품 ZIP 압축" if archive else "선택 작품 처리 · Delete")
         self.resize(740, 560)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"선택한 작품 {len(ids)}개 · " + (
-            "회차별 ZIP 압축" if archive else "작업 버튼을 누르면 대상을 미리 확인합니다."
+            "회차별 ZIP 압축" if archive else "작업 버튼 → 확인창 → 실행"
         )))
         self.selected_action = "archive" if archive else ""
         self.action_buttons = {}
@@ -65,7 +66,7 @@ class LibraryDialog(QDialog):
                     "QPushButton { min-height: 60px; padding: 6px 10px; }"
                     "QPushButton:checked { background: #2f7de1; color: white; border: 2px solid #6ab2ff; }"
                 )
-                button.clicked.connect(lambda _checked, action=action: self.select_action(action, preview=True))
+                button.clicked.connect(lambda _checked, action=action: self.request_action(action))
                 self.action_group.addButton(button)
                 self.action_buttons[action] = button
                 grid.addWidget(button, index // 2, index % 2)
@@ -114,22 +115,36 @@ class LibraryDialog(QDialog):
         if preview:
             self.start(False)
 
+    def request_action(self, action):
+        self.select_action(action)
+        self.start(False, confirm_after_preview=True)
+
     def set_action_buttons_enabled(self, enabled):
         for button in self.action_buttons.values():
             button.setEnabled(enabled)
 
     def invalidate(self, *_args):
         self.plan = None
+        self.confirm_after_preview = False
         self.execute_button.setEnabled(False)
         self.details.clear()
 
-    def start(self, execute):
+    def start(self, execute, *, confirm_after_preview=False):
         action = self.selected_action
         if not action or (execute and (not self.plan or self.plan.get("executed"))):
             return
-        if execute and QMessageBox.question(self, "선택한 대상 처리 확인", self.details.toPlainText()[:1800] + "\n\n위 대상을 처리할까요?") != QMessageBox.StandardButton.Yes:
+        explanation = {
+            "delete:records": f"선택한 작품 {len(self.ids)}개의 목록 및 실행 기록을 삭제할까요?\n\n다운로드 파일과 압축 파일은 그대로 보존합니다.",
+            "delete:files": f"선택한 작품의 다운로드 파일 {(self.plan or {}).get('fileCount', 0):,}개를 앱 휴지통으로 이동할까요?\n\n압축 파일과 목록 기록은 보존합니다.",
+            "delete:archives": f"선택한 작품의 압축 파일 {(self.plan or {}).get('fileCount', 0):,}개를 앱 휴지통으로 이동할까요?\n\n원본 파일과 목록 기록은 보존합니다.",
+            "cancel-downloads": f"선택한 작품 {len(self.ids)}개의 대기·진행 중 다운로드를 취소할까요?\n\n이미 받은 파일은 보존합니다.",
+        }.get(action, self.details.toPlainText()[:1800] + "\n\n위 대상을 처리할까요?")
+        if execute and QMessageBox.question(self, "선택한 대상 처리 확인", explanation,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         try:
+            self.confirm_after_preview = bool(confirm_after_preview and not execute)
             response = self.owner.start_library_operation(
                 self.ids, action, execute=execute, remove_originals=self.remove_originals.isChecked(),
                 plan_token=self.plan.get("planToken") if self.plan and execute else None,
@@ -142,9 +157,17 @@ class LibraryDialog(QDialog):
             self.stop_button.setEnabled(execute and action == "archive")
             self.details.setPlainText("처리 중… 진행 상황은 실행 로그에도 기록됩니다.")
         except Exception as error:
+            self.confirm_after_preview = False
             QMessageBox.warning(self, "작업을 시작할 수 없음", str(error))
 
+    def confirm_preview(self, key, plan):
+        # Closing/replacing the dialog or changing actions cancels the queued confirmation.
+        if self.isVisible() and self.owner.active_library_dialog is self and self.operation_id == key and self.plan is plan:
+            self.start(True)
+
     def completed(self, result, error):
+        confirm = self.confirm_after_preview
+        self.confirm_after_preview = False
         self.preview_button.setEnabled(True)
         self.set_action_buttons_enabled(True)
         self.remove_originals.setEnabled(True)
@@ -160,7 +183,10 @@ class LibraryDialog(QDialog):
         if result.get("removeOriginals"):
             lines.append("원본 정리: ZIP 생성·무결성 검사 성공 후에만 실행")
         if result.get("executed"):
-            lines.append(f"ZIP 생성 {result.get('createdCount', 0)}개 · 기존 유지 {result.get('skippedCount', 0)}개 · 정리된 원본 {result.get('removedOriginalCount', 0)}개")
+            if result.get("kind") == "records":
+                lines.append(f"목록 삭제 {result.get('removedRecordCount', 0)}개 · 다운로드/압축 파일 보존")
+            elif self.selected_action == "archive":
+                lines.append(f"ZIP 생성 {result.get('createdCount', 0)}개 · 기존 유지 {result.get('skippedCount', 0)}개 · 정리된 원본 {result.get('removedOriginalCount', 0)}개")
         for entry in result.get("results", [])[:50]:
             if "cancellable" in entry:
                 lines.append(f"{entry['title']}: {'취소 요청됨' if entry['cancelRequested'] else '취소 가능' if entry['cancellable'] else '진행 중인 다운로드 없음'}")
@@ -184,6 +210,12 @@ class LibraryDialog(QDialog):
             if total > shown:
                 lines.append(f"… 외 {total - shown}개")
         self.details.setPlainText("\n".join(lines))
+        if result.get("executed") and result.get("kind") == "records" and result.get("success"):
+            self.owner.statusBar().showMessage(f"목록 {result['removedRecordCount']}개 삭제 완료 · 다운로드 파일 보존", 6000)
+            self.accept()
+        elif confirm and not result.get("executed"):
+            key, plan = self.operation_id, self.plan
+            QTimer.singleShot(0, lambda: self.confirm_preview(key, plan))
 
 
 class LibraryWindowMixin:

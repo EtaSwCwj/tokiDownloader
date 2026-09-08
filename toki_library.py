@@ -213,7 +213,8 @@ def delete_library_items(job_ids: list[str], kind: str, *, execute: bool = False
                                 "trashManifest": str(manifest_path)})
         except Exception as error:
             results.append({"jobId": item["jobId"], "success": False, "error": str(error)})
-    return {**plan, "executed": True, "results": results, "success": all(p["success"] for p in results)}
+    return {**plan, "executed": True, "results": results, "success": all(p["success"] for p in results),
+            "removedRecordCount": sum(bool(p.get("removedRecord")) for p in results)}
 
 
 def restore_library_trash(manifest_path: str, *, execute: bool = False) -> dict:

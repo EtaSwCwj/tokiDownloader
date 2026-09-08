@@ -127,3 +127,33 @@ node --test @testFiles
 종류 선택을 테스트했으며 Python 전체 **388건**이 통과했다. 사용자 파일은 변경하지 않았다.
 실제 실행 중 GUI를 안전하게 다시 열고 `logs/2026-09-08-library-buttons.png`를 캡처해
 한글, 버튼 배치와 가독성을 확인했다.
+
+## 같은 날 후속 수정: 버튼에서 실제 삭제까지 연결
+
+기준 커밋 `6bf59ca`. 사용자가 목록 삭제 버튼을 눌러도 목록이 그대로라고 보고했다.
+08:53:39 로그는 `delete:records`가 `executed: false`인 미리보기까지만 실행됐음을
+보여줬다. 그 앞의 파일/압축 삭제 오류는 공유 저장 루트를 가진 YouTube 모의 작업의
+경로 보호로, 목록 삭제 오류와는 별개다. 이 파일 삭제 안전 검사는 완화하지 않았다.
+
+추가 실행 버튼을 찾아야 했던 흐름을 작업 버튼 → 대상 검사 → 확인창 → 승인 시 실제
+실행으로 변경했다. 확인 기본값은 취소이며 창을 닫거나 선택을 바꾸면 예약된 확인은
+실행하지 않는다. 목록 삭제 성공 시 처리창을 닫고 메인 목록 및 상태 표시를 갱신한다.
+결과 JSON과 로그에 `removedRecordCount`를 추가해 삭제된 기록 수를 분명하게 표시한다.
+CLI `--dry-run`/`--show-gui --dry-run`은 여전히 확인창이나 실제 변경 없이 미리보기만 한다.
+
+검증을 mock CLI 호출에만 의존하지 않도록 `tests/test_library_cli_integration.py`를 추가했다.
+별도 임시 DB·설정·IPC 주소를 사용하는 실제 MainWindow 프로세스를 실행하고, 별도 CLI
+프로세스의 실제 parser/dispatcher에서 `library delete --execute --yes --wait`를 호출한다.
+임시 기록 2개 삭제 → DB 0개 → GUI 로딩 0개 → 새로고침 후에도 0개와 원본 이미지 6장
+보존을 확인했다. `--yes` 없는 실행은 실패하며 변경하지 않는 것도 검증했다.
+사용자 DB와 다운로드 파일을 테스트 대상으로 쓰지 않으며 콘솔 창도 표시하지 않는다.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -p 'test_library_cli_integration.py' -v
+# [CLI integration] removed 2 records; database 0; GUI 0 after refresh; original images 6 preserved
+```
+
+GUI 회귀 검사에서도 작업 버튼 한 번 → 확인 취소 시 보존 / 확인 승인 시 삭제 및 목록
+갱신을 검증한다. 실제 사용자 GUI에는 수정 버전을 다시 열고
+`logs/2026-09-08-library-delete-flow.png`로 화면을 확인한다. 사용자 기존 4개 기록은 보존한다.
+최종 Python 전체 **390건**(실제 CLI 통합 검사 포함), 구문 검사와 `git diff --check`를 통과했다.

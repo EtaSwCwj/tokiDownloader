@@ -63,10 +63,13 @@ class LibraryGuiTests(unittest.TestCase):
 
     def wait_task(self, window):
         deadline = time.monotonic() + 5
-        while window.library_tasks and time.monotonic() < deadline:
+        idle_ticks = 0
+        while time.monotonic() < deadline:
             self.app.processEvents()
+            idle_ticks = idle_ticks + 1 if not window.library_tasks else 0
+            if idle_ticks >= 2:
+                break
             time.sleep(0.01)
-        self.app.processEvents()
         self.assertFalse(window.library_tasks)
 
     def test_ctrl_selection_delete_key_and_preview_do_not_immediately_delete(self):
@@ -91,17 +94,22 @@ class LibraryGuiTests(unittest.TestCase):
             self.assertEqual(dialog.findChildren(QComboBox), [])
             self.assertFalse(dialog.execute_button.isEnabled())
             self.assertFalse(dialog.preview_button.isEnabled())
-            dialog.action_buttons["delete:records"].click()
-            self.wait_task(window)
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as confirm:
+                dialog.action_buttons["delete:records"].click()
+                self.wait_task(window)
+                self.assertEqual(confirm.call_count, 1)
             self.assertTrue(dialog.execute_button.isEnabled())
             self.assertIsNotNone(core.load_job_by_id("a"))
             self.assertTrue(root_a.exists() and root_b.exists())
             with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-                dialog.execute_button.click()
-            self.wait_task(window)
+                # A single action-button click must preview, confirm, execute and refresh.
+                dialog.action_buttons["delete:records"].click()
+                self.wait_task(window)
             self.assertIsNone(core.load_job_by_id("a"))
             self.assertIsNone(core.load_job_by_id("b"))
             self.assertTrue(root_a.exists() and root_b.exists())
+            self.assertEqual(window.task_model.rowCount(), 0)
+            self.assertFalse(dialog.isVisible())
         finally:
             if window.active_library_dialog:
                 window.active_library_dialog.close()
@@ -116,8 +124,9 @@ class LibraryGuiTests(unittest.TestCase):
             dialog = window.active_library_dialog
             for action in ("delete:records", "delete:files", "delete:archives", "cancel-downloads"):
                 with self.subTest(action=action):
-                    dialog.action_buttons[action].click()
-                    self.wait_task(window)
+                    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                        dialog.action_buttons[action].click()
+                        self.wait_task(window)
                     self.assertEqual(dialog.selected_action, action)
                     self.assertEqual(sum(b.isChecked() for b in dialog.action_buttons.values()), 1)
                     self.assertFalse(dialog.plan["executed"])
@@ -139,9 +148,11 @@ class LibraryGuiTests(unittest.TestCase):
         job, root, _ = self.work()
         window = Harness([job])
         try:
-            window.show_library_dialog([job.job_id], operation="delete:files", preview=True)
-            self.app.processEvents()
-            self.wait_task(window)
+            with patch.object(QMessageBox, "question") as confirm:
+                window.show_library_dialog([job.job_id], operation="delete:files", preview=True)
+                self.app.processEvents()
+                self.wait_task(window)
+                confirm.assert_not_called()
             dialog = window.active_library_dialog
             self.assertTrue(dialog.action_buttons["delete:files"].isChecked())
             self.assertEqual(dialog.plan["kind"], "files")
@@ -150,6 +161,22 @@ class LibraryGuiTests(unittest.TestCase):
         finally:
             if window.active_library_dialog:
                 window.active_library_dialog.close()
+            window.io_thread_pool.waitForDone()
+            window.close()
+
+    def test_closing_dialog_during_preview_never_confirms_or_deletes(self):
+        job, root, _ = self.work()
+        window = Harness([job])
+        try:
+            window.show_library_dialog([job.job_id])
+            with patch.object(QMessageBox, "question") as confirm:
+                window.active_library_dialog.action_buttons["delete:records"].click()
+                window.active_library_dialog.close()
+                self.wait_task(window)
+                confirm.assert_not_called()
+            self.assertIsNotNone(core.load_job_by_id(job.job_id))
+            self.assertTrue(root.exists())
+        finally:
             window.io_thread_pool.waitForDone()
             window.close()
 
