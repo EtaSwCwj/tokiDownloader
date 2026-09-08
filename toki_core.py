@@ -85,7 +85,7 @@ _APPLICATION_IDENTITY_RUNTIME: dict[str, Any] = {
     "error": "",
 }
 _INITIALIZED_JOB_DBS: set[str] = set()
-CONFIG_SCHEMA_VERSION = 29
+CONFIG_SCHEMA_VERSION = 30
 JOB_DB_SCHEMA_VERSION = 4
 LOCALES_DIR = ROOT_DIR / "locales"
 DEFAULT_FOLDER_TEMPLATE = "[{author}][{group}] {title}"
@@ -264,6 +264,7 @@ SETTING_KEYS = frozenset(
         "completionAction",
         "completionCountdownSeconds",
         "clipboardMonitor",
+        "clipboardAutoDownload",
         "theme",
         "trayEnabled",
         "closeToTray",
@@ -598,6 +599,7 @@ def default_config() -> dict[str, Any]:
         "completionAction": "none",
         "completionCountdownSeconds": 15,
         "clipboardMonitor": False,
+        "clipboardAutoDownload": False,
         "theme": "system",
         "trayEnabled": False,
         "closeToTray": False,
@@ -1794,6 +1796,7 @@ def normalize_config(config: dict[str, Any] | None) -> dict[str, Any]:
         "thumbnailsVisible",
         "alwaysOnTop",
         "clipboardMonitor",
+        "clipboardAutoDownload",
         "recoverInterruptedOnStartup",
         "listLazyLoading",
         "lowSpecMode",
@@ -2180,6 +2183,7 @@ def validate_app_setting_updates(
         "thumbnailsVisible",
         "alwaysOnTop",
         "clipboardMonitor",
+        "clipboardAutoDownload",
         "recoverInterruptedOnStartup",
         "listLazyLoading",
         "lowSpecMode",
@@ -3913,48 +3917,60 @@ def build_work_key(url: str) -> str:
 def inspect_clipboard_url(
     text: str, *, existing_work_keys: tuple[str, ...] | list[str] | set[str] = ()
 ) -> dict[str, Any]:
-    match = re.search(r"https://[^\s<>\"']+", str(text or ""), re.IGNORECASE)
-    if not match:
-        return {
-            "ok": True,
-            "candidate": False,
-            "duplicate": False,
-            "reason": "no_https_url",
-            "url": "",
-            "workKey": "",
-        }
-    url = match.group(0).rstrip(".,;:!?)]}>\"'")
-    try:
-        normalized = validate_url(url)
+    """Inspect at most 32 URLs in 65,536 characters; never fetch or enqueue.
+
+    Only the modern work-list route is unambiguous without a network request.
+    Legacy chapter URLs and arbitrary hosts must not pass via build_work_key's
+    intentionally permissive identity extraction. One copy adds at most one work.
+    """
+    value = str(text or "")
+    result: dict[str, Any] = {
+        "ok": True,
+        "candidate": False,
+        "duplicate": False,
+        "reason": "no_https_url",
+        "url": "",
+        "workKey": "",
+        "validation": "url_shape_only",
+    }
+    if len(value) > 65_536:
+        return {**result, "reason": "text_too_long"}
+    for index, match in enumerate(re.finditer(r"https://[^\s<>\"']+", value, re.IGNORECASE)):
+        if index >= 32:
+            break
+        result["reason"] = "unsupported_url"
+        url = match.group(0).rstrip(".,;:!?)]}>\"'")
+        if "\\" in url or re.search(r"[\x00-\x1f\x7f]", url):
+            continue
+        try:
+            parsed = urlsplit(url)
+            host = str(parsed.hostname or "").lower()
+            if (
+                parsed.scheme.lower() != "https"
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443)
+                or not re.fullmatch(r"newtoki[0-9]+\.org", host)
+            ):
+                continue
+            route = re.fullmatch(r"/manhwa/([1-9][0-9]{0,19})/?", parsed.path)
+            if not route:
+                continue
+        except ValueError:
+            continue
+        # Remove pagination/tracking/fragment parameters: always scan the work
+        # from its canonical first page, with the downloader validating content.
+        normalized = f"https://{host}/manhwa/{route.group(1)}"
         work_key = build_work_key(normalized)
-    except ValueError as error:
+        duplicate = work_key in existing_work_keys
         return {
-            "ok": True,
-            "candidate": False,
-            "duplicate": False,
-            "reason": "invalid_url",
-            "error": str(error),
-            "url": url,
-            "workKey": "",
-        }
-    if work_key.startswith("url:"):
-        return {
-            "ok": True,
-            "candidate": False,
-            "duplicate": False,
-            "reason": "unsupported_url",
+            **result,
+            "candidate": True,
+            "duplicate": duplicate,
+            "reason": "duplicate" if duplicate else "new",
             "url": normalized,
             "workKey": work_key,
         }
-    duplicate = work_key in {str(value) for value in existing_work_keys}
-    return {
-        "ok": True,
-        "candidate": True,
-        "duplicate": duplicate,
-        "reason": "duplicate" if duplicate else "new",
-        "url": normalized,
-        "workKey": work_key,
-    }
+    return result
 
 
 def _connect_job_db(database_path: Path | None = None) -> sqlite3.Connection:

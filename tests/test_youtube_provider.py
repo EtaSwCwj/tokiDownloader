@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from toki_core import default_config, normalize_config
+from toki_core import CONFIG_SCHEMA_VERSION, default_config, normalize_config
 from youtube_provider import (
     YouTubePolicyError,
     apply_youtube_upload_date_mtime,
@@ -21,7 +21,7 @@ from youtube_provider import (
 class YouTubeProviderTests(unittest.TestCase):
     def test_default_policy_is_best_quality_and_offline(self) -> None:
         config = default_config()
-        self.assertEqual(config["configVersion"], 29)
+        self.assertEqual(config["configVersion"], CONFIG_SCHEMA_VERSION)
         policy = youtube_format_policy_snapshot(config)
         self.assertEqual(policy["mode"], "video_audio")
         self.assertEqual(policy["maxHeight"], 0)

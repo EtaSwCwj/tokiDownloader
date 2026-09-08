@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -3665,9 +3666,18 @@ class SettingsDialog(QDialog):
         self.completion_countdown_spin.setSuffix("초")
         general_form.addRow("완료 후 카운트다운", self.completion_countdown_spin)
         self.clipboard_monitor_check = QCheckBox(
-            "클립보드의 지원 작품 URL을 감지하고 추가 전 확인"
+            "복사한 작품 주소 감지 (최소화 상태에서도 동작)"
         )
         general_form.addRow("클립보드 감지", self.clipboard_monitor_check)
+        self.clipboard_mode_combo = QComboBox()
+        self.clipboard_mode_combo.addItem("확인 후 추가", False)
+        self.clipboard_mode_combo.addItem("확인 없이 자동 다운로드", True)
+        self.clipboard_mode_combo.setToolTip(
+            "newtoki숫자.org/manhwa/작품번호 주소만 처리합니다.\n"
+            "등록된 작품은 제외하며 한 번 복사할 때 한 작품만 추가합니다."
+        )
+        self.clipboard_monitor_check.toggled.connect(self.clipboard_mode_combo.setEnabled)
+        general_form.addRow("클립보드 추가 방식", self.clipboard_mode_combo)
         self.tabs.addTab(general_page, self.strings["settings.tab.general"])
 
         network_page = QWidget()
@@ -4599,6 +4609,10 @@ class SettingsDialog(QDialog):
             int(values["completionCountdownSeconds"])
         )
         self.clipboard_monitor_check.setChecked(bool(values["clipboardMonitor"]))
+        self.clipboard_mode_combo.setCurrentIndex(
+            1 if values["clipboardAutoDownload"] else 0
+        )
+        self.clipboard_mode_combo.setEnabled(bool(values["clipboardMonitor"]))
         self.work_spin.setValue(int(values["workConcurrency"]))
         self.image_spin.setValue(int(values["imageConcurrency"]))
         self.retry_count_spin.setValue(int(values["retryCount"]))
@@ -4906,6 +4920,7 @@ class SettingsDialog(QDialog):
             "completionAction": str(self.completion_action_combo.currentData()),
             "completionCountdownSeconds": self.completion_countdown_spin.value(),
             "clipboardMonitor": self.clipboard_monitor_check.isChecked(),
+            "clipboardAutoDownload": bool(self.clipboard_mode_combo.currentData()),
             "workConcurrency": self.work_spin.value(),
             "imageConcurrency": self.image_spin.value(),
             "retryCount": self.retry_count_spin.value(),
@@ -5646,7 +5661,8 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         self.last_completion_action: dict[str, Any] = {}
         self.notification_message_boxes: list[QMessageBox] = []
         self.last_notification: dict[str, Any] = {}
-        self.last_clipboard_text = ""
+        self.last_clipboard_fingerprint = ""
+        self._clipboard_processing = False
         self.last_clipboard_inspection: dict[str, Any] = {}
         self.active_shortcut_help_dialog: ShortcutHelpDialog | None = None
         self.active_application_identity_dialog: ApplicationIdentityDialog | None = None
@@ -8818,9 +8834,9 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         }
 
     def inspect_clipboard_text(
-        self, text: str, *, prompt: bool = False
+        self, text: str, *, prompt: bool = False, enqueue: bool = False
     ) -> dict[str, Any]:
-        first = inspect_clipboard_url(text, existing_work_keys=set(self.jobs_by_work))
+        first = inspect_clipboard_url(text, existing_work_keys=self.jobs_by_work)
         if first.get("candidate") and not first.get("duplicate"):
             stored = load_job_by_work_key(str(first["workKey"]))
             if stored:
@@ -8830,6 +8846,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         result = {
             **first,
             "monitorEnabled": bool(self.config.get("clipboardMonitor", False)),
+            "autoDownload": bool(self.config.get("clipboardAutoDownload", False)),
             "prompted": False,
             "accepted": False,
             "enqueued": False,
@@ -8840,32 +8857,73 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         if result.get("duplicate"):
             self.statusBar().showMessage("이미 등록된 작품 URL입니다.", 3000)
             return result
-        if not prompt:
+        if not prompt and not enqueue:
             return result
-        result["prompted"] = True
-        answer = QMessageBox.question(
-            self,
-            "클립보드 작품 URL 감지",
-            f"새 작품 URL을 감지했습니다. 다운로드 작업에 추가할까요?\n\n{result['url']}",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        result["accepted"] = answer == QMessageBox.StandardButton.Yes
+        if prompt:
+            result["prompted"] = True
+            answer = QMessageBox.question(
+                self,
+                "클립보드 작품 URL 감지",
+                f"새 작품 URL을 감지했습니다. 다운로드 작업에 추가할까요?\n\n{result['url']}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            result["accepted"] = answer == QMessageBox.StandardButton.Yes
+        else:
+            result["accepted"] = True
         if result["accepted"]:
-            self.url_edit.setText(str(result["url"]))
-            self.start_from_form()
-            result["enqueued"] = True
+            # No UI-form mutation: a stale range/URL or metadata-only option
+            # must never turn an automatic work download into a partial scan.
+            # Recheck after a modal confirmation may have processed other IPC.
+            existing = self.jobs_by_work.get(str(result["workKey"])) or load_job_by_work_key(
+                str(result["workKey"])
+            )
+            if existing:
+                result.update(duplicate=True, reason="duplicate")
+            else:
+                try:
+                    job = self.enqueue_download(
+                        url=str(result["url"]), start=None, last=None,
+                        output_dir=str(self.config.get("outputDir") or ROOT_DIR),
+                        show_browser=bool(self.config.get("showBrowser", False)),
+                        metadata_only=False, scan_mode="new",
+                    )
+                    result.update(enqueued=True, jobId=job.job_id)
+                    self.log(f"클립보드 작품 등록: {result['url']}", job_id=job.job_id)
+                    self.statusBar().showMessage("복사한 작품을 다운로드 대기열에 추가했습니다.", 4000)
+                except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+                    result.update(ok=False, reason="enqueue_failed", error=str(error))
+                    self.log(f"클립보드 작품 추가 실패: {error}", "ERROR")
+                    self.statusBar().showMessage(f"클립보드 작품 추가 실패: {error}", 8000)
         self.last_clipboard_inspection = result
         return result
 
     def _clipboard_changed(self) -> None:
         if not bool(self.config.get("clipboardMonitor", False)):
             return
-        text = QApplication.clipboard().text().strip()
-        if not text or text == self.last_clipboard_text:
+        if self._clipboard_processing:
             return
-        self.last_clipboard_text = text
-        self.inspect_clipboard_text(text, prompt=True)
+        text = QApplication.clipboard().text()
+        # Keep no private clipboard text in history; bound work even for a huge
+        # copy. Updating the fingerprint on empty text permits a later recopy.
+        fingerprint = hashlib.sha256(text[:65_537].encode("utf-8", errors="replace")).hexdigest()
+        if fingerprint == self.last_clipboard_fingerprint:
+            return
+        self.last_clipboard_fingerprint = fingerprint
+        self._clipboard_processing = True
+        try:
+            automatic = bool(self.config.get("clipboardAutoDownload", False))
+            self.inspect_clipboard_text(text[:65_537], prompt=not automatic, enqueue=automatic)
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+            self.last_clipboard_inspection = {
+                "ok": False, "enqueued": False, "reason": "clipboard_failed", "error": str(error)
+            }
+            self.log(f"클립보드 감지 처리 실패: {error}", "ERROR")
+        finally:
+            self._clipboard_processing = False
+            # A confirmation dialog can receive another clipboard change while
+            # it is open. Process the latest value once, without nested dialogs.
+            QTimer.singleShot(0, self._clipboard_changed)
 
     def preview_completion_action(
         self, action: str, countdown_seconds: int
@@ -12168,7 +12226,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             "toki-cli.cmd settings [--json|--show-gui --tab general|network|display|advanced|provider --search TEXT|--close]\n"
             "toki-cli.cmd completion-action status|set|preview|cancel [options]\n"
             "toki-cli.cmd notifications status|set|preview|close [options]\n"
-            "toki-cli.cmd clipboard inspect|monitor [options]\n"
+            "toki-cli.cmd clipboard inspect|enqueue|status|monitor [options]\n"
             "toki-cli.cmd config get|set|export|import|reset [options] --json\n"
             "toki-cli.cmd jobs export --output PATH --json [--via-gui]\n"
             "toki-cli.cmd jobs import [--input PATH --dry-run|--input PATH --show-gui|--input PATH --execute --yes|--close] --json\n"
@@ -12442,6 +12500,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             "notifications": self.notification_status_snapshot(),
             "clipboard": {
                 "monitorEnabled": bool(self.config.get("clipboardMonitor", False)),
+                "autoDownload": bool(self.config.get("clipboardAutoDownload", False)),
                 "lastInspection": self.last_clipboard_inspection,
             },
             "startupRecovery": self.startup_recovery,
@@ -12999,6 +13058,8 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             return self.inspect_clipboard_text(
                 str(request.get("text") or ""), prompt=bool(request.get("prompt"))
             )
+        if action == "enqueue_clipboard":
+            return self.inspect_clipboard_text(str(request.get("text") or ""), enqueue=True)
         if action == "export_jobs_snapshot":
             return self.export_jobs_snapshot_now(str(request.get("output") or ""))
         if action == "import_jobs_snapshot":

@@ -367,6 +367,8 @@ GUI의 주요 버튼은 모두 `toki-cli.cmd`에서도 실행할 수 있습니�
 .\toki-cli.cmd completion-action cancel
 .\toki-cli.cmd clipboard inspect --text "https://newtoki1.org/manhwa/34360" --json
 .\toki-cli.cmd clipboard monitor --state on --json
+.\toki-cli.cmd clipboard monitor --state on --mode auto --json
+.\toki-cli.cmd clipboard status --json
 .\toki-cli.cmd folder-template --template "[{author}][{group}] {title}" --output "D:\Manga" --json
 .\toki-cli.cmd language list --json
 .\toki-cli.cmd language set ko --json
@@ -483,10 +485,36 @@ Windows 종료를 선택한 경우 실제로 실행한 대기열이 완전히 �
 `preview --action shutdown --countdown 15 --show-gui`로 실제 종료 없이 화면과 취소 동작을
 점검합니다. 미리보기 명령은 시스템 종료를 실행하지 않습니다.
 
-클립보드 URL 감지는 기본적으로 꺼져 있습니다. 켜면 지원 작품 URL이 새로 복사될 때 작품
-키를 전체 DB와 비교하고, 이미 등록된 작품은 건너뛰며 새 작품은 확인 질문 뒤에만 대기열에
-추가합니다. `clipboard inspect --text URL --json`은 추가 없이 판정만 수행하고,
-`clipboard monitor --state on|off`로 감지 설정을 바꿉니다.
+클립보드 URL 감지는 설정 → 일반 → **클립보드 감지 / 클립보드 추가 방식**에서 관리합니다.
+`확인 없이 자동 다운로드`를 선택하면 프로그램이 실행 중인 동안 다른 앱에서 Ctrl+C 또는
+우클릭 복사한 작품 주소를 확인창 없이 다운로드 대기열에 추가합니다. 최소화 상태에서도
+동작하며 프로그램을 종료하면 감지도 중지됩니다. 기존 클립보드를 시작/설정 변경 시 소급
+처리하지 않고, 새 복사 이벤트부터 처리합니다. 처음 설치할 때는 감지 꺼짐·확인 방식이며,
+이전 설정을 마이그레이션해도 자동 등록을 임의로 켜지 않습니다.
+
+감지 대상은 `https://newtoki숫자.org/manhwa/작품번호` 형식의 작품 목록 주소입니다.
+홈페이지, `/manhwa/작품번호/회차번호`, 다른 사이트, 레거시 주소, 일반 텍스트는 무시합니다.
+한 번 복사하면 앞쪽 32개 URL 중 첫 지원 주소 한 개만 처리하고, 65,536자를 초과하는
+텍스트는 무시합니다. 페이지/추적 쿼리와 `#fragment`는 제거합니다. 여기서는 주소 형식만
+확인하며, 실제 페이지 접근 가능 여부와 회차 목록은 기존 다운로더가 확인합니다.
+
+이미 등록된 작품은 완료/오류 상태나 목록 필터·로딩 여부와 관계없이 전체 DB 기준으로
+중복 추가하지 않습니다. 기존 작품을 갱신하려면 재시도를 사용합니다. 새 작품은 **저장된
+기본 폴더와 다운로드 설정**을 사용하고, 입력창의 URL·회차 범위를 바꾸거나 상속하지 않습니다.
+회차 제한 없이 신규 회차 검사를 수행하며 다운로드 후 자동 ZIP/원본 정리도 기존 설정을
+그대로 따릅니다. 감지 실패는 로그와 `clipboard status`의 `lastInspection`에서 확인할 수
+있으며 무관한 클립보드 텍스트는 로그에 남기지 않습니다.
+
+```powershell
+.\toki-cli.cmd clipboard monitor --state on --mode auto --json
+.\toki-cli.cmd clipboard monitor --state on --mode confirm --json
+.\toki-cli.cmd clipboard monitor --state off --json
+.\toki-cli.cmd clipboard status --json
+# 읽기 전용: 자동 추가가 켜져 있어도 다운로드하지 않음
+.\toki-cli.cmd clipboard inspect --text "https://newtoki1.org/manhwa/34360" --via-gui --json
+# 실제 등록: 동일한 URL 검증/중복 방지 경로 사용. 명시적 CLI 명령은 감지 on/off와 독립적.
+.\toki-cli.cmd clipboard enqueue --text "https://newtoki1.org/manhwa/34360" --yes --json
+```
 
 자동화 브라우저는 기본 `headless`라 다운로드 중 별도 Chrome 창을 띄우지 않습니다.
 `browser-mode set visible`은 사이트 인증이나 화면 선택자 문제를 직접 확인할 때만 사용하는

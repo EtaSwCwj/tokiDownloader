@@ -40,4 +40,53 @@ def refuse_unisolated_gui_start():
 # ping must never launch it against the user's real database from a test.
 toki_app.start_gui_background = refuse_unisolated_gui_start
 
+# Optional clipboard integration harness. The offscreen platform provides a
+# process-private QClipboard, never the user's Windows clipboard. Only process
+# launch is replaced; real clipboard signals, enqueue, settings, IPC and DB run.
+if (runtime / ".clipboard-auto-test").is_file():
+    import os
+    if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+        raise SystemExit("Clipboard tests require the offscreen platform")
+    from PyQt6.QtWidgets import QApplication
+    import toki_gui
+
+    toki_gui.MainWindow._start_next_job = lambda self: self._flush_job_history()
+    production_action = toki_gui.MainWindow._handle_control_action
+
+    def clipboard_test_action(self, request):
+        if request.get("action") == "test_clipboard_copy":
+            self.url_edit.setText("typed URL must stay untouched")
+            self.start_spin.setValue(13)
+            self.last_spin.setValue(15)
+            self.showMinimized()
+            QApplication.clipboard().setText(str(request["text"]))
+            self._flush_job_history()
+            return {
+                "inspection": self.last_clipboard_inspection,
+                "formUrl": self.url_edit.text(),
+                "start": self.start_spin.value(),
+                "last": self.last_spin.value(),
+                "minimized": self.isMinimized(),
+                "processing": self._clipboard_processing,
+            }
+        if request.get("action") == "test_clipboard_settings":
+            self.show_settings_dialog()
+            dialog = self.active_settings_dialog
+            result = {
+                "monitorChecked": dialog.clipboard_monitor_check.isChecked(),
+                "autoSelected": dialog.clipboard_mode_combo.currentData(),
+                "modeEnabled": dialog.clipboard_mode_combo.isEnabled(),
+            }
+            self.close_settings_dialog()
+            return result
+        return production_action(self, request)
+
+    toki_gui.MainWindow._handle_control_action = clipboard_test_action
+    if sys.argv[1] == "test-clipboard-copy":
+        toki_app.print_json(toki_app.control_request({"action": "test_clipboard_copy", "text": sys.argv[2]}))
+        raise SystemExit(0)
+    if sys.argv[1] == "test-clipboard-settings":
+        toki_app.print_json(toki_app.control_request({"action": "test_clipboard_settings"}))
+        raise SystemExit(0)
+
 raise SystemExit(toki_app.main())

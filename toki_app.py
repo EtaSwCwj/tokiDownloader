@@ -1974,7 +1974,18 @@ def build_parser() -> argparse.ArgumentParser:
         "monitor", help="클립보드 URL 감지 켜기 또는 끄기"
     )
     clipboard_monitor.add_argument("--state", choices=("on", "off"), required=True)
+    clipboard_monitor.add_argument(
+        "--mode", choices=("auto", "confirm"), help="자동 추가 또는 확인 후 추가 (생략하면 기존 방식 유지)"
+    )
     clipboard_monitor.add_argument("--json", action="store_true")
+    clipboard_status = clipboard_commands.add_parser("status", help="감지·자동 추가 설정과 최근 처리 결과")
+    clipboard_status.add_argument("--json", action="store_true")
+    clipboard_enqueue = clipboard_commands.add_parser(
+        "enqueue", help="클립보드와 동일한 URL 검사·중복 방지 후 한 작품을 실제 대기열에 추가"
+    )
+    clipboard_enqueue.add_argument("--text", required=True)
+    clipboard_enqueue.add_argument("--yes", action="store_true", help="실제 다운로드 등록 승인")
+    clipboard_enqueue.add_argument("--json", action="store_true")
 
     tray = subparsers.add_parser("tray", help="GUI 시스템 트레이 제어")
     tray.add_argument(
@@ -5026,6 +5037,8 @@ def run_cli(args: argparse.Namespace) -> int:
     if command == "clipboard":
         if args.clipboard_command == "monitor":
             updates = {"clipboardMonitor": args.state == "on"}
+            if args.mode is not None:
+                updates["clipboardAutoDownload"] = args.mode == "auto"
             if gui_is_running():
                 values = control_request(
                     {"action": "set_settings", "updates": updates, "reset": False}
@@ -5034,8 +5047,26 @@ def run_cli(args: argparse.Namespace) -> int:
                 values = update_app_settings(updates)
             result = {
                 "monitorEnabled": bool(values["clipboardMonitor"]),
+                "autoDownload": bool(values.get("clipboardAutoDownload", False)),
                 "saved": True,
             }
+        elif args.clipboard_command == "status":
+            running = gui_is_running()
+            if running:
+                result = {**control_request({"action": "status"})["clipboard"], "guiRunning": True}
+            else:
+                values = load_config()
+                result = {
+                    "monitorEnabled": bool(values["clipboardMonitor"]),
+                    "autoDownload": bool(values["clipboardAutoDownload"]),
+                    "guiRunning": False,
+                    "lastInspection": {},
+                }
+        elif args.clipboard_command == "enqueue":
+            if not args.yes:
+                raise ControlError("실제 다운로드 등록에는 --yes가 필요합니다. 판정만 하려면 clipboard inspect를 사용하세요.")
+            ensure_gui_running()
+            result = control_request({"action": "enqueue_clipboard", "text": args.text})
         elif args.via_gui:
             ensure_gui_running()
             result = control_request(
@@ -5050,7 +5081,7 @@ def run_cli(args: argparse.Namespace) -> int:
                         args.text, existing_work_keys={existing.work_key}
                     )
         print_json(result)
-        return 0
+        return 0 if result.get("ok", True) else 2
     if command == "tray":
         ensure_gui_running()
         result = control_request(

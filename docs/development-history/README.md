@@ -36,6 +36,7 @@ Windows 환경에서 안정적으로 쓰는 개인용 도구를 목표로 한다
 | 2026-09-08 | 99c47f8 이후 | [복수 선택, Delete 처리창과 회차별 ZIP](2026-09-08-library-batch-archive.md) |
 | 2026-09-08 | 0256979 이후 | [작품 전체 ZIP과 다중 페이지 누락 수정](2026-09-08-whole-work-zip-and-pagination.md) |
 | 2026-09-08 | 345a28f 이후 | [원본 회차 폴더의 정렬 순번](2026-09-08-ordered-episode-folders.md) |
+| 2026-09-08 | 1aef421 이후 | [복사한 작품 주소 자동 다운로드](2026-09-08-clipboard-auto-download.md) |
 
 새 이력은 [작성 템플릿](TEMPLATE.md)을 복사해 날짜와 주제가 드러나는 파일명으로 추가한다.
 
