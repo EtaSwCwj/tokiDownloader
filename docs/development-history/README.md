@@ -34,6 +34,7 @@ Windows 환경에서 안정적으로 쓰는 개인용 도구를 목표로 한다
 | 2026-08-08 | 66b7657 이후 | [소수·분할 형제 회차의 조건부 정렬명](2026-08-08-contextual-episode-ordering.md) |
 | 2026-09-08 | 1750237 이후 | [검수에서 재현된 회차·WebP·미리보기 오류 수정](2026-09-08-episode-review-fixes.md) |
 | 2026-09-08 | 99c47f8 이후 | [복수 선택, Delete 처리창과 회차별 ZIP](2026-09-08-library-batch-archive.md) |
+| 2026-09-08 | 0256979 이후 | [작품 전체 ZIP과 다중 페이지 누락 수정](2026-09-08-whole-work-zip-and-pagination.md) |
 
 새 이력은 [작성 템플릿](TEMPLATE.md)을 복사해 날짜와 주제가 드러나는 파일명으로 추가한다.
 

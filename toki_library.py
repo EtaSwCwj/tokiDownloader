@@ -266,7 +266,10 @@ def restore_library_trash(manifest_path: str, *, execute: bool = False) -> dict:
     return {"executed": execute, "fileCount": len(entries), "manifest": str(path), "preservesNewerState": True}
 
 
-def plan_library_archive(job_ids: list[str], mode: str = "episodes", *, include_members: bool = False) -> dict:
+def plan_library_archive(job_ids: list[str], mode: str = "work", *, include_members: bool = False) -> dict:
+    if mode == "work":
+        from toki_work_archive import plan_work_archives
+        return plan_work_archives(job_ids, include_members=include_members)
     if mode not in {"episodes", "work"}:
         raise ValueError("압축 단위는 episodes 또는 work여야 합니다.")
     plans = []
@@ -323,12 +326,14 @@ def plan_library_archive(job_ids: list[str], mode: str = "episodes", *, include_
             "fileCount": sum(a["fileCount"] for p in plans for a in p["archives"]), "preservesOriginals": True}
 
 
-def archive_library_items(job_ids: list[str], mode: str = "episodes", *, execute: bool = False,
+def archive_library_items(job_ids: list[str], mode: str = "work", *, execute: bool = False,
                           remove_originals: bool = False,
                           cancelled: Callable[[], bool] = lambda: False,
                           progress: Callable[[dict], None] = lambda _event: None) -> dict:
-    if remove_originals and mode != "episodes":
-        raise ValueError("원본 정리는 회차별 ZIP에서만 지원합니다.")
+    if mode == "work":
+        from toki_work_archive import archive_works
+        return archive_works(job_ids, execute=execute, remove_originals=remove_originals,
+                             cancelled=cancelled, progress=progress)
     plan = {**plan_library_archive(job_ids, mode), "removeOriginals": remove_originals,
             "preservesOriginals": not remove_originals}
     if not execute:

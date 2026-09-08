@@ -43,7 +43,7 @@ class LibraryDialog(QDialog):
         self.resize(740, 560)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"선택한 작품 {len(ids)}개 · " + (
-            "회차별 ZIP 압축" if archive else "작업 버튼 → 확인창 → 실행"
+            "작품 전체 ZIP · 작품당 1개 · 회차 폴더 순서 유지" if archive else "작업 버튼 → 확인창 → 실행"
         )))
         self.selected_action = "archive" if archive else ""
         self.action_buttons = {}
@@ -77,7 +77,7 @@ class LibraryDialog(QDialog):
         self.remove_originals.setChecked(bool(owner.config.get("archiveRemoveOriginals", True)))
         self.remove_originals.setVisible(archive)
         layout.addWidget(self.remove_originals)
-        self.info = QLabel("파일 삭제는 영구 삭제가 아닙니다. 작품 폴더의 .toki-trash에 이동합니다.\n압축 후 원본 정리는 검증된 ZIP에 저장된 파일만 지웁니다.")
+        self.info = QLabel("작품 전체를 ZIP 하나로 저장합니다. 내부는 회차 폴더 → 페이지 순서입니다.\n원본 정리는 검증된 회차 파일만 대상으로 하며 메타데이터와 표지는 보존합니다." if archive else "파일 삭제는 영구 삭제가 아닙니다. 작품 폴더의 .toki-trash에 이동합니다.")
         self.info.setWordWrap(True)
         layout.addWidget(self.info)
         self.details = QPlainTextEdit()

@@ -3,7 +3,7 @@ from toki_library import archive_library_items, delete_library_items, restore_li
 
 
 def configure_library_cli(subparsers):
-    library = subparsers.add_parser("library", help="복수 선택·삭제 선택·회차별 ZIP 압축")
+    library = subparsers.add_parser("library", help="복수 선택·삭제 선택·작품 전체 ZIP 압축")
     commands = library.add_subparsers(dest="library_command", required=True)
     select = commands.add_parser("select", help="GUI 목록 복수 선택/조회")
     select.add_argument("--job", action="append")
@@ -27,7 +27,7 @@ def configure_library_cli(subparsers):
             parser.add_argument("--kind", choices=("records", "files", "archives"), default="records")
             parser.add_argument("--plan-token", help="미리보기의 planToken; 대상 변경 시 중단")
         if name == "archive":
-            parser.add_argument("--remove-originals", action="store_true", help="ZIP CRC 검증 후 원본 정리")
+            parser.add_argument("--remove-originals", action="store_true", help="작품당 ZIP 하나 생성·CRC 검증 후 회차 원본 정리 (메타데이터/표지 보존)")
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument("--execute", action="store_true")
         mode.add_argument("--dry-run", action="store_true")

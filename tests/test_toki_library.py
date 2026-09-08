@@ -105,7 +105,7 @@ class LibraryTests(unittest.TestCase):
         archive = Path(result["jobs"][0]["archives"][0]["path"])
         with zipfile.ZipFile(archive) as bundle:
             names = [n for n in bundle.namelist() if n.endswith(".jpg")]
-            self.assertEqual(names, ["000001.jpg", "000002.jpg", "000003.jpg"])
+            self.assertEqual(names, [f"000001 {episode.name}/{n:06d}.jpg" for n in range(1, 4)])
             self.assertEqual([bundle.read(name)[3:-2] for name in names], [b"1", b"2", b"10"])
             self.assertIsNone(bundle.testzip())
         checked = core.verify_job_files(job.job_id)

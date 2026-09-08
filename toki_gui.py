@@ -3959,7 +3959,7 @@ class SettingsDialog(QDialog):
             "CLI: pdf set --automatic on|off"
         )
         advanced_form.addRow("PDF 자동 생성", self.pdf_generation_check)
-        self.archive_after_check = QCheckBox("다운로드 완료 후 회차별 ZIP 생성")
+        self.archive_after_check = QCheckBox("다운로드 완료 후 작품 전체 ZIP 1개 생성/갱신")
         self.archive_after_check.setToolTip("CLI: config set --key archiveAfterDownload --value true --json")
         advanced_form.addRow("ZIP 자동 압축", self.archive_after_check)
         self.archive_remove_check = QCheckBox("ZIP 검증 성공 후 원본 정리 (ZIP에서 복원 가능)")
@@ -11363,7 +11363,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         )
 
         if hasattr(self, "show_library_dialog"):
-            mark(menu.addAction("회차별 ZIP 압축...", lambda: self.show_library_dialog([job.job_id], archive=True)), "archive.create")
+            mark(menu.addAction("작품 전체 ZIP 압축...", lambda: self.show_library_dialog([job.job_id], archive=True)), "archive.create")
         menu.addSeparator()
         remove_action = mark(
             menu.addAction(

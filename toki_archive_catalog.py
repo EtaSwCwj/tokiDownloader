@@ -22,16 +22,25 @@ def archived_episodes(root: Path, *, verify_crc: bool = False) -> list[dict]:
                 continue
             path = directory / name
             stat = path.stat()
-            episode = record.get("episode")
-            if (not episode or path.is_symlink() or stat.st_size != record["size"]
+            episodes = record.get("episodes") or ([record["episode"]] if record.get("episode") else [])
+            if (not episodes or path.is_symlink() or stat.st_size != record["size"]
                     or stat.st_mtime_ns != int(record["mtimeNs"])):
-                continue
-            if Path(episode["folderName"]).name != episode["folderName"] or int(episode["number"]) <= 0:
                 continue
             with zipfile.ZipFile(path) as bundle:
                 if not bundle.infolist() or (verify_crc and bundle.testzip() is not None):
                     continue
-            result.append({**episode, "archivePath": str(path), "imageCount": record.get("imageCount", 0)})
+                prefixes = set(entry.filename.split("/", 1)[0] + "/" for entry in bundle.infolist() if not entry.is_dir())
+            for episode in episodes:
+                if not isinstance(episode, dict) or Path(episode["folderName"]).name != episode["folderName"] or int(episode["number"]) <= 0:
+                    continue
+                if record.get("episodes") and (not episode.get("prefix") or episode["prefix"] not in prefixes):
+                    continue
+                result.append({**episode, "archivePath": str(path), "imageCount": episode.get("imageCount", record.get("imageCount", 0))})
         except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
             continue
-    return result
+    # A migrated work may retain legacy ZIPs. Prefer the work ZIP and expose
+    # each stable episode once, so counts and completion do not double.
+    unique = {}
+    for episode in sorted(result, key=lambda item: bool(item.get("prefix"))):
+        unique[episode.get("sourceId") or episode["folderName"]] = episode
+    return list(unique.values())

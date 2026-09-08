@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { ProxyAgent } from 'proxy-agent';
 import { ImageTransport } from './downloader_transport.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
+import { collectEpisodeListPages } from './downloader_pagination.js';
 import {
     episodeStateUsesStableIds,
     normalizeAndSortEpisodeLinks,
@@ -870,35 +871,14 @@ async function main() {
         }, { site: info.site, siteTitle: info.siteTitle, sourceUrl: info.url });
         info.contentTitle = info.metadata.title;
         info.contentFolderName = buildContentFolderName(info.metadata);
-        let link = [];
-        // 연재 목록들의 링크를 알아낸다. {num:회차, fileName:연재제목, src:링크}로 구성되어있다.
-        while (true) {
-            await page.locator('.list-body').setTimeout(40000).wait();
-            sleep(1000);
-            link = link.concat(await page.evaluate(() => {
-                let list = Array.from(document.querySelector('.list-body').querySelectorAll('li'));
-                for (let i = 0; i < list.length; i++) {
-                    const anchor = list[i].querySelector('a');
-                    const subject = anchor?.cloneNode(true);
-                    subject?.querySelectorAll('span').forEach(element => element.remove());
-                    list[i] = {
-                        num: list[i].querySelector('.wr-num')?.innerText?.trim() || '',
-                        fileName: subject?.textContent?.trim() || '',
-                        src: anchor?.href || ''
-                    }
-                }
-                return list;
-            }));
-            // 다음 페이지가 없다면 break
-            if (await page.$('ul.pagination li[class="active"] ~ li:not([class="disabled"]) a')) {
-                await Promise.all([
-                    page.waitForNavigation(),
-                    page.locator('ul.pagination li[class="active"] ~ li:not([class="disabled"]) a').click()
-                ]);
-            }
-            else
-                break;
-        }
+        const listScan = await collectEpisodeListPages(page, {
+            beforeNavigate: () => requestPacer.wait(),
+            onPage: event => {
+                console.log(`회차 목록 ${event.pageCount}페이지 수집: ${event.rowCount}개 / 사이트 ${event.expectedCount || '?'}개`);
+                emitEvent('list_page', event);
+            },
+        });
+        let link = listScan.rows;
         // 페이지 구성이나 DOM 방향에 의존하지 않고 유효한 행 순번만 안정적으로 처리한다.
         const normalizedLinks = normalizeAndSortEpisodeLinks(link);
         for (const skipped of normalizedLinks.skipped) {
@@ -950,6 +930,8 @@ async function main() {
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
         info.metadata.episodeCount = totalEpisodeCount;
+        info.metadata.listPageCount = listScan.pageCount;
+        info.metadata.siteEpisodeCount = listScan.expectedCount || totalEpisodeCount;
         info.metadata.selectedEpisodeCount = link.length;
         info.metadata.requestedRange = {
             start: info.startIndex === 0 ? null : info.startIndex,
