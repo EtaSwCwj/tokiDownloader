@@ -1981,7 +1981,7 @@ def build_parser() -> argparse.ArgumentParser:
     clipboard_status = clipboard_commands.add_parser("status", help="감지·자동 추가 설정과 최근 처리 결과")
     clipboard_status.add_argument("--json", action="store_true")
     clipboard_enqueue = clipboard_commands.add_parser(
-        "enqueue", help="클립보드와 동일한 URL 검사·중복 방지 후 한 작품을 실제 대기열에 추가"
+        "enqueue", help="클립보드와 동일한 URL 검사 후 새 작품 등록 또는 기존 작품 새 회차 확인"
     )
     clipboard_enqueue.add_argument("--text", required=True)
     clipboard_enqueue.add_argument("--yes", action="store_true", help="실제 다운로드 등록 승인")

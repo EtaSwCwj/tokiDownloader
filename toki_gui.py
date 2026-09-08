@@ -3666,7 +3666,7 @@ class SettingsDialog(QDialog):
         self.completion_countdown_spin.setSuffix("초")
         general_form.addRow("완료 후 카운트다운", self.completion_countdown_spin)
         self.clipboard_monitor_check = QCheckBox(
-            "복사한 작품 주소 감지 (최소화 상태에서도 동작)"
+            "복사한 작품 주소 감지 (새 작품 등록 / 기존 작품 갱신)"
         )
         general_form.addRow("클립보드 감지", self.clipboard_monitor_check)
         self.clipboard_mode_combo = QComboBox()
@@ -3674,7 +3674,7 @@ class SettingsDialog(QDialog):
         self.clipboard_mode_combo.addItem("확인 없이 자동 다운로드", True)
         self.clipboard_mode_combo.setToolTip(
             "newtoki숫자.org/manhwa/작품번호 주소만 처리합니다.\n"
-            "등록된 작품은 제외하며 한 번 복사할 때 한 작품만 추가합니다."
+            "기존 작품은 새 회차를 확인하고, 실행·대기·일시정지 중인 작품은 중복 실행하지 않습니다."
         )
         self.clipboard_monitor_check.toggled.connect(self.clipboard_mode_combo.setEnabled)
         general_form.addRow("클립보드 추가 방식", self.clipboard_mode_combo)
@@ -8836,13 +8836,14 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
     def inspect_clipboard_text(
         self, text: str, *, prompt: bool = False, enqueue: bool = False
     ) -> dict[str, Any]:
-        first = inspect_clipboard_url(text, existing_work_keys=self.jobs_by_work)
-        if first.get("candidate") and not first.get("duplicate"):
-            stored = load_job_by_work_key(str(first["workKey"]))
-            if stored:
-                first = inspect_clipboard_url(
-                    text, existing_work_keys={stored.work_key}
-                )
+        first = inspect_clipboard_url(text)
+        existing = None
+        if first.get("candidate"):
+            existing = self.jobs_by_work.get(str(first["workKey"])) or load_job_by_work_key(
+                str(first["workKey"])
+            )
+            if existing:
+                first.update(duplicate=True, reason="duplicate")
         result = {
             **first,
             "monitorEnabled": bool(self.config.get("clipboardMonitor", False)),
@@ -8850,12 +8851,15 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             "prompted": False,
             "accepted": False,
             "enqueued": False,
+            "refreshed": False,
         }
         self.last_clipboard_inspection = result
         if not result.get("candidate"):
             return result
-        if result.get("duplicate"):
-            self.statusBar().showMessage("이미 등록된 작품 URL입니다.", 3000)
+        if existing and existing.state in ACTIVE_JOB_STATES:
+            result.update(reason="already_active", existingJobId=existing.job_id)
+            if prompt or enqueue:
+                self.statusBar().showMessage("이미 실행·대기·일시정지 중인 작품입니다.", 3000)
             return result
         if not prompt and not enqueue:
             return result
@@ -8864,7 +8868,10 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "클립보드 작품 URL 감지",
-                f"새 작품 URL을 감지했습니다. 다운로드 작업에 추가할까요?\n\n{result['url']}",
+                (
+                    "이미 등록된 작품입니다. 회차 목록을 다시 확인하고 새 회차만 받을까요?"
+                    if existing else "새 작품 URL을 감지했습니다. 다운로드 작업에 추가할까요?"
+                ) + f"\n\n{result['url']}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -8878,19 +8885,36 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             existing = self.jobs_by_work.get(str(result["workKey"])) or load_job_by_work_key(
                 str(result["workKey"])
             )
-            if existing:
-                result.update(duplicate=True, reason="duplicate")
+            if existing and existing.state in ACTIVE_JOB_STATES:
+                result.update(duplicate=True, reason="already_active", existingJobId=existing.job_id)
             else:
                 try:
-                    job = self.enqueue_download(
-                        url=str(result["url"]), start=None, last=None,
-                        output_dir=str(self.config.get("outputDir") or ROOT_DIR),
-                        show_browser=bool(self.config.get("showBrowser", False)),
-                        metadata_only=False, scan_mode="new",
+                    if existing:
+                        # Refresh the same work in its saved folder. The normal
+                        # enqueue path preserves its metadata, markers and row,
+                        # but creates a separate execution-history record.
+                        parameters = rescan_job_parameters(existing, "new")
+                        # Use the freshly copied host if the site's number moved.
+                        parameters["url"] = str(result["url"])
+                    else:
+                        parameters = {
+                            "url": str(result["url"]), "start": None, "last": None,
+                            "output_dir": str(self.config.get("outputDir") or ROOT_DIR),
+                            "show_browser": bool(self.config.get("showBrowser", False)),
+                            "scan_mode": "new",
+                        }
+                    job = self.enqueue_download(**parameters, metadata_only=False)
+                    refreshed = existing is not None
+                    result.update(
+                        enqueued=True, jobId=job.job_id, refreshed=refreshed,
+                        duplicate=refreshed, reason="refresh_queued" if refreshed else "new_queued",
                     )
-                    result.update(enqueued=True, jobId=job.job_id)
-                    self.log(f"클립보드 작품 등록: {result['url']}", job_id=job.job_id)
-                    self.statusBar().showMessage("복사한 작품을 다운로드 대기열에 추가했습니다.", 4000)
+                    label = "새 회차 확인" if refreshed else "작품 등록"
+                    self.log(f"클립보드 {label}: {result['url']}", job_id=job.job_id)
+                    self.statusBar().showMessage(
+                        "기존 작품의 회차 목록을 다시 확인합니다. 이미 받은 회차는 건너뜁니다."
+                        if refreshed else "복사한 작품을 다운로드 대기열에 추가했습니다.", 4000
+                    )
                 except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
                     result.update(ok=False, reason="enqueue_failed", error=str(error))
                     self.log(f"클립보드 작품 추가 실패: {error}", "ERROR")
@@ -8898,7 +8922,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         self.last_clipboard_inspection = result
         return result
 
-    def _clipboard_changed(self) -> None:
+    def _clipboard_changed(self, *, recheck: bool = False) -> None:
         if not bool(self.config.get("clipboardMonitor", False)):
             return
         if self._clipboard_processing:
@@ -8907,7 +8931,9 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         # Keep no private clipboard text in history; bound work even for a huge
         # copy. Updating the fingerprint on empty text permits a later recopy.
         fingerprint = hashlib.sha256(text[:65_537].encode("utf-8", errors="replace")).hexdigest()
-        if fingerprint == self.last_clipboard_fingerprint:
+        # Only suppress our own deferred recheck. A genuine new copy of the
+        # same text must refresh a work again after its previous run finishes.
+        if recheck and fingerprint == self.last_clipboard_fingerprint:
             return
         self.last_clipboard_fingerprint = fingerprint
         self._clipboard_processing = True
@@ -8923,7 +8949,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             self._clipboard_processing = False
             # A confirmation dialog can receive another clipboard change while
             # it is open. Process the latest value once, without nested dialogs.
-            QTimer.singleShot(0, self._clipboard_changed)
+            QTimer.singleShot(0, lambda: self._clipboard_changed(recheck=True))
 
     def preview_completion_action(
         self, action: str, countdown_seconds: int

@@ -81,10 +81,40 @@ class ClipboardCliIntegrationTests(unittest.TestCase):
                     self.assertTrue(settings["archiveRemoveOriginals"])
                     dupe = self.cli("test-clipboard-copy", url.replace("newtoki1", "newtoki2"))
                     self.assertTrue(dupe["inspection"]["duplicate"])
+                    self.assertEqual(dupe["inspection"]["reason"], "already_active")
                     for text in ("ordinary copied text", "https://newtoki1.org/", url + "/1",
                                  "https://example.com/manhwa/99002"):
                         self.assertFalse(self.cli("test-clipboard-copy", text)["inspection"]["candidate"])
                     self.assertEqual(self.cli("status", "--json")["totalJobCount"], 1)
+                    # A terminal work refreshes in place even if the clipboard
+                    # text is identical and the global output folder changed.
+                    self.cli("set-note", "--job", job["job_id"], "--text", "keep my note")
+                    self.cli("pin", "--job", job["job_id"], "--on")
+                    self.cli("test-clipboard-copy", url)
+                    self.cli("cancel", "--job", job["job_id"])
+                    new_output = root / "new-default-output"
+                    self.cli("set-output", str(new_output))
+                    passive = self.cli("clipboard", "inspect", "--text", url, "--via-gui")
+                    self.assertTrue(passive["duplicate"])
+                    self.assertFalse(passive["enqueued"])
+                    refreshed = self.cli("test-clipboard-copy", url)["inspection"]
+                    self.assertTrue(refreshed["refreshed"])
+                    self.assertEqual(refreshed["reason"], "refresh_queued")
+                    self.assertNotEqual(refreshed["jobId"], job["job_id"])
+                    current = self.cli("status", "--json")
+                    self.assertEqual(current["totalJobCount"], 1)
+                    self.assertEqual(current["loadedJobCount"], 1)
+                    self.assertEqual(current["pendingCount"], 1)
+                    updated = current["jobs"][0]
+                    self.assertEqual(updated["work_key"], job["work_key"])
+                    self.assertEqual(updated["output_dir"], str(output))
+                    self.assertEqual(updated["user_note"], "keep my note")
+                    self.assertTrue(updated["pinned"])
+                    info = self.cli("info", "--job", updated["job_id"], "--json")
+                    self.assertEqual(info["runCount"], 2)
+                    active = self.cli("test-clipboard-copy", url)["inspection"]
+                    self.assertEqual(active["reason"], "already_active")
+                    self.assertFalse(active["enqueued"])
                     self.cli("clipboard", "monitor", "--state", "off")
                     self.cli("test-clipboard-copy", url[:-1] + "2")
                     self.assertEqual(self.cli("status", "--json")["totalJobCount"], 1)
@@ -102,7 +132,8 @@ class ClipboardCliIntegrationTests(unittest.TestCase):
                     self.assertIsNotNone(stored)
                     self.assertEqual(stored.output_dir, str(output))
                     self.assertEqual(list(output.iterdir()), [])
-                    print("[Clipboard CLI] copied URL -> real Qt signal -> 1 queued work; duplicate/invalid ignored; minimized/form/settings/SQLite verified; no download processes")
+                    self.assertEqual(list(new_output.iterdir()), [])
+                    print("[Clipboard CLI] copied URL -> 1 work; same-text refresh -> still 1 work, 2 runs, original folder/note/pin preserved; active duplicates ignored; no download processes")
                 finally:
                     if host.poll() is None:
                         try:

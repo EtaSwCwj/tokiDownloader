@@ -85,7 +85,7 @@ class ClipboardGuiTests(unittest.TestCase):
             return job
         h.enqueue_download = Mock(side_effect=add)
         h.inspect_clipboard_text = lambda *a, **kw: MainWindow.inspect_clipboard_text(h, *a, **kw)
-        h._clipboard_changed = lambda: MainWindow._clipboard_changed(h)
+        h._clipboard_changed = lambda **kw: MainWindow._clipboard_changed(h, **kw)
         return h
 
     def test_inspection_is_passive_even_with_auto_mode_enabled(self):
@@ -111,7 +111,7 @@ class ClipboardGuiTests(unittest.TestCase):
         question.assert_not_called()
         self.assertTrue(h.config["archiveAfterDownload"])
 
-    def test_duplicate_in_memory_or_unloaded_database_never_enqueues(self):
+    def test_active_duplicate_in_memory_or_unloaded_database_never_enqueues(self):
         for in_memory in (False, True):
             with self.subTest(in_memory=in_memory):
                 h = self.harness()
@@ -122,7 +122,85 @@ class ClipboardGuiTests(unittest.TestCase):
                     result = h.inspect_clipboard_text(URL, enqueue=True)
                 self.assertTrue(result["duplicate"])
                 self.assertFalse(result["enqueued"])
+                self.assertEqual(result["reason"], "already_active")
                 h.enqueue_download.assert_not_called()
+
+    def test_finished_duplicate_refreshes_new_episodes_using_its_saved_folder(self):
+        for state in ("완료", "오류", "중지됨", "취소됨", "인증 필요"):
+            for in_memory in (True, False):
+                with self.subTest(state=state, in_memory=in_memory):
+                    h = self.harness()
+                    old = core.DownloadJob(job_id="existing", url=URL, state=state, output_dir="D:/old",
+                                           start=13, last=15, scan_mode="range", show_browser=True)
+                    if in_memory:
+                        h.jobs_by_work[old.work_key] = old
+                    with patch("toki_gui.load_job_by_work_key", return_value=old):
+                        result = h.inspect_clipboard_text(URL.replace("newtoki1", "newtoki2"), enqueue=True)
+                    self.assertTrue(result["duplicate"])
+                    self.assertTrue(result["refreshed"])
+                    self.assertTrue(result["enqueued"])
+                    self.assertEqual(result["reason"], "refresh_queued")
+                    h.enqueue_download.assert_called_once_with(
+                        url=URL.replace("newtoki1", "newtoki2"), start=None, last=None,
+                        output_dir="D:/old", show_browser=True, scan_mode="new", metadata_only=False)
+
+    def test_all_active_states_keep_existing_job_without_confirmation(self):
+        for state in core.ACTIVE_JOB_STATES:
+            h = self.harness()
+            old = core.DownloadJob(job_id="existing", url=URL, state=state, output_dir="D:/old")
+            h.jobs_by_work[old.work_key] = old
+            with patch("toki_gui.QMessageBox.question") as question:
+                result = h.inspect_clipboard_text(URL, prompt=True)
+            self.assertEqual(result["reason"], "already_active")
+            self.assertFalse(result["refreshed"])
+            h.enqueue_download.assert_not_called()
+            question.assert_not_called()
+
+    def test_finished_duplicate_inspection_stays_read_only(self):
+        h = self.harness()
+        old = core.DownloadJob(job_id="existing", url=URL, state="완료", output_dir="D:/old")
+        with patch("toki_gui.load_job_by_work_key", return_value=old):
+            result = h.inspect_clipboard_text(URL)
+        self.assertTrue(result["duplicate"])
+        self.assertFalse(result["enqueued"])
+        h.enqueue_download.assert_not_called()
+
+    def test_confirmation_explains_existing_work_refresh(self):
+        h = self.harness()
+        old = core.DownloadJob(job_id="existing", url=URL, state="완료", output_dir="D:/old")
+        with patch("toki_gui.load_job_by_work_key", return_value=old), patch(
+            "toki_gui.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes
+        ) as question:
+            result = h.inspect_clipboard_text(URL, prompt=True)
+        self.assertIn("새 회차만", question.call_args.args[2])
+        self.assertTrue(result["refreshed"])
+
+    def test_confirmation_rechecks_a_newly_completed_work_and_refreshes_it(self):
+        h = self.harness()
+        old = core.DownloadJob(job_id="existing", url=URL, state="완료", output_dir="D:/old")
+        with patch("toki_gui.load_job_by_work_key", side_effect=[None, old]), patch(
+            "toki_gui.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes
+        ):
+            result = h.inspect_clipboard_text(URL, prompt=True)
+        self.assertTrue(result["refreshed"])
+        self.assertEqual(h.enqueue_download.call_args.kwargs["output_dir"], "D:/old")
+
+    def test_same_text_can_be_copied_again_after_completion_but_not_by_deferred_recheck(self):
+        h = self.harness()
+        clipboard = Mock()
+        clipboard.text.return_value = URL
+        with patch("toki_gui.QApplication.clipboard", return_value=clipboard), patch("toki_gui.QTimer.singleShot"), patch(
+            "toki_gui.load_job_by_work_key", return_value=None
+        ):
+            h._clipboard_changed()
+            h.jobs_by_work["manatoki:34360"].state = "완료"
+            h._clipboard_changed(recheck=True)
+            self.assertEqual(h.enqueue_download.call_count, 1)
+            h._clipboard_changed()
+            self.assertTrue(h.last_clipboard_inspection["refreshed"])
+            self.assertEqual(h.enqueue_download.call_count, 2)
+            h._clipboard_changed()
+            self.assertEqual(h.enqueue_download.call_count, 2)
 
     def test_confirmation_can_accept_or_cancel_without_form_mutation(self):
         for answer in (QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No):
