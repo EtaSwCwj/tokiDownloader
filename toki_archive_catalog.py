@@ -1,7 +1,38 @@
 """Read-only catalog for ZIP-only episodes (also consumed by the Node worker)."""
 import json
+import copy
 import zipfile
 from pathlib import Path
+
+
+def remap_archive_catalog(root: Path, mappings: list[dict]) -> dict | None:
+    """Prepare a read-only catalog remap for the folder rename transaction."""
+    directory = root / "_archives"
+    path = directory / ".toki-archive-index.json"
+    if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)() or path.is_symlink():
+        raise ValueError("링크로 연결된 ZIP 카탈로그는 변경하지 않습니다.")
+    if not path.exists():
+        return None
+    records = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(records, dict):
+        raise ValueError("ZIP 카탈로그 형식이 올바르지 않습니다.")
+    folders = {m["sourceFolderName"]: m["destinationFolderName"] for m in mappings}
+    by_id = {m["sourceId"]: m for m in mappings if m["sourceId"]}
+    result = copy.deepcopy(records)
+    for record in result.values():
+        if not isinstance(record, dict):
+            continue
+        for episode in record.get("episodes") or ([record["episode"]] if record.get("episode") else []):
+            matching = by_id.get(episode.get("sourceId"))
+            if matching:
+                episode.update(folderName=matching["folderName"], displayTitle=matching["displayTitle"], number=matching["number"])
+            elif episode.get("folderName") in folders:
+                episode["folderName"] = folders[episode["folderName"]]
+        for source in record.get("sources", []):
+            parts = str(source.get("source", "")).replace("\\", "/").split("/")
+            if len(parts) > 1 and parts[0] in folders:
+                source["source"] = "/".join([folders[parts[0]], *parts[1:]])
+    return result
 
 
 def archived_episodes(root: Path, *, verify_crc: bool = False) -> list[dict]:

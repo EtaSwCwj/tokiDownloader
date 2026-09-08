@@ -30,6 +30,7 @@ import {
     findUniqueInferredEpisodeMatch,
     isLegacyEpisodeFolderCandidate,
     mergeEpisodeManifestRecords,
+    orderedEpisodeFolderName,
     renderFolderTemplate,
     resolveEpisodeCollectionNames,
     sanitizePathSegment,
@@ -504,8 +505,7 @@ function prepareEpisodeManifest(links, state) {
         const preferredName = String(
             (mappedName && directories.has(mappedName.toLowerCase()) ? mappedName : '')
             || legacyName
-            || mappedName
-            || base.folderName,
+            || orderedEpisodeFolderName(base.number, base.displayTitle),
         );
         const preferredKey = preferredName.toLowerCase();
         const referencesExistingFolder = (
@@ -929,6 +929,7 @@ async function main() {
         if (!info.metadataOnly && info.scanMode !== 'new' && selection.links.length === 0)
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
+        info.metadata.episodeFolderNaming = { version: 2, mode: 'ordered_title', prefixDigits: 6 };
         info.metadata.episodeCount = totalEpisodeCount;
         info.metadata.listPageCount = listScan.pageCount;
         info.metadata.siteEpisodeCount = listScan.expectedCount || totalEpisodeCount;

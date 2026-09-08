@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import FrozenInstanceError
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -23,6 +24,11 @@ from toki_core import (
 
 
 WORK_TITLE = "남녀비 139의 평행세계는 의외로 평범"
+
+# Historical title-only migration remains covered explicitly; new default
+# ordered migrations have their own end-to-end and archive integration tests.
+plan_episode_folder_rename = partial(plan_episode_folder_rename, ordered=False)
+rename_episode_folders = partial(rename_episode_folders, ordered=False)
 
 
 class EpisodeFolderMigrationTests(unittest.TestCase):

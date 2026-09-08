@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import toki_app
 from toki_app import ControlError, build_parser, local_api_http_request, run_cli, run_direct_download
@@ -17,6 +17,30 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_fast_gui_reply_survives_false_write_wait_with_drained_queue(self) -> None:
+        request = {'action': 'ping'}
+        payload = (json.dumps(request, ensure_ascii=False) + '\n').encode('utf-8')
+        for pending in ([0], [len(payload), 0]):
+            with self.subTest(pending=pending):
+                socket = Mock()
+                socket.waitForConnected.return_value = True
+                socket.write.return_value = len(payload)
+                socket.bytesToWrite.side_effect = pending
+                socket.waitForBytesWritten.return_value = False
+                socket.bytesAvailable.return_value = 42
+                socket.readAll.return_value = b'{"ok":true,"result":{"pong":true}}\n'
+                with patch('toki_app.QLocalSocket', return_value=socket):
+                    self.assertEqual(toki_app.control_request(request), {'pong': True})
+
+    def test_pending_gui_write_timeout_never_implies_gui_is_absent(self) -> None:
+        socket = Mock()
+        socket.waitForConnected.return_value = True
+        socket.write.side_effect = len
+        socket.bytesToWrite.return_value = 10
+        socket.waitForBytesWritten.return_value = False
+        with patch('toki_app.QLocalSocket', return_value=socket):
+            self.assertTrue(toki_app.gui_is_running())
+
     def test_busy_gui_ping_does_not_trigger_offline_mutations_or_second_gui(self) -> None:
         with patch("toki_app.control_request", side_effect=toki_app.ControlTimeoutError("busy")):
             self.assertTrue(toki_app.gui_is_running())

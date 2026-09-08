@@ -23,7 +23,10 @@ class LibraryCliIntegrationTests(unittest.TestCase):
                                 capture_output=True, text=True, encoding="utf-8", timeout=20,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
-        return json.loads(result.stdout)
+        payload = json.loads(result.stdout)
+        if expected == 0 and '--wait' in arguments:
+            self.assertIn('result', payload, result.stdout + result.stderr)
+        return payload
 
     def test_actual_cli_mixed_simulation_batch_and_record_deletion(self):
         first, first_root, first_episode = self.work("a")

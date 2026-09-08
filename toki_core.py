@@ -7260,11 +7260,12 @@ def plan_episode_folder_rename(
     job_id: str,
     *,
     job_snapshot: EpisodeRenameJobSnapshot | DownloadJob | None = None,
+    ordered: bool = True,
 ) -> dict[str, Any]:
     """Plan a non-destructive legacy episode-folder naming migration.
 
     The legacy leading ordinal remains the stable episode number in state.  Only
-    the directory display name changes to ``<full work title> <episode suffix>``.
+    the directory name changes; ordered mode prefixes a six-digit reading ordinal.
     """
 
     job = _episode_rename_resolve_job(job_id, job_snapshot)
@@ -7467,7 +7468,8 @@ def plan_episode_folder_rename(
                 ).strip()
         if record:
             represented_records.add(id(record))
-        target = (output_path / display_title).resolve() if display_title else None
+        folder_name = ordered_episode_folder_name(number, display_title) if ordered and display_title else display_title
+        target = (output_path / folder_name).resolve() if folder_name else None
         if target is not None:
             try:
                 target.relative_to(output_path)
@@ -7477,7 +7479,7 @@ def plan_episode_folder_rename(
             target is not None
             and os.path.normcase(str(source)) == os.path.normcase(str(target))
         )
-        component_utf16_units = _windows_utf16_units(display_title)
+        component_utf16_units = _windows_utf16_units(folder_name)
         destination_utf16_units = _windows_utf16_units(target) if target else 0
         component_too_long = (
             component_utf16_units
@@ -7498,11 +7500,11 @@ def plan_episode_folder_rename(
                 "sourceUrl": str(record.get("sourceUrl") or ""),
                 "sourceTitle": source_title,
                 "displayTitle": display_title,
-                "folderName": display_title,
+                "folderName": folder_name,
                 "source": str(source),
                 "destination": str(target) if target is not None else "",
                 "sourceFolderName": source.name,
-                "destinationFolderName": display_title,
+                "destinationFolderName": folder_name,
                 "suffix": suffix,
                 "suffixSource": suffix_source,
                 "sourceDiscovery": "legacy_prefix" if heuristic_legacy else "state",
@@ -7560,7 +7562,8 @@ def plan_episode_folder_rename(
             if not unsafe_suffix
             else ""
         )
-        target = (output_path / display_title).resolve() if display_title else None
+        folder_name = ordered_episode_folder_name(mapping["number"], display_title) if ordered and display_title else display_title
+        target = (output_path / folder_name).resolve() if folder_name else None
         if target is not None:
             try:
                 target.relative_to(output_path)
@@ -7571,7 +7574,7 @@ def plan_episode_folder_rename(
             target is not None
             and os.path.normcase(str(source)) == os.path.normcase(str(target))
         )
-        component_utf16_units = _windows_utf16_units(display_title)
+        component_utf16_units = _windows_utf16_units(folder_name)
         destination_utf16_units = _windows_utf16_units(target) if target else 0
         component_too_long = (
             component_utf16_units
@@ -7588,9 +7591,9 @@ def plan_episode_folder_rename(
         mapping.update(
             {
                 "displayTitle": display_title,
-                "folderName": display_title,
+                "folderName": folder_name,
                 "destination": str(target) if target is not None else "",
-                "destinationFolderName": display_title,
+                "destinationFolderName": folder_name,
                 "suffix": suffix,
                 "contextualSuffixApplied": bool(decision["applied"]),
                 "contextualSuffixReason": str(decision["reason"]),
@@ -7780,7 +7783,7 @@ def plan_episode_folder_rename(
         "workKey": job.work_key,
         "title": work_title,
         "outputPath": str(output_path),
-        "mode": "title_suffix",
+        "mode": "ordered_title" if ordered else "title_suffix",
         "dryRun": True,
         "executed": False,
         "folderCount": len(mappings),
@@ -7823,8 +7826,14 @@ def _write_episode_rename_json(path: Path, payload: dict[str, Any]) -> None:
             temporary.unlink()
 
 
-def rename_episode_folders(job_id: str) -> dict[str, Any]:
-    plan = plan_episode_folder_rename(job_id)
+def ordered_episode_folder_name(number: int, display_title: str) -> str:
+    if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= 999999:
+        raise ValueError("정렬용 회차 순번은 1~999999 정수여야 합니다.")
+    return f"{number:06d} {sanitize_windows_path_segment(display_title, '회차')}"
+
+
+def rename_episode_folders(job_id: str, *, ordered: bool = True) -> dict[str, Any]:
+    plan = plan_episode_folder_rename(job_id, ordered=ordered)
     if not plan["canExecute"]:
         if plan.get("recoveryRequired"):
             raise RuntimeError(str(plan["recovery"]["message"]))
@@ -7852,6 +7861,15 @@ def rename_episode_folders(job_id: str) -> dict[str, Any]:
         shutil.copy2(state_path, state_backup)
     if metadata_existed:
         shutil.copy2(metadata_path, metadata_backup)
+
+    # ZIP bytes stay untouched, but their external-folder/source references must
+    # follow the migration so verification and later archive cleanup still agree.
+    from toki_archive_catalog import remap_archive_catalog
+    archive_index_path = Path(plan["outputPath"]) / "_archives/.toki-archive-index.json"
+    archive_index = remap_archive_catalog(Path(plan["outputPath"]), plan["mappings"])
+    archive_index_backup = _episode_rename_backup_candidate(archive_index_path) if archive_index is not None else None
+    if archive_index_backup:
+        shutil.copy2(archive_index_path, archive_index_backup)
 
     token = uuid.uuid4().hex
     entries: list[dict[str, Path]] = []
@@ -7882,6 +7900,7 @@ def rename_episode_folders(job_id: str) -> dict[str, Any]:
             {key: str(value) for key, value in entry.items()} for entry in entries
         ],
         "rollbackErrors": [],
+        "archiveIndexBackupPath": str(archive_index_backup or ""),
     }
     _write_episode_rename_json(transaction_path, transaction)
 
@@ -7969,13 +7988,16 @@ def rename_episode_folders(job_id: str) -> dict[str, Any]:
         )
         metadata["episodes"] = plan["episodes"]
         metadata["episodeFolderNaming"] = {
-            "version": 1,
-            "mode": "title_suffix",
+            "version": 2 if ordered else 1,
+            "mode": plan["mode"],
+            "prefixDigits": 6 if ordered else 0,
             "title": plan["title"],
             "updatedAt": state["updatedAt"],
         }
         _write_episode_rename_json(state_path, state)
         _write_episode_rename_json(metadata_path, metadata)
+        if archive_index is not None:
+            _write_episode_rename_json(archive_index_path, archive_index)
         transaction_path.unlink(missing_ok=True)
     except Exception as error:
         rollback_errors: list[str] = []
@@ -8008,6 +8030,11 @@ def rename_episode_folders(job_id: str) -> dict[str, Any]:
                 metadata_path.unlink()
         except OSError as rollback_error:
             rollback_errors.append(f"metadata.json 복구: {rollback_error}")
+        try:
+            if archive_index_backup and archive_index_backup.is_file():
+                shutil.copy2(archive_index_backup, archive_index_path)
+        except OSError as rollback_error:
+            rollback_errors.append(f"ZIP 카탈로그 복구: {rollback_error}")
         if not rollback_errors:
             try:
                 transaction_path.unlink(missing_ok=True)
@@ -8033,6 +8060,7 @@ def rename_episode_folders(job_id: str) -> dict[str, Any]:
         "stateBackupCreated": state_existed and state_backup.is_file(),
         "metadataBackupPath": str(metadata_backup) if metadata_existed else "",
         "metadataBackupCreated": metadata_existed and metadata_backup.is_file(),
+        "archiveIndexBackupPath": str(archive_index_backup or ""),
     }
 
 

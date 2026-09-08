@@ -136,7 +136,7 @@ class EpisodeReviewRegressionTests(unittest.TestCase):
         ):
             for catalog in ("state", "metadata"):
                 with self.subTest(base=base, catalog=catalog):
-                    folder = self.folder(f"작품 {canonical}")
+                    folder = self.folder(f"000001 작품 {canonical}")
                     record = self.record(1, f"작품 {base}", source_id="/manhwa/1/a", folder=folder.name)
                     records = [record, self.record(2, f"작품 {sibling}", source_id="/manhwa/1/b")]
                     self.manifest(records if catalog == "state" else [record], [1], records)
@@ -158,7 +158,7 @@ class EpisodeReviewRegressionTests(unittest.TestCase):
         self.manifest(records, [1])
         plan = core.plan_episode_folder_rename(self.job.job_id)
         self.assertEqual(plan["renameCount"], 1)
-        self.assertEqual(plan["mappings"][0]["destinationFolderName"], "작품 140-1화")
+        self.assertEqual(plan["mappings"][0]["destinationFolderName"], "000001 작품 140-1화")
         self.manifest([*records, self.record(3, "작품 140.5화", source_id="/manhwa/1/c")], [1])
         conflict = core.plan_episode_folder_rename(self.job.job_id)
         self.assertFalse(conflict["canExecute"])

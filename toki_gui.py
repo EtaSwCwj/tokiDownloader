@@ -9935,10 +9935,10 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             self,
             "회차 폴더명 정리",
             f"{rename_count}개 회차 폴더를 다음 규칙으로 바꿀까요?\n"
-            "전체 작품명 + 실제 회차/부제\n\n"
+            "6자리 정렬 순번 + 전체 작품명 + 실제 회차/부제\n\n"
             + "\n\n".join(examples)
             + fallback_text
-            + "\n\nmetadata.json과 완료 상태는 먼저 백업합니다. "
+            + "\n\nmetadata.json, 완료 상태와 ZIP 카탈로그는 먼저 백업합니다. "
             "이미지 파일 내용은 변경하지 않습니다.",
         )
         if answer != QMessageBox.StandardButton.Yes:

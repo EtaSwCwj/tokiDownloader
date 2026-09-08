@@ -20,6 +20,19 @@ core.CONTROL_SERVER_NAME = "tokiLibraryTest_" + hashlib.sha256(str(runtime).enco
 
 import toki_app
 
+# Keep a failed private-IPC probe visible when a CLI unexpectedly takes its
+# offline route. Normal JSON output and production behavior are unchanged.
+_control_request = toki_app.control_request
+
+def traced_control_request(*args, **kwargs):
+    try:
+        return _control_request(*args, **kwargs)
+    except toki_app.ControlError as error:
+        print(f"[private IPC] {args[0].get('action')}: {error}", file=sys.stderr)
+        raise
+
+toki_app.control_request = traced_control_request
+
 def refuse_unisolated_gui_start():
     raise toki_app.ControlError("The isolated test GUI must already be running")
 

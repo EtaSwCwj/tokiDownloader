@@ -222,9 +222,14 @@ def control_request(request: dict[str, Any], timeout_ms: int = 2500) -> Any:
     if not socket.waitForConnected(timeout_ms):
         raise ControlError("실행 중인 GUI에 연결할 수 없습니다.")
     payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
-    socket.write(payload)
-    if not socket.waitForBytesWritten(timeout_ms):
+    if socket.write(payload) != len(payload):
         raise ControlError("GUI에 명령을 보내지 못했습니다.")
+    # On Windows a fast peer can drain the queue before the blocking wait.
+    # waitForBytesWritten(False) alone does not mean write() failed. Do not
+    # discard an already-buffered reply and falsely switch to offline writes.
+    if socket.bytesToWrite() > 0 and not socket.waitForBytesWritten(timeout_ms):
+        if socket.bytesToWrite() > 0:
+            raise ControlTimeoutError("GUI 명령 전송 확인 시간이 초과되었습니다.")
 
     received = bytearray()
     deadline = time.monotonic() + (timeout_ms / 1000)
@@ -2030,7 +2035,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rename_episodes = subparsers.add_parser(
         "rename-episodes",
-        help="기존 숫자 접두어 회차 폴더명을 전체 작품명과 회차 접미사로 변경",
+        help="회차 폴더명을 6자리 정렬 순번 + 전체 작품명 + 회차 표기로 정리",
     )
     rename_episodes.add_argument("--job", required=True, help="작업 ID")
     rename_episode_mode = rename_episodes.add_mutually_exclusive_group()

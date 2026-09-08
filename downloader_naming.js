@@ -442,6 +442,13 @@ function buildEpisodeFolderName(workTitle, sourceTitle, episodeNumber = 0) {
     );
 }
 
+function orderedEpisodeFolderName(episodeNumber, displayTitle) {
+    const number = Number(episodeNumber);
+    if (!Number.isSafeInteger(number) || number <= 0 || number > 999999)
+        throw new Error('정렬용 회차 순번은 1~999999 정수여야 합니다.');
+    return `${String(number).padStart(6, '0')} ${sanitizePathSegment(displayTitle, '회차')}`;
+}
+
 function uniqueEpisodeFolderName(
     folderName,
     episodeNumber,
@@ -772,6 +779,7 @@ export {
     findUniqueInferredEpisodeMatch,
     isLegacyEpisodeFolderCandidate,
     mergeEpisodeManifestRecords,
+    orderedEpisodeFolderName,
     renderFolderTemplate,
     resolveEpisodeCollectionNames,
     sanitizePathSegment,

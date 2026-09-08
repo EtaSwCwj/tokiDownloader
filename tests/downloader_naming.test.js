@@ -16,6 +16,7 @@ import {
     findUniqueInferredEpisodeMatch,
     isLegacyEpisodeFolderCandidate,
     mergeEpisodeManifestRecords,
+    orderedEpisodeFolderName,
     renderFolderTemplate,
     resolveEpisodeCollectionNames,
     sanitizePathSegment,
@@ -37,6 +38,16 @@ const sample = {
     title: '이세계에서 개인방송 활동을 했더니 대량의 얀데레 신자를 만들어 버린 건',
     source: { siteTitle: '마나토끼', workId: '34360' },
 };
+
+test('saved folder order precedes title variation and keeps decimal/split labels', () => {
+    const titles = ['축약…제목 1화', '전체 제목 2화', '다른 표기 2.2화', '작품 2.5화', '작품 3-1화', '작품 3-2화', '외전'];
+    const folders = titles.map((title, index) => orderedEpisodeFolderName(index + 1, title));
+    assert.deepEqual([...folders].sort(), folders);
+    assert.equal(folders[3], '000004 작품 2.5화');
+    assert.equal(folders[5], '000006 작품 3-2화');
+    assert.equal(orderedEpisodeFolderName(10000, '작품 9999화'), '010000 작품 9999화');
+    for (const value of [0, -1, 0.2, 1000000]) assert.throws(() => orderedEpisodeFolderName(value, '작품'), /순번/);
+});
 
 test('default folder template preserves the requested author group title rule', () => {
     assert.equal(
