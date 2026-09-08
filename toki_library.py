@@ -113,8 +113,13 @@ def plan_library_delete(job_ids: list[str], kind: str, *, include_targets: bool 
         raise ValueError("삭제 종류는 records, files, archives 중 하나여야 합니다.")
     jobs = _jobs(job_ids)
     plans = []
+    skipped = []
     seen_roots = set()
     for job in jobs:
+        if kind != "records" and job.simulation:
+            skipped.append({"jobId": job.job_id, "title": job.title, "reasonCode": "simulation",
+                            "reason": "모의 작업은 파일 삭제 대상이 아닙니다. 목록만 삭제로 정리할 수 있습니다."})
+            continue
         targets = []
         root = None
         if kind != "records":
@@ -139,8 +144,12 @@ def plan_library_delete(job_ids: list[str], kind: str, *, include_targets: bool 
             item.pop("stamps")
             item["targets"] = item["targets"][:100]
         plans.append(item)
-    token = hashlib.sha256(json.dumps([item["targetToken"] for item in plans]).encode()).hexdigest()
+    token = hashlib.sha256(json.dumps({"targets": [item["targetToken"] for item in plans],
+                                      "skipped": [item["jobId"] for item in skipped]}).encode()).hexdigest()
+    eligible = sum(kind == "records" or item["fileCount"] > 0 for item in plans)
     return {"kind": kind, "executed": False, "jobCount": len(jobs), "jobs": plans, "planToken": token,
+            "skippedJobs": skipped, "skippedJobCount": len(skipped), "eligibleJobCount": eligible,
+            "emptyJobCount": len(plans) - eligible, "canExecute": eligible > 0,
             "fileCount": sum(p["fileCount"] for p in plans), "bytes": sum(p["bytes"] for p in plans),
             "destination": "app-trash" if kind != "records" else "records-only"}
 
@@ -151,12 +160,18 @@ def delete_library_items(job_ids: list[str], kind: str, *, execute: bool = False
         raise ValueError("미리보기 이후 대상이 변경됐습니다. 다시 미리보기를 확인해주세요.")
     if not execute:
         return plan
+    if not plan["canExecute"]:
+        return {**plan, "noOp": True, "success": True, "results": [],
+                "removedRecordCount": 0, "movedFileCount": 0}
     results = []
     for item in plan["jobs"]:
         try:
             if kind == "records":
                 core.delete_job_record(item["jobId"])
                 results.append({"jobId": item["jobId"], "success": True, "removedRecord": True})
+                continue
+            if not item["fileCount"]:
+                results.append({"jobId": item["jobId"], "success": True, "noOp": True, "movedCount": 0})
                 continue
             current = plan_library_delete([item["jobId"]], kind, include_targets=True)["jobs"][0]
             if current["targetToken"] != item["targetToken"]:
@@ -214,7 +229,8 @@ def delete_library_items(job_ids: list[str], kind: str, *, execute: bool = False
         except Exception as error:
             results.append({"jobId": item["jobId"], "success": False, "error": str(error)})
     return {**plan, "executed": True, "results": results, "success": all(p["success"] for p in results),
-            "removedRecordCount": sum(bool(p.get("removedRecord")) for p in results)}
+            "removedRecordCount": sum(bool(p.get("removedRecord")) for p in results),
+            "movedFileCount": sum(p.get("movedCount", 0) for p in results)}
 
 
 def restore_library_trash(manifest_path: str, *, execute: bool = False) -> dict:

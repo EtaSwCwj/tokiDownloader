@@ -39,6 +39,18 @@ class LibraryTests(unittest.TestCase):
         core.save_jobs([job])
         return job, root, episode
 
+    def simulation_work(self, key):
+        root = self.root / "simulation-shared"
+        root.mkdir(exist_ok=True)
+        guard = root / "shared-user-file.zip"
+        if not guard.exists():
+            guard.write_bytes(b"shared files must never be touched")
+        job = core.DownloadJob(job_id=key, url=f"https://www.youtube.com/watch?v={key:0>11}",
+                               title=f"YouTube 모의 작업 {key}", state="완료", provider="youtube",
+                               simulation=True, output_dir=str(root), output_path=str(root))
+        core.save_jobs([job])
+        return job, guard
+
     def test_delete_plan_is_read_only_and_changes_require_same_plan(self):
         job, root, episode = self.work()
         plan = plan_library_delete([job.job_id], "files")
@@ -201,6 +213,36 @@ class LibraryTests(unittest.TestCase):
                                  capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(json.loads(process.stdout), [])
+
+    def test_mixed_simulations_do_not_block_real_file_deletion(self):
+        job, root, episode = self.work()
+        simulations = [self.simulation_work(f"sim{i}") for i in range(3)]
+        ids = [job.job_id, *(j.job_id for j, _ in simulations)]
+        plan = plan_library_delete(ids, "files")
+        self.assertEqual((plan["eligibleJobCount"], plan["skippedJobCount"], plan["fileCount"]), (1, 3, 3))
+        result = delete_library_items(ids, "files", execute=True, plan_token=plan["planToken"])
+        self.assertEqual(result["movedFileCount"], 3)
+        self.assertFalse(list(episode.glob("*.jpg")))
+        for simulation, guard in simulations:
+            self.assertEqual(guard.read_bytes(), b"shared files must never be touched")
+            self.assertIsNotNone(core.load_job_by_id(simulation.job_id))
+        self.assertTrue((root / "metadata.json").is_file())
+
+    def test_empty_archive_deletion_is_noop_with_simulations(self):
+        job, root, episode = self.work()
+        simulations = [self.simulation_work(f"sim{i}") for i in range(3)]
+        ids = [job.job_id, *(j.job_id for j, _ in simulations)]
+        result = delete_library_items(ids, "archives", execute=True)
+        self.assertFalse(result["canExecute"])
+        self.assertFalse(result["executed"])
+        self.assertTrue(result["noOp"])
+        self.assertEqual((result["skippedJobCount"], result["emptyJobCount"]), (3, 1))
+        self.assertFalse((root / ".toki-trash").exists())
+        self.assertEqual(len(list(episode.glob("*.jpg"))), 3)
+        # List-only deletion remains available even for simulation records.
+        removed = delete_library_items(ids, "records", execute=True)
+        self.assertEqual(removed["removedRecordCount"], 4)
+        self.assertTrue(simulations[0][1].is_file())
 
 
 if __name__ == "__main__":

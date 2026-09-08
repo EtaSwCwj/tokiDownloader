@@ -131,7 +131,7 @@ class LibraryDialog(QDialog):
 
     def start(self, execute, *, confirm_after_preview=False):
         action = self.selected_action
-        if not action or (execute and (not self.plan or self.plan.get("executed"))):
+        if not action or (execute and (not self.plan or self.plan.get("executed") or not self.plan.get("canExecute", True))):
             return
         explanation = {
             "delete:records": f"선택한 작품 {len(self.ids)}개의 목록 및 실행 기록을 삭제할까요?\n\n다운로드 파일과 압축 파일은 그대로 보존합니다.",
@@ -139,6 +139,8 @@ class LibraryDialog(QDialog):
             "delete:archives": f"선택한 작품의 압축 파일 {(self.plan or {}).get('fileCount', 0):,}개를 앱 휴지통으로 이동할까요?\n\n원본 파일과 목록 기록은 보존합니다.",
             "cancel-downloads": f"선택한 작품 {len(self.ids)}개의 대기·진행 중 다운로드를 취소할까요?\n\n이미 받은 파일은 보존합니다.",
         }.get(action, self.details.toPlainText()[:1800] + "\n\n위 대상을 처리할까요?")
+        if execute and self.plan.get("skippedJobCount"):
+            explanation += f"\n\n모의 작업 {self.plan['skippedJobCount']}개는 제외하고 처리 가능한 {self.plan['eligibleJobCount']}개 작품만 처리합니다."
         if execute and QMessageBox.question(self, "선택한 대상 처리 확인", explanation,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
@@ -173,18 +175,30 @@ class LibraryDialog(QDialog):
         self.remove_originals.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.plan = result if not error else None
-        self.execute_button.setEnabled(bool(result) and not result.get("executed") and not error)
+        can_execute = result.get("canExecute", True)
+        self.execute_button.setEnabled(bool(result) and not result.get("executed") and not error and can_execute)
         if error:
             self.details.setPlainText(error)
             return
         heading = "취소됨" if result.get("cancelled") else "일부 실패" if result.get("success") is False else "처리 완료"
         lines = [f"{heading if result.get('executed') else '미리보기 — 아직 변경하지 않았습니다.'}",
                  f"작품 {result.get('jobCount', len(self.ids))}개 · 파일 {result.get('fileCount', 0):,}개 · ZIP {result.get('archiveCount', 0):,}개"]
+        if "eligibleJobCount" in result:
+            lines.append(f"처리 가능 {result['eligibleJobCount']}개 작품 · 모의 작업 제외 {result['skippedJobCount']}개 · 대상 파일 없음 {result['emptyJobCount']}개 작품")
+        if not can_execute:
+            kind_label = "압축 파일" if result.get("kind") == "archives" else "다운로드 파일"
+            lines.insert(0, f"삭제할 {kind_label}이 없습니다. 파일과 목록을 변경하지 않았습니다.")
+        for skipped in result.get("skippedJobs", [])[:30]:
+            lines.append(f"제외: {skipped['title']} — {skipped['reason']}")
+        if result.get("skippedJobCount", 0) > 30:
+            lines.append(f"… 모의 작업 {result['skippedJobCount'] - 30}개 추가 제외")
         if result.get("removeOriginals"):
             lines.append("원본 정리: ZIP 생성·무결성 검사 성공 후에만 실행")
         if result.get("executed"):
             if result.get("kind") == "records":
                 lines.append(f"목록 삭제 {result.get('removedRecordCount', 0)}개 · 다운로드/압축 파일 보존")
+            elif result.get("kind") in {"files", "archives"}:
+                lines.append(f"파일 {result.get('movedFileCount', 0)}개 앱 휴지통으로 이동 · 목록 보존")
             elif self.selected_action == "archive":
                 lines.append(f"ZIP 생성 {result.get('createdCount', 0)}개 · 기존 유지 {result.get('skippedCount', 0)}개 · 정리된 원본 {result.get('removedOriginalCount', 0)}개")
         for entry in result.get("results", [])[:50]:
@@ -213,7 +227,7 @@ class LibraryDialog(QDialog):
         if result.get("executed") and result.get("kind") == "records" and result.get("success"):
             self.owner.statusBar().showMessage(f"목록 {result['removedRecordCount']}개 삭제 완료 · 다운로드 파일 보존", 6000)
             self.accept()
-        elif confirm and not result.get("executed"):
+        elif confirm and not result.get("executed") and can_execute:
             key, plan = self.operation_id, self.plan
             QTimer.singleShot(0, lambda: self.confirm_preview(key, plan))
 
@@ -371,7 +385,7 @@ class LibraryWindowMixin:
         while len(self.library_results) > 20:
             self.library_results.pop(next(iter(self.library_results)))
         self._show_library_result(key, result, error)
-        summary = {k: v for k, v in compact.items() if k not in {"jobs", "results"}}
+        summary = {k: v for k, v in compact.items() if k not in {"jobs", "results", "skippedJobs"}}
         self.log(f"선택 작품 처리 완료: {context.action} · {error or json.dumps(summary, ensure_ascii=False)}",
                  "ERROR" if error or result.get("success") is False else "INFO")
         for entry in result.get("results", []):

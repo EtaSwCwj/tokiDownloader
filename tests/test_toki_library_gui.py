@@ -57,6 +57,7 @@ class Harness(LibraryWindowMixin, QMainWindow):
 class LibraryGuiTests(unittest.TestCase):
     setUp = library_tests.LibraryTests.setUp
     work = library_tests.LibraryTests.work
+    simulation_work = library_tests.LibraryTests.simulation_work
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication(["library-qa"])
@@ -130,7 +131,7 @@ class LibraryGuiTests(unittest.TestCase):
                     self.assertEqual(dialog.selected_action, action)
                     self.assertEqual(sum(b.isChecked() for b in dialog.action_buttons.values()), 1)
                     self.assertFalse(dialog.plan["executed"])
-                    self.assertTrue(dialog.execute_button.isEnabled())
+                    self.assertEqual(dialog.execute_button.isEnabled(), dialog.plan.get("canExecute", True))
                     self.assertIsNotNone(core.load_job_by_id(job.job_id))
                     self.assertEqual(len(list(episode.glob("*.jpg"))), 3)
                     self.assertFalse((root / ".toki-trash").exists())
@@ -177,6 +178,26 @@ class LibraryGuiTests(unittest.TestCase):
             self.assertIsNotNone(core.load_job_by_id(job.job_id))
             self.assertTrue(root.exists())
         finally:
+            window.io_thread_pool.waitForDone()
+            window.close()
+
+    def test_mixed_empty_archives_show_skips_without_confirmation(self):
+        job, root, _ = self.work()
+        simulations = [self.simulation_work(f"sim{i}")[0] for i in range(3)]
+        window = Harness([job, *simulations])
+        try:
+            window.show_library_dialog([job.job_id, *(j.job_id for j in simulations)])
+            dialog = window.active_library_dialog
+            with patch.object(QMessageBox, "question") as confirm:
+                dialog.action_buttons["delete:archives"].click()
+                self.wait_task(window)
+                confirm.assert_not_called()
+            self.assertFalse(dialog.execute_button.isEnabled())
+            self.assertIn("삭제할 압축 파일이 없습니다", dialog.details.toPlainText())
+            self.assertIn("모의 작업 제외 3개", dialog.details.toPlainText())
+            self.assertFalse((root / ".toki-trash").exists())
+        finally:
+            window.active_library_dialog.close()
             window.io_thread_pool.waitForDone()
             window.close()
 
