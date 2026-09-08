@@ -57,6 +57,7 @@ def _check_required_files() -> dict[str, Any]:
         ROOT_DIR / "downloader_errors.js",
         ROOT_DIR / "downloader_naming.js",
         ROOT_DIR / "downloader_network.js",
+        ROOT_DIR / "downloader_transport.js",
         ROOT_DIR / "locales" / "ko.json",
         ROOT_DIR / "tokiDownloader.js",
         ROOT_DIR / "package.json",
@@ -107,6 +108,7 @@ def _check_node_syntax() -> dict[str, Any]:
         ROOT_DIR / "downloader_errors.js",
         ROOT_DIR / "downloader_naming.js",
         ROOT_DIR / "downloader_network.js",
+        ROOT_DIR / "downloader_transport.js",
         ROOT_DIR / "tokiDownloader.js",
     ]
     for path in files:

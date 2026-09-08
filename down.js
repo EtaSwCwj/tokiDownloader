@@ -1,11 +1,10 @@
 import { connect } from "puppeteer-real-browser";
 import fs from 'node:fs';
-import http from 'node:http';
-import https from 'node:https';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { ProxyAgent } from 'proxy-agent';
+import { ImageTransport } from './downloader_transport.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import {
     episodeStateUsesStableIds,
@@ -76,6 +75,7 @@ let info = {
 let bandwidthLimiter = new GlobalBandwidthLimiter(0);
 let requestPacer = new RequestPacer(0);
 let outboundProxyAgent = null;
+let imageTransport = new ImageTransport();
 
 function sleep(ms) {
     return new Promise(function (resolve) {
@@ -260,6 +260,10 @@ function configureNetworkRuntime() {
     outboundProxyAgent = info.proxyUrl
         ? new ProxyAgent({ getProxyForUrl: () => info.authenticatedProxyUrl })
         : null;
+    imageTransport.close();
+    imageTransport = new ImageTransport({proxyAgent: outboundProxyAgent,
+        wait: () => requestPacer.wait(), consume: bytes => bandwidthLimiter.consume(bytes),
+        log: message => console.log(message)});
 }
 async function installProxyAuthentication(page) {
     if (!info.proxyCredentials.configured)
@@ -778,42 +782,7 @@ async function saveImage(directoryPath, fileName, src) {
 }
 
 async function downloadBuffer(src, headers, redirectCount = 0) {
-    if (redirectCount > 5)
-        throw new Error('이미지 리디렉션이 너무 많습니다.');
-    await requestPacer.wait();
-    const target = new URL(src);
-    const transport = target.protocol === 'http:' ? http : https;
-    return await new Promise((resolve, reject) => {
-        const request = transport.get(target, {
-            headers,
-            agent: outboundProxyAgent || undefined,
-        }, async response => {
-            try {
-                if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-                    response.resume();
-                    resolve(await downloadBuffer(
-                        new URL(response.headers.location, target).href,
-                        headers,
-                        redirectCount + 1,
-                    ));
-                    return;
-                }
-                if (response.statusCode < 200 || response.statusCode >= 300)
-                    throw new Error(`HTTP ${response.statusCode}`);
-                const chunks = [];
-                for await (const chunk of response) {
-                    await bandwidthLimiter.consume(chunk.length);
-                    chunks.push(Buffer.from(chunk));
-                }
-                resolve(Buffer.concat(chunks));
-            }
-            catch (error) {
-                reject(error);
-            }
-        });
-        request.setTimeout(60000, () => request.destroy(new Error('이미지 요청 시간 초과')));
-        request.on('error', reject);
-    });
+    return imageTransport.download(src, headers, redirectCount);
 }
 
 async function runDownloadTasks(tasks, concurrency = 5) {
@@ -1188,6 +1157,7 @@ async function main() {
         emitEvent('error', diagnosis);
         process.exitCode = 1;
     } finally {
+        imageTransport.close();
         await browser.close().catch(() => {});
     }
 
