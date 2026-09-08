@@ -20,4 +20,11 @@ core.CONTROL_SERVER_NAME = "tokiLibraryTest_" + hashlib.sha256(str(runtime).enco
 
 import toki_app
 
+def refuse_unisolated_gui_start():
+    raise toki_app.ControlError("The isolated test GUI must already be running")
+
+# The production launcher cannot inherit this fixture's private paths. A failed
+# ping must never launch it against the user's real database from a test.
+toki_app.start_gui_background = refuse_unisolated_gui_start
+
 raise SystemExit(toki_app.main())

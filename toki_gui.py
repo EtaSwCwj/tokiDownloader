@@ -6539,11 +6539,13 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         self.pending_jobs.append(job)
         self.completion_action_armed = True
         self._refresh_pending_positions()
-        self._add_job_card(job)
         if existing is None:
             self.history_all_total += 1
             if self._job_matches_history_filters(job):
                 self.history_total += 1
+        # The empty/content panel reads these totals while adding the row.
+        # Update them first, including the first add after deleting all records.
+        self._add_job_card(job)
         self.history_loaded = self.task_model.rowCount()
         self._schedule_job_persist(job)
         action = (

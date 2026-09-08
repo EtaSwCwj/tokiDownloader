@@ -317,6 +317,10 @@ def gui_is_running() -> bool:
     try:
         result = control_request({"action": "ping"}, timeout_ms=350)
         return bool(result and result.get("pong"))
+    except ControlTimeoutError:
+        # A connected but busy GUI is still running. Never fall back to direct
+        # DB/file mutations or launch a second GUI after a short ping timeout.
+        return True
     except ControlError:
         return False
 

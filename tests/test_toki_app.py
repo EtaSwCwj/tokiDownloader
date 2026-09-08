@@ -17,6 +17,17 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_busy_gui_ping_does_not_trigger_offline_mutations_or_second_gui(self) -> None:
+        with patch("toki_app.control_request", side_effect=toki_app.ControlTimeoutError("busy")):
+            self.assertTrue(toki_app.gui_is_running())
+            with patch("toki_app.start_gui_background") as launch:
+                toki_app.ensure_gui_running()
+                launch.assert_not_called()
+        with patch("toki_app.control_request", side_effect=ControlError("not connected")):
+            self.assertFalse(toki_app.gui_is_running())
+        with patch("toki_app.control_request", return_value={"pong": True}):
+            self.assertTrue(toki_app.gui_is_running())
+
     def test_app_identity_cli_reports_local_and_live_gui_state(self) -> None:
         local_args = build_parser().parse_args(["app-identity", "--json"])
         local = {

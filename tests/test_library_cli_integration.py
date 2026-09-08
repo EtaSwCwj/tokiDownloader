@@ -101,6 +101,27 @@ class LibraryCliIntegrationTests(unittest.TestCase):
                 self.assertTrue((first_root / "metadata.json").is_file())
                 self.assertTrue(Path(archive_path).is_file())
                 print("[CLI integration] removed 4 records; database 0; GUI 0 after refresh; original images and archive preserved")
+                self.assertEqual(after["listViewState"]["state"], "empty")
+                # Real enqueue from an empty database: the first row must replace
+                # the empty overlay immediately, without a manual refresh.
+                added = subprocess.run([*self.command, "download", "--url",
+                    "https://www.youtube.com/watch?v=abcdefghijk", "--simulate", "--output", str(self.root / "new-output")],
+                    cwd=core.ROOT_DIR, env=self.env, capture_output=True, text=True, encoding="utf-8",
+                    timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+                readded = self.cli("status", "--json")
+                self.assertEqual(readded["totalJobCount"], 1)
+                self.assertEqual(readded["loadedJobCount"], 1)
+                self.assertEqual(readded["listViewState"]["state"], "content")
+                self.assertEqual(readded["listViewState"]["filtered"], 1)
+                for _ in range(50):
+                    done = self.cli("status", "--json")
+                    if not done["activeCount"] and not done["pendingCount"]:
+                        break
+                    time.sleep(0.1)
+                self.assertFalse(done["activeCount"] or done["pendingCount"])
+                self.assertEqual(done["listViewState"]["state"], "content")
+                print("[CLI integration] after removing all records, first new download is visible without refresh")
             finally:
                 if host.poll() is None:
                     try:
