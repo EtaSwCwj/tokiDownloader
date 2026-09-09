@@ -17,6 +17,16 @@ from toki_core import default_config
 
 
 class CliParserTests(unittest.TestCase):
+    def test_launcher_cli_status_and_explicit_taskbar_repair(self) -> None:
+        with patch("toki_app.runtime_status", return_value={"ok": True, "runs": []}) as status, redirect_stdout(StringIO()):
+            self.assertEqual(run_cli(build_parser().parse_args(["launcher", "status", "--json"])), 0)
+            status.assert_called_once_with()
+        with patch("toki_app.taskbar_shortcuts", return_value={"ok": True}) as taskbar, redirect_stdout(StringIO()):
+            self.assertEqual(run_cli(build_parser().parse_args(["launcher", "taskbar", "--json"])), 0)
+            taskbar.assert_called_with(False)
+            self.assertEqual(run_cli(build_parser().parse_args(["launcher", "taskbar", "--repair", "--json"])), 0)
+            taskbar.assert_called_with(True)
+
     def test_fast_gui_reply_survives_false_write_wait_with_drained_queue(self) -> None:
         request = {'action': 'ping'}
         payload = (json.dumps(request, ensure_ascii=False) + '\n').encode('utf-8')

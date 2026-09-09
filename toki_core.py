@@ -166,6 +166,7 @@ TAG_COLORS = {
 
 
 def application_identity_snapshot() -> dict[str, Any]:
+    from toki_windows_launch import relaunch_snapshot
     icon_exists = APP_ICON_PATH.is_file() and APP_ICON_PATH.stat().st_size > 0
     executable_icon_exists = (
         APP_EXECUTABLE_ICON_PATH.is_file()
@@ -183,6 +184,7 @@ def application_identity_snapshot() -> dict[str, Any]:
         "executableIconExists": executable_icon_exists,
         "plannedExecutableName": "tokiDownloader.exe",
         "runningExecutable": str(Path(sys.executable).resolve()),
+        "taskbarRelaunch": relaunch_snapshot(),
         "windowsTaskbarIsolationConfigured": bool(
             WINDOWS_APP_USER_MODEL_ID and icon_exists
         ),

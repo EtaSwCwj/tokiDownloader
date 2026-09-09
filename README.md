@@ -66,6 +66,37 @@ GUI에서 URL, 시작/마지막 회차, 저장 기준 폴더를 지정할 수 �
 .\start-gui.vbs
 ```
 
+### 작업 표시줄 실행 및 갑작스러운 종료 기록
+
+`start-gui.vbs`, `start-gui.cmd`, 기존 `toki_app.py gui`는 같은 무창 실행기를 사용합니다.
+이미 실행 중이면 기존 창만 표시합니다. 새로 작업 표시줄에 고정해도 Python 실행 파일만
+고정되지 않도록 창의 앱 ID·재실행 명령·이름·아이콘을 함께 지정합니다.
+
+```powershell
+.\toki-cli.cmd launcher taskbar --json
+.\toki-cli.cmd launcher taskbar --repair --json
+.\toki-cli.cmd launcher status --json
+# Qt 자체를 불러오지 못하는 시작 오류에서도 사용할 수 있는 진단 경로
+.\.venv\Scripts\python.exe -X utf8 .\toki_launcher.py status --json
+```
+
+`taskbar` 조회는 읽기 전용입니다. `--repair`는 이 앱의 AppUserModelID와 일치하는 기존
+고정 바로가기만 `logs/shortcut-backups`에 백업 후 수정하며 다른 Python 프로그램은 건드리지
+않습니다. Windows가 이전 표시를 캐시하면 실행된 tokiDownloader 창을 다시 고정하세요.
+
+`logs/runtime/<실행ID>/process.json`에는 별도 무창 관찰 프로세스가 GUI의 실제 종료 코드와
+`normal_exit`, `python_error`, `error_exit`, `unexpected_exit`, `launch_error`를 기록합니다.
+`child.json`에는 마지막 단계와 종료 요청 경로, `events.log`에는 시작·종료·Python/Qt 오류,
+`fault.log`에는 faulthandler가 잡을 수 있는 네이티브 오류의 스택이 남습니다.
+이전 완료 기록은 20개까지 보관하고 이벤트 로그는 실행당 2 MiB + 백업 1개로 순환합니다.
+저장소 로그 경로를 쓸 수 없으면 `%LOCALAPPDATA%/tokiDownloader/logs/runtime`로 대체합니다.
+이 기록은 네트워크 요청이나 클립보드 본문을 수집하는 기능이 아닙니다.
+
+강제 종료의 **종료 코드**는 알 수 있지만 누가/왜 종료했는지까지 단정할 수는 없습니다.
+정전·재부팅 등으로 관찰 프로세스까지 함께 종료되면 `exitObserved: false`로 남습니다.
+실행기가 없던 과거 종료 원인은 소급해서 복구하지 못합니다. 업데이트 중 기존 GUI를 종료하지
+않았다면 강화된 종료 기록은 **다음 실행부터** 적용됩니다.
+
 `-CheckOnly`는 다운로드나 재설치 없이 `.venv`, Puppeteer와 공용 `doctor` 결과만 검증합니다.
 이미지 변환·유사 이미지 해시용 Pillow와 ImageHash까지 함께 설치하려면
 `setup-gui.cmd -WithImageTools`를 사용합니다.

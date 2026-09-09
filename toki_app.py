@@ -16,6 +16,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+# Catch missing Qt/native imports even for the old direct GUI command.
+if __name__ == "__main__" and (len(sys.argv) == 1 or sys.argv[1:] == ["gui"]):
+    from toki_launcher import main as launcher_main
+    raise SystemExit(launcher_main(["launch"]))
+
+from toki_launcher import launch_command, record_event, runtime_status, taskbar_shortcuts
+from toki_windows_launch import apply_window_relaunch, clear_window_relaunch
+
 from PyQt6.QtCore import QCoreApplication, Qt
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtNetwork import QLocalSocket
@@ -359,7 +367,7 @@ def start_gui_background() -> None:
     if os.name == "nt":
         creation_flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
-        [executable, str(Path(__file__).resolve()), "gui"],
+        [executable, *launch_command()[1:]],
         cwd=str(ROOT_DIR),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -378,10 +386,11 @@ def ensure_gui_running(timeout_seconds: float = 12.0) -> None:
         if gui_is_running():
             return
         time.sleep(0.2)
-    raise ControlError("GUI를 시작했지만 제어 서버에 연결할 수 없습니다. logs/gui.log를 확인하세요.")
+    raise ControlError("GUI를 시작했지만 제어 서버에 연결할 수 없습니다. launcher status --json / logs/runtime을 확인하세요.")
 
 
 def run_gui() -> int:
+    record_event("qt_start")
     identity = apply_windows_app_user_model_id()
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -407,16 +416,27 @@ def run_gui() -> int:
 
     def log_unhandled_exception(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
         details = "".join(traceback.format_exception(exc_type, exc, tb)).rstrip()
+        record_event("gui_exception", traceback=details[-65536:])
         append_log(f"처리되지 않은 GUI 오류:\n{details}", level="ERROR", job_id="gui")
         sys.__excepthook__(exc_type, exc, tb)
 
     sys.excepthook = log_unhandled_exception
     if gui_is_running():
+        record_event("existing_gui_show")
         control_request({"action": "show"})
         return 0
     from toki_gui import MainWindow
 
     window = MainWindow()
+    from PyQt6.QtCore import qInstallMessageHandler
+    previous_handler = qInstallMessageHandler(
+        lambda kind, context, message: record_event("qt_message", type=kind.name, message=message[:16384])
+    )
+    # Windows requires a window-level ID plus relaunch command/name for correct pins.
+    relaunch = apply_window_relaunch(int(window.winId()), ROOT_DIR)
+    record_event("taskbar_relaunch", **relaunch)
+    app.aboutToQuit.connect(lambda: record_event("qt_about_to_quit"))
+    app.aboutToQuit.connect(lambda: clear_window_relaunch(int(window.winId())))
     if window.geometry_restored:
         window.show()
     elif window.restore_maximized:
@@ -428,7 +448,13 @@ def run_gui() -> int:
         window.show()
         if window.restore_position is not None:
             window.move(window.restore_position)
-    return app.exec()
+    record_event("gui_ready", visible=window.isVisible())
+    try:
+        result = app.exec()
+        record_event("qt_event_loop_return", exitCode=result)
+        return result
+    finally:
+        qInstallMessageHandler(previous_handler)
 
 
 def print_json(value: Any) -> None:
@@ -636,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("gui", help="GUI 실행 또는 기존 GUI 앞으로 가져오기")
     subparsers.add_parser("show", help="실행 중인 GUI 앞으로 가져오기")
+    launcher = subparsers.add_parser("launcher", help="시작·종료 로그 및 Windows 고정 바로가기 점검")
+    launcher_commands = launcher.add_subparsers(dest="launcher_command", required=True)
+    launcher_commands.add_parser("status").add_argument("--json", action="store_true")
+    taskbar = launcher_commands.add_parser("taskbar")
+    taskbar.add_argument("--repair", action="store_true", help="이 앱 ID의 고정 바로가기만 백업 후 수정")
+    taskbar.add_argument("--json", action="store_true")
     doctor = subparsers.add_parser("doctor", help="필수·선택 의존성과 실행 환경 진단")
     doctor.add_argument("--json", action="store_true", help="JSON으로 출력")
     doctor_window = doctor.add_mutually_exclusive_group()
@@ -2358,6 +2390,10 @@ def run_cli(args: argparse.Namespace) -> int:
                 f"{'예' if result.get('applied') else '아니요'}"
             )
         return 0 if result.get("ok", bool(args.show_gui or args.close)) else 2
+    if command == "launcher":
+        result = taskbar_shortcuts(args.repair) if args.launcher_command == "taskbar" else runtime_status()
+        print_json(result)
+        return 0 if result.get("ok") else 2
     if command == "doctor":
         if args.show_gui or args.close:
             ensure_gui_running()

@@ -9463,6 +9463,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         return self.deliver_notification(plan)
 
     def request_exit(self) -> None:
+        self._exit_source = "exit_action"
         self.exit_requested = True
         self.close()
 
@@ -13433,6 +13434,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             self.activateWindow()
             return {"shown": True}
         if action == "quit":
+            self._exit_source = "cli_quit"
             self.force_close = bool(request.get("force"))
             self.exit_requested = True
             if self.force_close:
@@ -13447,6 +13449,11 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         raise ValueError(f"지원하지 않는 CLI 동작입니다: {action}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        from toki_launcher import record_event
+        record_event("close_requested", source=getattr(self, "_exit_source", "window_close"),
+                     force=self.force_close,
+                     activeJobs=list(self.active_contexts),
+                     libraryTasks=len(getattr(self, "library_tasks", {})))
         diagnostic_processes = tuple(
             process
             for process in (
@@ -13466,6 +13473,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         ):
             self.hide()
             event.ignore()
+            record_event("close_hidden_to_tray")
             self.statusBar().showMessage("시스템 트레이로 숨겼습니다.", 3000)
             return
         if getattr(self, "library_tasks", {}):
@@ -13507,7 +13515,9 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 self.exit_requested = False
+                self._exit_source = "window_close"
                 event.ignore()
+                record_event("close_cancelled")
                 return
             for job_id in list(self.active_contexts):
                 self.stop_active_job(job_id)
@@ -13533,6 +13543,8 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         if self.tray_icon:
             self.tray_icon.hide()
         QLocalServer.removeServer(CONTROL_SERVER_NAME)
+        record_event("close_accepted", source=getattr(self, "_exit_source", "window_close"),
+                     force=self.force_close, historyFlushed=True)
         event.accept()
 
     def changeEvent(self, event: QEvent) -> None:
