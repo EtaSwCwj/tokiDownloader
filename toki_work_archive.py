@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import toki_core as core
 import toki_library as lib
 from toki_archive_catalog import archived_episodes
+from toki_reading_order import assign_reading_order
 
 
 def _sort(value):
@@ -127,8 +128,20 @@ def plan_work_archives(job_ids, *, include_members=False):
             chapters[_key(episode)] = {"episode": episode, "members": raw, "raw": raw}
         if not chapters:
             raise ValueError(f"완료 기록이 확인되는 압축 대상이 없습니다: {job.title} (미완료/확인 불가 {len(incomplete)}회차)")
+        metadata = core._episode_rename_json(root / 'metadata.json', label='metadata.json')
+        work_title = core._episode_rename_work_title(job, metadata, root)
+        catalog = [{"number": r.number, "sourceId": r.source_id, "sourceTitle": r.source_title,
+                    "displayTitle": r.display_title, "folderName": r.folder_name,
+                    "numberInferred": r.number_inferred} for r in state.episodes if r.record_valid]
+        known = {_key(r) for r in catalog}
+        catalog.extend(c['episode'] for k, c in chapters.items() if k not in known)
+        reading = {_key(r): r for r in assign_reading_order(catalog, work_title)}
+        for key, chapter in chapters.items():
+            for field in ('readingOrder', 'readingOrderVersion', 'readingGroup', 'readingOrderWarning'):
+                chapter['episode'][field] = reading[key][field]
         members, episodes, cleanup = [], [], []
-        for order, chapter in enumerate(sorted(chapters.values(), key=lambda c: (int(c["episode"]["number"]), _sort(c["episode"]["folderName"]))), 1):
+        for chapter in sorted(chapters.values(), key=lambda c: c['episode']['readingOrder']):
+            order = chapter['episode']['readingOrder']
             # A padded prefix guarantees order even in viewers using lexical sort.
             title = core.sanitize_windows_path_segment(chapter['episode'].get('displayTitle') or chapter['episode']['folderName'], '회차')
             prefix = f"{order:06d} {title}/"

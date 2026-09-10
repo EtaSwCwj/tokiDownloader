@@ -10035,11 +10035,15 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             )
             return
         rename_count = int(plan.get("renameCount") or 0)
+        order_warnings = plan.get("readingOrderWarnings") or []
+        order_warning_text = ("\n\n감상 순서 판단 보류 " + str(len(order_warnings)) + "개:\n"
+                              + "\n".join(f"{r.get('number')}: {r.get('message', r.get('reason', ''))}"
+                                          for r in order_warnings[:5])) if order_warnings else ""
         if rename_count <= 0:
             QMessageBox.information(
                 self,
                 "회차 폴더명 정리",
-                "이미 전체 작품명과 회차명 형식으로 정리되어 있습니다.",
+                "이미 감상 순서와 회차 폴더명이 정리되어 있습니다." + order_warning_text,
             )
             return
         examples = [
@@ -10057,9 +10061,12 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             self,
             "회차 폴더명 정리",
             f"{rename_count}개 회차 폴더를 다음 규칙으로 바꿀까요?\n"
-            "6자리 정렬 순번 + 전체 작품명 + 실제 회차/부제\n\n"
+            "6자리 감상 순번 + 전체 작품명 + 실제 회차/부제\n"
+            "본편 → 독립 외전 순으로 정렬하며, 모호한 회차는 기존 위치를 유지합니다.\n"
+            "기존 ZIP 내부 순서는 작품 전체 압축을 다시 실행하면 갱신됩니다.\n\n"
             + "\n\n".join(examples)
             + fallback_text
+            + order_warning_text
             + "\n\nmetadata.json, 완료 상태와 ZIP 카탈로그는 먼저 백업합니다. "
             "이미지 파일 내용은 변경하지 않습니다.",
         )

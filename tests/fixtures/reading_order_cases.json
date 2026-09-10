@@ -1,0 +1,14 @@
+[
+  {"name":"independent extras after naturally sorted main", "work":"작품", "titles":["작품 1화","작품 외전1","작품 2화","작품 외전2","작품 10화","작품 3화"], "expected":[1,3,6,5,2,4]},
+  {"name":"truncated labels and spacing variants", "work":"러브 다이어리", "titles":["러브다이어리 (후타…러브다이어리 01","러브다이어리 (후타…브다이어리 외전1","러브다이어리 (후타…러브다이어리 02","러브다이어리 (후타…브다이어리 외전2","러브 다이어리 03권"], "expected":[1,3,5,2,4]},
+  {"name":"decimals and split parts retain natural positions", "work":"작품", "titles":["작품 140-2화","작품 139화","작품 140-1화","작품 141.3화","작품 141.2화","작품 141화"], "expected":[2,3,1,6,5,4]},
+  {"name":"attached extra stays beside its chapter", "work":"작품", "titles":["작품 141.5화","작품 142화","작품 141화 외전","작품 141화","작품 외전2","작품 외전1"], "expected":[4,3,1,2,6,5]},
+  {"name":"unnumbered items anchor their neighbours", "work":"작품", "titles":["작품 프롤로그","작품 3화","작품 1화","작품 외전","작품 5화","작품 4화","작품 외전1"], "expected":[1,3,2,4,6,5,7], "warnings":[1,4]},
+  {"name":"units do not interleave", "work":"작품", "titles":["작품 2권","작품 1권","작품 20화","작품 10화"], "expected":[2,1,4,3]},
+  {"name":"ambiguous bare number between mixed units anchors", "work":"작품", "titles":["작품 2권","작품 1권","작품 3","작품 20화","작품 10화"], "expected":[2,1,3,5,4], "warnings":[3]},
+  {"name":"numbers in work title are not chapter numbers", "work":"남녀비 139의 평행세계", "titles":["남녀비 139의 평행세계","남녀비 139의 평행세계 2화","남녀비 139의 평행세계 1화"], "expected":[1,3,2], "warnings":[1]},
+  {"name":"extra label in work title is not a special", "work":"외전 이야기", "titles":["외전 이야기 2화","외전 이야기 1화"], "expected":[2,1]},
+  {"name":"different extra series stay grouped", "work":"작품", "titles":["작품 외전2","작품 번외편1","작품 외전1","작품 1화"], "expected":[4,3,1,2]},
+  {"name":"collection ranges and seasons remain anchors", "work":"작품", "titles":["작품 3화","작품 1~5화","작품 2화","작품 2부 1화","작품 외전1"], "expected":[1,2,3,4,5], "warnings":[2,4]},
+  {"name":"fullwidth digits normalize", "work":"작품", "titles":["작품 １０화","작품 ２화","작품 외전２","작품 외전１"], "expected":[2,1,4,3]}
+]

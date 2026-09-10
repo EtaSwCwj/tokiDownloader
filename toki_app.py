@@ -2079,7 +2079,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rename_episodes = subparsers.add_parser(
         "rename-episodes",
-        help="회차 폴더명을 6자리 정렬 순번 + 전체 작품명 + 회차 표기로 정리",
+        help="본편·독립 외전의 감상 순서로 회차 폴더명 정리(사이트 순번/완료 ID 보존)",
     )
     rename_episodes.add_argument("--job", required=True, help="작업 ID")
     rename_episode_mode = rename_episodes.add_mutually_exclusive_group()
@@ -4292,6 +4292,8 @@ def run_cli(args: argparse.Namespace) -> int:
         else:
             print(f"작품 폴더: {result['outputPath']}")
             print(f"전체 작품명: {result['title']}")
+            for warning in result.get("readingOrderWarnings", []):
+                print(f"감상 순서 판단 보류 {warning['number']}: {warning['message']}")
             print(
                 f"회차 폴더: {result['folderCount']}개 · "
                 f"변경 {result['renameCount']}개 · 충돌 {result['conflictCount']}개"

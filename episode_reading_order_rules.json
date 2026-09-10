@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "extraGroups": [["외전"], ["번외편", "번외"], ["특별편"], ["스핀오프"], ["후일담"]],
+  "numberPattern": "([0-9]+)(?:\\.([0-9]+))?(?:\\s*-\\s*([0-9]+))?",
+  "units": "화|권|회|장",
+  "warningLabels": {
+    "unnumbered": "회차 번호 없음: 기존 위치 유지",
+    "unnumbered_extra": "외전의 독립 번호 불명확: 기존 위치 유지",
+    "ambiguous_context": "범위 또는 부/시즌 표기: 기존 위치 유지",
+    "ambiguous_number": "회차 번호가 여러 개: 기존 위치 유지",
+    "mixed_units": "권/화 단위가 혼재한 무단위 번호: 기존 위치 유지",
+    "number_limit": "회차 번호 안전 범위 초과: 기존 위치 유지"
+  }
+}

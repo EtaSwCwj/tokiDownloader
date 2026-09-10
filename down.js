@@ -8,6 +8,7 @@ import { ImageTransport } from './downloader_transport.js';
 import { renameWithRetry, writeJsonAtomically } from './downloader_files.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import { collectEpisodeListPages } from './downloader_pagination.js';
+import { assignReadingOrder } from './downloader_reading_order.js';
 import { EPISODE_IMAGE_SELECTOR, PendingEpisodes, waitForEpisodeAvailability,
     isDamagedImageError, imageFailureDeferral } from './downloader_episodes.js';
 import {
@@ -468,6 +469,14 @@ function prepareEpisodeManifest(links, state) {
             inferredPrevious: findUniqueInferredEpisodeMatch(inferredTitleIndex, base),
         };
     });
+    const readingById = new Map(assignReadingOrder(
+        mergeEpisodeManifestRecords(collectionNaming.records, state.episodes), info.contentTitle,
+    ).map(record => [record.sourceId, record]));
+    for (const { base } of preparedLinks) {
+        const reading = readingById.get(base.sourceId);
+        for (const key of ['readingOrder', 'readingOrderVersion', 'readingGroup', 'readingOrderWarning'])
+            base[key] = reading[key];
+    }
     const inferredClaimCounts = new Map();
     for (const prepared of preparedLinks) {
         if (prepared.inferredPrevious) {
@@ -509,7 +518,7 @@ function prepareEpisodeManifest(links, state) {
         const preferredName = String(
             (mappedName && directories.has(mappedName.toLowerCase()) ? mappedName : '')
             || legacyName
-            || orderedEpisodeFolderName(base.number, base.displayTitle),
+            || orderedEpisodeFolderName(base.readingOrder, base.displayTitle),
         );
         const preferredKey = preferredName.toLowerCase();
         const referencesExistingFolder = (
@@ -536,6 +545,8 @@ function prepareEpisodeManifest(links, state) {
             info.contentTitle,
         );
         record.displayTitle = base.displayTitle;
+        for (const key of ['readingOrder', 'readingOrderVersion', 'readingGroup', 'readingOrderWarning'])
+            record[key] = base[key];
         const destinationPath = path.join(getContentPath(), record.folderName);
         if (
             info.site !== 'booktoki'
@@ -568,7 +579,7 @@ function prepareEpisodeManifest(links, state) {
         );
         manifest.push(record);
     }
-    return mergeEpisodeManifestRecords(manifest, state.episodes);
+    return assignReadingOrder(mergeEpisodeManifestRecords(manifest, state.episodes), info.contentTitle);
 }
 function loadEpisodeCompletion(state, links, manifest) {
     const archived = loadArchivedEpisodes(getContentPath());
@@ -927,6 +938,7 @@ async function main() {
         );
         const preferEpisodeIds = episodeStateUsesStableIds(episodeState);
         const episodeManifest = prepareEpisodeManifest(link, episodeState);
+        console.log(`감상 순서: 본편 → 독립 외전 · 외전 ${episodeManifest.filter(r => r.readingGroup === 'extra').length}개 · 판단 보류 ${episodeManifest.filter(r => r.readingOrderWarning).length}개 (기존 위치 유지)`);
         let completedEpisodes = new Set();
         let completedEpisodeIds = new Set();
         let completedEpisodeFallbacks = new Set();
@@ -954,7 +966,8 @@ async function main() {
         if (!info.metadataOnly && info.scanMode !== 'new' && selection.links.length === 0)
             throw new Error('지정한 범위에 해당하는 회차가 없습니다.');
         info.metadata.folderName = info.contentFolderName;
-        info.metadata.episodeFolderNaming = { version: 2, mode: 'ordered_title', prefixDigits: 6 };
+        info.metadata.episodeFolderNaming = { version: 3, mode: 'ordered_title', prefixDigits: 6,
+            readingOrderPolicy: 'main_then_extras', readingOrderVersion: 1 };
         info.metadata.episodeCount = totalEpisodeCount;
         info.metadata.listPageCount = listScan.pageCount;
         info.metadata.siteEpisodeCount = listScan.expectedCount || totalEpisodeCount;

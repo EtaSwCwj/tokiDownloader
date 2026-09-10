@@ -7478,6 +7478,19 @@ def plan_episode_folder_rename(
         unsafe_suffix = suffix_source == "unsafe" or (
             not suffix and not (ordered and suffix_source == "unnumbered")
         )
+        # A verified v2 mapping may already contain a truncated source title.
+        # Changing its ordering prefix does not require inventing a new title.
+        # Restrict this fallback to the exact known six-digit folder, never a
+        # guessed legacy folder or an unrelated file with the same site ordinal.
+        preserved_title = source.name[7:] if re.match(r"^[0-9]{6} ", source.name) else ""
+        preserve_ordered_title = bool(ordered and exact_record and record.get("sourceId")
+                                      and record.get("folderName") == source.name
+                                      and preserved_title.startswith(work_title + " ")
+                                      and (unsafe_suffix or "…" in suffix or "..." in suffix))
+        if preserve_ordered_title:
+            suffix = preserved_title[len(work_title):].strip()
+            suffix_source = "preserved_ordered_title"
+            unsafe_suffix = False
         if unsafe_suffix:
             unsafe_count += 1
         display_title = (
@@ -7485,7 +7498,7 @@ def plan_episode_folder_rename(
             if not unsafe_suffix
             else ""
         )
-        if "…" in display_title or "..." in display_title:
+        if ("…" in display_title or "..." in display_title) and not preserve_ordered_title:
             unsafe_suffix = True
             unsafe_count += int(suffix_source != "unsafe")
             suffix_source = "unsafe"
@@ -7586,6 +7599,26 @@ def plan_episode_folder_rename(
             )
             if source != "unsafe":
                 contextual_suffixes.append(suffix)
+    from toki_reading_order import assign_reading_order, reading_order_warnings
+    reading_catalog = [dict(r) for r in existing_records if int(r.get("number") or 0) > 0]
+    catalog_ids = {str(r.get("sourceId")) for r in reading_catalog if r.get("sourceId")}
+    catalog_numbers = {int(r["number"]) for r in reading_catalog}
+    for mapping in mappings:
+        if ((mapping["sourceId"] and mapping["sourceId"] not in catalog_ids)
+                or (not mapping["sourceId"] and mapping["number"] not in catalog_numbers)):
+            reading_catalog.append(dict(mapping))
+    reading_catalog = assign_reading_order(reading_catalog, work_title)
+    reading_by_id = {r["sourceId"]: r for r in reading_catalog if r.get("sourceId")}
+    reading_by_number: dict[int, list[dict[str, Any]]] = {}
+    for record in reading_catalog:
+        reading_by_number.setdefault(int(record["number"]), []).append(record)
+    for mapping in mappings:
+        reading = reading_by_id.get(mapping["sourceId"])
+        if not reading and len(reading_by_number.get(mapping["number"], [])) == 1:
+            reading = reading_by_number[mapping["number"]][0]
+        for key in ("readingOrder", "readingOrderVersion", "readingGroup", "readingOrderWarning"):
+            mapping[key] = (reading or {}).get(key, mapping["number"] if key == "readingOrder" else "")
+
     contextual_decisions = _plan_contextual_episode_suffixes(
         contextual_suffixes
     )[:len(mappings)]
@@ -7602,7 +7635,7 @@ def plan_episode_folder_rename(
             if not unsafe_suffix
             else ""
         )
-        folder_name = ordered_episode_folder_name(mapping["number"], display_title) if ordered and display_title else display_title
+        folder_name = ordered_episode_folder_name(mapping["readingOrder"], display_title) if ordered and display_title else display_title
         target = (output_path / folder_name).resolve() if folder_name else None
         if target is not None:
             try:
@@ -7655,6 +7688,12 @@ def plan_episode_folder_rename(
             }
         )
 
+    # A target owned by another member of this same transaction is safe: every
+    # source is staged before any target is published. Unrelated targets block.
+    moving_sources = {os.path.normcase(m["source"]) for m in mappings if not m["samePath"] and not m["unsafeSuffix"]}
+    for mapping in mappings:
+        if mapping["conflict"] and os.path.normcase(mapping["destination"]) in moving_sources:
+            mapping["conflict"] = False
     duplicate_targets = {
         target for target, count in target_counts.items() if count > 1
     }
@@ -7795,6 +7834,7 @@ def plan_episode_folder_rename(
             str(item.get("folderName") or "").casefold(),
         )
     )
+    episodes = assign_reading_order(episodes, work_title)
     _parsed_episodes, manifest_valid = _parse_episode_manifest_entries(episodes)
     if not manifest_valid:
         conflicts.append(
@@ -7850,6 +7890,8 @@ def plan_episode_folder_rename(
         "metadataBackupPath": str(_episode_rename_backup_candidate(metadata_path)),
         "pathPolicy": _episode_rename_path_policy(),
         "manifestValid": manifest_valid,
+        "readingOrderPolicy": "main_then_extras",
+        "readingOrderWarnings": reading_order_warnings(episodes),
     }
 
 
@@ -8027,10 +8069,18 @@ def rename_episode_folders(job_id: str, *, ordered: bool = True) -> dict[str, An
             }
         )
         metadata["episodes"] = plan["episodes"]
+        renamed_by_id = {r["sourceId"]: r for r in plan["episodes"] if r.get("sourceId")}
+        for payload in (state, metadata):
+            for pending in payload.get("pendingEpisodes", []):
+                renamed = renamed_by_id.get(pending.get("sourceId"))
+                if renamed:
+                    for key in ("folderName", "displayTitle", "readingOrder", "readingOrderVersion", "readingGroup", "readingOrderWarning"):
+                        pending[key] = renamed[key]
         metadata["episodeFolderNaming"] = {
-            "version": 2 if ordered else 1,
+            "version": 3 if ordered else 1,
             "mode": plan["mode"],
             "prefixDigits": 6 if ordered else 0,
+            "readingOrderPolicy": "main_then_extras" if ordered else "source",
             "title": plan["title"],
             "updatedAt": state["updatedAt"],
         }
@@ -8041,6 +8091,21 @@ def rename_episode_folders(job_id: str, *, ordered: bool = True) -> dict[str, An
         transaction_path.unlink(missing_ok=True)
     except Exception as error:
         rollback_errors: list[str] = []
+        # Stage changed targets back to their unique temporary names first. A
+        # direct reverse rename cannot safely recover a permutation/cycle.
+        source_keys = {os.path.normcase(str(e["source"])) for e in entries}
+        needs_cycle_staging = any(os.path.normcase(str(e["target"])) in source_keys for e in entries)
+        for entry in entries if needs_cycle_staging else []:
+            source_key = os.path.normcase(str(entry["source"]))
+            current = current_locations[source_key]
+            if current in (entry["source"], entry["temporary"]):
+                continue
+            try:
+                if current.exists() and not entry["temporary"].exists():
+                    os.replace(current, entry["temporary"])
+                    current_locations[source_key] = entry["temporary"]
+            except OSError as rollback_error:
+                rollback_errors.append(f"{current} -> {entry['temporary']}: {rollback_error}")
         for entry in reversed(entries):
             source_key = os.path.normcase(str(entry["source"]))
             current = current_locations[source_key]
