@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import jpeg from 'jpeg-js';
 import webpSamples from './fixtures/webp_validation_samples.json' with { type: 'json' };
 import { validateImageBuffer } from '../downloader_policy.js';
 
@@ -23,8 +24,8 @@ const truncatedPng = Buffer.concat([
     Buffer.alloc(300),
 ]);
 
-test('WebP downloads and existing files reject truncated containers and chunks', () => {
-    withTempDirectory(directory => {
+test('WebP downloads and existing files reject truncated containers and chunks', async () => {
+    await withTempDirectory(async directory => {
         for (const [name, encoded] of Object.entries(webpSamples)) {
             const valid = Buffer.from(encoded, 'base64');
             const damagedChunk = Buffer.from(valid);
@@ -46,7 +47,7 @@ test('WebP downloads and existing files reject truncated containers and chunks',
             }
             const destination = `${name}-replace.webp`;
             fs.writeFileSync(path.join(directory, destination), valid);
-            assert.throws(
+            await assert.rejects(
                 () => writeImageBufferAtomically(directory, destination, valid.subarray(0, 20)),
                 error => error?.code === 'invalid_image_payload',
             );
@@ -55,8 +56,8 @@ test('WebP downloads and existing files reject truncated containers and chunks',
     });
 });
 
-test('existing WebP validation reads chunks beyond the header without buffering the payload', () => {
-    withTempDirectory(directory => {
+test('existing WebP validation reads chunks beyond the header without buffering the payload', async () => {
+    await withTempDirectory(async directory => {
         const base = Buffer.from(webpSamples.lossy, 'base64');
         const metadataChunk = Buffer.alloc(1032);
         metadataChunk.write('JUNK');
@@ -74,10 +75,10 @@ test('existing WebP validation reads chunks beyond the header without buffering 
 });
 
 
-function withTempDirectory(callback) {
+async function withTempDirectory(callback) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'toki-image-test-'));
     try {
-        callback(directory);
+        await callback(directory);
     }
     finally {
         fs.rmSync(directory, { recursive: true, force: true });
@@ -85,8 +86,8 @@ function withTempDirectory(callback) {
 }
 
 
-test('existing images skip only for supported non-empty matching signatures', () => {
-    withTempDirectory(directory => {
+test('existing images skip only for supported non-empty matching signatures', async () => {
+    await withTempDirectory(async directory => {
         const validPath = path.join(directory, '0000.jpg');
         const emptyPath = path.join(directory, '0001.jpg');
         const htmlPath = path.join(directory, '0002.jpg');
@@ -132,19 +133,19 @@ test('existing images skip only for supported non-empty matching signatures', ()
         );
         assert.equal(existingImageFileIsValid(longValidJpegPath), true);
 
-        writeImageBufferAtomically(directory, '0002.jpg', jpegB);
+        await writeImageBufferAtomically(directory, '0002.jpg', jpegB);
         assert.deepEqual(fs.readFileSync(htmlPath), jpegB);
         assert.equal(existingImageFileIsValid(htmlPath), true);
     });
 });
 
 
-test('atomic image replacement validates first and preserves the old file on failure', () => {
-    withTempDirectory(directory => {
+test('atomic image replacement validates first and preserves the old file on failure', async () => {
+    await withTempDirectory(async directory => {
         const destination = path.join(directory, '0000.jpg');
         fs.writeFileSync(destination, jpegA);
 
-        assert.throws(
+        await assert.rejects(
             () => writeImageBufferAtomically(
                 directory,
                 '0000.jpg',
@@ -154,7 +155,7 @@ test('atomic image replacement validates first and preserves the old file on fai
         );
         assert.deepEqual(fs.readFileSync(destination), jpegA);
 
-        assert.throws(
+        await assert.rejects(
             () => writeImageBufferAtomically(directory, '0000.jpg', jpegB, {
                 renameFile: () => { throw new Error('simulated rename failure'); },
             }),
@@ -166,8 +167,30 @@ test('atomic image replacement validates first and preserves the old file on fai
             [],
         );
 
-        writeImageBufferAtomically(directory, '0000.jpg', jpegB);
+        await writeImageBufferAtomically(directory, '0000.jpg', jpegB);
         assert.deepEqual(fs.readFileSync(destination), jpegB);
         assert.equal(existingImageFileIsValid(destination), true);
+    });
+});
+
+test('JPEG trailing metadata requires full decode and survives save/skip intact', async () => {
+    const data = Buffer.alloc(8 * 8 * 4, 128);
+    const encoded = jpeg.encode({width: 8, height: 8, data}).data;
+    const payload = Buffer.concat([encoded, Buffer.alloc(46, 65)]);
+    assert.equal(validateImageBuffer(payload, '.jpg').valid, true);
+    // A plausible signature/EOI with garbage is not a decodable image.
+    assert.equal(validateImageBuffer(Buffer.concat([jpegA, Buffer.alloc(46)]), '.jpg').reason,
+        'jpeg_decode_failed');
+    assert.equal(validateImageBuffer(encoded.subarray(0, encoded.length - 2), '.jpg').reason,
+        'missing_end_marker');
+    const truncated = Buffer.concat([encoded.subarray(0, 100), Buffer.from([255, 217]), Buffer.alloc(46)]);
+    assert.equal(validateImageBuffer(truncated, '.jpg').valid, false);
+    await withTempDirectory(async directory => {
+        await writeImageBufferAtomically(directory, '0000.jpg', payload);
+        const file = path.join(directory, '0000.jpg');
+        assert.deepEqual(fs.readFileSync(file), payload);
+        assert.equal(existingImageFileIsValid(file), true);
+        await assert.rejects(() => writeImageBufferAtomically(directory, '0000.jpg', truncated));
+        assert.deepEqual(fs.readFileSync(file), payload);
     });
 });

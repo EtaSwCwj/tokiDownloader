@@ -1,4 +1,5 @@
 import { episodeSourceId } from './downloader_naming.js';
+import jpeg from 'jpeg-js';
 import {
     ERROR_CATEGORIES,
     createDownloaderError,
@@ -98,7 +99,7 @@ export function validateImageBuffer(
         detectedFormat === 'jpeg'
         && !(ending.length >= 2 && ending.at(-2) === 0xff && ending.at(-1) === 0xd9)
     )
-        reason = 'missing_end_marker';
+        reason = jpegTrailingDataValidationReason(bytes, size, readAt);
     else if (
         detectedFormat === 'png'
         && !ending.includes(Buffer.from('IEND', 'ascii'))
@@ -114,6 +115,27 @@ export function validateImageBuffer(
         expectedFormat,
         detectedFormat,
     };
+}
+
+function jpegTrailingDataValidationReason(header, size, readAt) {
+    // Normal JPEGs keep the cheap header/tail path. Only an unusual ending
+    // needs a full decode, in the downloader process (never the GUI thread).
+    const read = readAt || ((offset, length) => header.subarray(offset, offset + length));
+    const tailSize = Math.min(size, 64 * 1024);
+    const tail = asBuffer(read(size - tailSize, tailSize));
+    if (tail.lastIndexOf(Buffer.from([0xff, 0xd9])) < 0)
+        return 'missing_end_marker';
+    if (size > 128 * 1024 * 1024)
+        return 'jpeg_validation_limit';
+    try {
+        const bytes = asBuffer(read(0, size));
+        if (bytes.length !== size) return 'incomplete_image_read';
+        jpeg.decode(bytes, { tolerantDecoding: false, useTArray: true,
+            formatAsRGBA: false, maxResolutionInMP: 64, maxMemoryUsageInMB: 256 });
+        return '';
+    } catch (_error) {
+        return 'jpeg_decode_failed';
+    }
 }
 
 // Check container completeness without decoding or loading compressed payloads.

@@ -38,6 +38,7 @@ Windows 환경에서 안정적으로 쓰는 개인용 도구를 목표로 한다
 | 2026-09-08 | 345a28f 이후 | [원본 회차 폴더의 정렬 순번](2026-09-08-ordered-episode-folders.md) |
 | 2026-09-08 | 1aef421 이후 | [복사한 작품 주소 자동 다운로드](2026-09-08-clipboard-auto-download.md) |
 | 2026-09-09 | f776286 이후 | [작업 표시줄 실행 복구와 종료 진단 로그](2026-09-09-launcher-and-exit-diagnostics.md) |
+| 2026-09-10 | ec17b0c 이후 | [번호 없는 회차, JPEG 오탐과 파일 잠금 복구](2026-09-10-download-recovery.md) |
 
 새 이력은 [작성 템플릿](TEMPLATE.md)을 복사해 날짜와 주제가 드러나는 파일명으로 추가한다.
 

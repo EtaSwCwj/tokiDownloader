@@ -1,6 +1,7 @@
 {
   "type": "module",
   "dependencies": {
+    "jpeg-js": "0.4.4",
     "proxy-agent": "^6.5.0",
     "puppeteer-real-browser": "^1.4.2"
   }

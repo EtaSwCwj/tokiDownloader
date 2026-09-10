@@ -44,12 +44,19 @@
     "downloaderErrorCode": "unsafe_episode_title"
   },
   {
-    "name": "work title without episode suffix is unsafe",
+    "name": "work title without episode suffix is an unnumbered chapter",
     "workTitle": "Example Work",
     "sourceTitle": "Example Work",
     "number": 6,
     "expectedSuffix": "",
-    "expectedSource": "unsafe",
-    "downloaderErrorCode": "unsafe_episode_title"
+    "expectedSource": "unnumbered"
+  },
+  {
+    "name": "unnumbered abbreviated title keeps the full work name",
+    "workTitle": "쿠로이와 메다카에게 내 귀여움이 통하지 않아",
+    "sourceTitle": "쿠로이와 메다카에게…움이 통하지 않아",
+    "number": 1,
+    "expectedSuffix": "",
+    "expectedSource": "unnumbered"
   }
 ]

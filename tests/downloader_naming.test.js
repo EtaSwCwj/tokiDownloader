@@ -92,12 +92,7 @@ test('episode folder names restore the full work title and keep the episode suff
         buildEpisodeFolderName(workTitle, '남녀비 1:39의 …평범 141.5화', 126),
         '남녀비 139의 평행세계는 의외로 평범 141.5화',
     );
-    assert.throws(
-        () => buildEpisodeDisplayTitle(workTitle, workTitle, 7),
-        error => error?.errorCode === 'unsafe_episode_title'
-            && error?.category === 'site_structure'
-            && error?.retryable === false,
-    );
+    assert.equal(buildEpisodeDisplayTitle(workTitle, workTitle, 7), workTitle);
 });
 
 test('collection naming adds a decimal base only beside a same-context decimal sibling', () => {
@@ -583,8 +578,8 @@ test('v1 HTML titles match current text without interpreting unknown markup', ()
     );
 });
 
-test('missing episode labels stop instead of manufacturing the site ordinal', () => {
-    for (const sourceTitle of ['', '   ', '작품 제목']) {
+test('empty DOM labels still stop instead of manufacturing the site ordinal', () => {
+    for (const sourceTitle of ['', '   ']) {
         assert.throws(
             () => buildEpisodeManifestRecord(
                 { number: 37, sourceTitle, sourceUrl: 'https://example.test/episode-37' },
@@ -598,6 +593,29 @@ test('missing episode labels stop instead of manufacturing the site ordinal', ()
                 && !String(error?.message || '').includes('37화')
             ),
         );
+    }
+});
+
+test('unnumbered chapters stay in site order without blocking the complete manifest', () => {
+    for (const [work, source] of [
+        ['히토너', '히토너'],
+        ['원펀맨 리메이크', '원펀맨 리메이크'],
+        ['쿠로이와 메다카에게 내 귀여움이 통하지 않아', '쿠로이와 메다카에게…움이 통하지 않아'],
+    ]) {
+        const records = [work + ' 1화', source, work + ' 2화', source].map((sourceTitle, index) =>
+            buildEpisodeManifestRecord({number: index + 1, sourceTitle,
+                sourceUrl: `https://example.test/manhwa/1/${index + 1}`}, work));
+        const result = resolveEpisodeCollectionNames(records, work);
+        assert.deepEqual(result.conflicts, []);
+        assert.equal(result.records.length, 4);
+        assert.equal(result.records[1].displayTitle, work);
+        assert.equal(result.records[3].sourceTitle, source);
+        const folders = result.records.map(record => orderedEpisodeFolderName(record.number, record.displayTitle));
+        assert.deepEqual([...folders].sort(), folders);
+        assert.equal(new Set(folders).size, 4);
+        assert.equal(folders[1], `000002 ${sanitizePathSegment(work)}`);
+        assert.equal(folders[3], `000004 ${sanitizePathSegment(work)}`);
+        assert.notEqual(result.records[1].sourceId, result.records[3].sourceId);
     }
 });
 

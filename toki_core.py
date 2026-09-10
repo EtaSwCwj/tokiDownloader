@@ -6886,14 +6886,14 @@ def _episode_rename_suffix(
         if not safe_original:
             continue
         if safe_original.casefold() == safe_work.casefold():
-            continue
+            return "", "unnumbered"
         if safe_work and safe_original.casefold().startswith(
             f"{safe_work.casefold()} "
         ):
             suffix = safe_original[len(safe_work) :].strip(" -–—")
             if suffix:
                 return suffix, "source_title"
-            continue
+            return "", "unnumbered"
 
         ellipsis_match = re.search(r"…|\.{3}", original)
         if ellipsis_match:
@@ -6919,7 +6919,7 @@ def _episode_rename_suffix(
                 )
             if suffix:
                 return suffix, "source_title"
-            continue
+            return "", "unnumbered"
 
         # This is the same conservative final case used by the downloader:
         # a non-empty source label such as "프롤로그" or "공지" is itself the
@@ -7455,7 +7455,11 @@ def plan_episode_folder_rename(
             number=number,
             work_title=work_title,
         )
-        unsafe_suffix = suffix_source == "unsafe" or not suffix
+        # Only ordered naming can safely represent an empty suffix. The legacy
+        # title-only migration must still refuse to collapse separate chapters.
+        unsafe_suffix = suffix_source == "unsafe" or (
+            not suffix and not (ordered and suffix_source == "unnumbered")
+        )
         if unsafe_suffix:
             unsafe_count += 1
         display_title = (

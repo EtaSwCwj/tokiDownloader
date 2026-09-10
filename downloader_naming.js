@@ -81,7 +81,9 @@ function unsafeEpisodeTitleError(workTitle, sourceTitle, episodeNumber, reason) 
 
 function episodeSuffixOrThrow(value, workTitle, sourceTitle, episodeNumber, reason) {
     const suffix = trimEpisodeSeparator(value);
-    if (!suffix)
+    // A nonempty row can legitimately be an unnumbered chapter. Its storage
+    // ordinal determines order, not a fabricated "N화" title.
+    if (!suffix && !normalizeDisplayText(sourceTitle))
         throw unsafeEpisodeTitleError(workTitle, sourceTitle, episodeNumber, reason);
     return suffix;
 }
@@ -187,9 +189,9 @@ function extractEpisodeSuffix(workTitle, sourceTitle, episodeNumber = 0) {
     const foldedSafeWork = safeWork.toLowerCase();
     const foldedSafeSource = safeSource.toLowerCase();
     if (foldedSource === foldedWork)
-        throw unsafeEpisodeTitleError(work, source, episodeNumber, 'source_equals_work_title');
+        return '';
     if (safeWork && foldedSafeSource === foldedSafeWork)
-        throw unsafeEpisodeTitleError(work, source, episodeNumber, 'source_equals_sanitized_work_title');
+        return '';
     if (foldedSource.startsWith(`${foldedWork} `))
         return episodeSuffixOrThrow(
             source.slice(work.length), work, source, episodeNumber, 'empty_title_suffix',

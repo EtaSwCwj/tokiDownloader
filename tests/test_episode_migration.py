@@ -285,12 +285,25 @@ class EpisodeFolderMigrationTests(unittest.TestCase):
         self.assertEqual(plan["renameCount"], 0)
         mapping = plan["mappings"][0]
         self.assertEqual(mapping["suffix"], "")
-        self.assertEqual(mapping["suffixSource"], "unsafe")
+        self.assertEqual(mapping["suffixSource"], "unnumbered")
         self.assertEqual(mapping["destinationFolderName"], "")
         self.assertNotIn("1화", json.dumps(plan, ensure_ascii=False))
         with self.assertRaisesRegex(ValueError, "신뢰할 수 있는 회차 접미사"):
             rename_episode_folders(job.job_id)
         self.assertTrue((output / source_name).is_dir())
+
+    def test_unnumbered_chapters_are_safe_with_ordered_names(self) -> None:
+        folders = [f"0001 {WORK_TITLE}", f"0002 {WORK_TITLE} 1화", f"0003 {WORK_TITLE}"]
+        job, output = self.make_work(folders, state_payload=None)
+        plan = toki_core.plan_episode_folder_rename(job.job_id, ordered=True)
+        self.assertTrue(plan["canExecute"], plan.get("conflicts"))
+        self.assertEqual(plan["unsafeSuffixCount"], 0)
+        targets = [mapping["destinationFolderName"] for mapping in plan["mappings"]]
+        self.assertEqual(targets, [f"000001 {WORK_TITLE}", f"000002 {WORK_TITLE} 1화", f"000003 {WORK_TITLE}"])
+        self.assertEqual(targets, sorted(targets))
+        # Preview does not rename/delete the existing user's folders.
+        for folder in folders:
+            self.assertTrue((output / folder).is_dir())
 
     def test_utf16_component_length_blocks_emoji_heavy_folder_name(self) -> None:
         work_title = "😀" * 121

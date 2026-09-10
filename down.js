@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { ProxyAgent } from 'proxy-agent';
 import { ImageTransport } from './downloader_transport.js';
+import { renameWithRetry, writeJsonAtomically } from './downloader_files.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import { collectEpisodeListPages } from './downloader_pagination.js';
 import {
@@ -601,12 +602,11 @@ function loadEpisodeCompletion(state, links, manifest) {
         physicalEpisodeIds,
     });
 }
-function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes) {
+async function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes) {
     const contentPath = getContentPath();
     fs.mkdirSync(contentPath, { recursive: true });
     const statePath = completionStatePath();
-    const temporaryPath = `${statePath}.tmp`;
-    fs.writeFileSync(temporaryPath, `${JSON.stringify({
+    await writeJsonAtomically(statePath, {
         version: 2,
         completedEpisodes: [...completedEpisodes].sort((a, b) => a - b),
         completedEpisodeIds: [...completedEpisodeIds].filter(Boolean).sort(),
@@ -615,8 +615,9 @@ function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes) {
             || String(left.sourceId).localeCompare(String(right.sourceId))
         )),
         updatedAt: new Date().toISOString()
-    }, null, 2)}\n`, 'utf8');
-    fs.renameSync(temporaryPath, statePath);
+    }, { onRetry: ({ code, attempt, delayMs }) => {
+        console.log(`진행 기록 저장 재시도 ${attempt}: ${code}, ${delayMs}ms 후 다시 시도`);
+    } });
 }
 function saveMetadata(metadata) {
     const contentPath = getContentPath();
@@ -715,11 +716,11 @@ function imageValidationError(fileName, validation) {
     return error;
 }
 
-function writeImageBufferAtomically(
+async function writeImageBufferAtomically(
     directoryPath,
     fileName,
     imageBuffer,
-    { renameFile = fs.renameSync } = {},
+    { renameFile = fs.promises.rename } = {},
 ) {
     const validation = validateImageBuffer(imageBuffer, path.extname(fileName));
     if (!validation.valid)
@@ -737,7 +738,7 @@ function writeImageBufferAtomically(
         fs.fsyncSync(descriptor);
         fs.closeSync(descriptor);
         descriptor = undefined;
-        renameFile(temporaryPath, destinationPath);
+        await renameWithRetry(temporaryPath, destinationPath, { rename: renameFile });
     }
     catch (error) {
         if (descriptor !== undefined) {
@@ -779,7 +780,7 @@ async function saveImage(directoryPath, fileName, src) {
     if (!imageBuffer)
         throw new Error(`이미지 다운로드 실패: ${src}\n${lastError}`);
     // 새 버퍼 검증이 끝나기 전에는 기존 파일을 건드리지 않는다.
-    writeImageBufferAtomically(directoryPath, fileName, imageBuffer);
+    await writeImageBufferAtomically(directoryPath, fileName, imageBuffer);
 }
 
 async function downloadBuffer(src, headers, redirectCount = 0) {
@@ -912,7 +913,7 @@ async function main() {
             completedEpisodes = completion.completedEpisodes;
             completedEpisodeIds = completion.completedEpisodeIds;
             completedEpisodeFallbacks = completion.completedEpisodeFallbacks;
-            saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
+            await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
         }
         const selection = selectEpisodeLinks(link, {
             metadataOnly: info.metadataOnly,
@@ -1017,7 +1018,7 @@ async function main() {
                 completedEpisodes.add(parseInt(link[i].num));
                 if (episodeRecord.sourceId)
                     completedEpisodeIds.add(episodeRecord.sourceId);
-                saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
+                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
             }
             // 뉴토끼, 마나토끼
             else {
@@ -1121,7 +1122,7 @@ async function main() {
                 completedEpisodes.add(parseInt(link[i].num));
                 if (episodeRecord.sourceId)
                     completedEpisodeIds.add(episodeRecord.sourceId);
-                saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
+                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
             }
         }
         console.log('다운로드 완료');
