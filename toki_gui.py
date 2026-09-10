@@ -193,6 +193,7 @@ from toki_core import (
     embedded_browser_capabilities,
     embedded_browser_navigation_plan,
     error_category_label,
+    download_status_label,
     export_diagnostics,
     export_jobs_snapshot,
     export_provider_cookies,
@@ -855,7 +856,7 @@ class JobItemDelegate(QStyledItemDelegate):
                 painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "표지")
             body_x = cover_rect.right() + 11
         state_rect = card.adjusted(body_x - card.left(), 9, 0, 0)
-        state_rect.setWidth(82)
+        state_rect.setWidth(max(82, painter.fontMetrics().horizontalAdvance(download_status_label(job)) + 20))
         state_rect.setHeight(23)
         state_colors = {
             "실행 중": "#1a73e8",
@@ -873,7 +874,7 @@ class JobItemDelegate(QStyledItemDelegate):
         state_font = QFont(option.font)
         state_font.setBold(True)
         painter.setFont(state_font)
-        painter.drawText(state_rect, Qt.AlignmentFlag.AlignCenter, job.state)
+        painter.drawText(state_rect, Qt.AlignmentFlag.AlignCenter, download_status_label(job))
 
         title_rect = card.adjusted(state_rect.right() - card.left() + 8, 7, -10, 0)
         title_rect.setHeight(27)
@@ -971,7 +972,8 @@ class JobItemDelegate(QStyledItemDelegate):
             painter.setPen(muted)
             painter.drawText(cover_rect, Qt.AlignmentFlag.AlignCenter, "썸네일 숨김")
 
-        state_rect = QRect(cover_rect.left() + 5, cover_rect.top() + 5, 70, 22)
+        state_rect = QRect(cover_rect.left() + 5, cover_rect.top() + 5,
+                           min(cover_rect.width() - 10, max(70, painter.fontMetrics().horizontalAdvance(download_status_label(job)) + 16)), 22)
         state_colors = {
             "실행 중": "#1a73e8",
             "일시정지": "#8856c6",
@@ -985,7 +987,7 @@ class JobItemDelegate(QStyledItemDelegate):
         painter.setBrush(QColor(state_colors.get(job.state, "#7b8794")))
         painter.drawRoundedRect(state_rect, 3, 3)
         painter.setPen(QColor("#ffffff"))
-        painter.drawText(state_rect, Qt.AlignmentFlag.AlignCenter, job.state)
+        painter.drawText(state_rect, Qt.AlignmentFlag.AlignCenter, download_status_label(job))
 
         title_rect = QRect(cover_rect.left(), cover_rect.bottom() - 43, cover_rect.width(), 43)
         painter.fillRect(title_rect, QColor(0, 0, 0, 170))
@@ -1061,7 +1063,7 @@ class RunLogDialog(QDialog):
         self.resize(900, 620)
         root = QVBoxLayout(self)
         summary = QLabel(
-            f"실행 ID: {run.run_id}  |  상태: {run.state}  |  "
+            f"실행 ID: {run.run_id}  |  상태: {download_status_label(run)}  |  "
             f"시작: {run.started_at or '-'}  |  종료: {run.finished_at or '-'}"
         )
         summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1612,7 +1614,8 @@ class WorkDetailDialog(QDialog):
         self.metadata_labels["author"].setText(job.author or "-")
         self.metadata_labels["group"].setText(job.group or "-")
         self.metadata_labels["site"].setText(job.site or "-")
-        self.metadata_labels["state"].setText(job.state)
+        self.metadata_labels["state"].setText(download_status_label(job))
+        self.metadata_labels["state"].setToolTip(job.completion_note)
         self.metadata_labels["work_key"].setText(job.work_key)
         self.metadata_labels["output"].setText(job.output_path or job.output_dir)
         self.metadata_labels["metadata"].setText(job.metadata_path or "-")
@@ -1644,7 +1647,7 @@ class WorkDetailDialog(QDialog):
             values = (
                 str(run.get("created_at") or "").replace("T", " "),
                 operation_label,
-                str(run.get("state") or ""),
+                download_status_label(run),
                 requested,
                 str(run.get("discovered_episodes") or 0),
                 str(run.get("selected_episodes") or 0),
@@ -6526,6 +6529,8 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             user_note=existing.user_note if existing else "",
             pinned=existing.pinned if existing else False,
             tag_color=existing.tag_color if existing else "",
+            pending_episode_count=existing.pending_episode_count if existing else 0,
+            completion_note=existing.completion_note if existing else "",
             show_browser=show_browser,
             metadata_only=metadata_only,
             scan_mode=scan_mode_value,
@@ -7578,8 +7583,15 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             job.episode_index = int(event.get("index") or job.episode_index)
             job.episode_number = int(event.get("number") or job.episode_number)
             job.image_current = job.image_total = 0
+            job.pending_episode_count = int(event.get("pendingCount") or job.pending_episode_count)
+            job.completion_note = f"미수신 {job.pending_episode_count}개 · 사이트 이미지 준비 중"
         elif event_name == "completed":
             job.progress = 100
+            if "pendingEpisodeCount" in event:
+                job.pending_episode_count = max(0, int(event["pendingEpisodeCount"]))
+                job.completion_note = str(event.get("completionNote") or "")
+            job.error = job.error_category = ""
+            job.retryable_error = None
         elif event_name == "error":
             job.error = str(event.get("message") or "알 수 없는 오류")
             job.error_category = str(event.get("category") or "unknown")
@@ -7605,6 +7617,8 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         run.error = job.error
         run.error_category = job.error_category
         run.retryable_error = job.retryable_error
+        run.pending_episode_count = job.pending_episode_count
+        run.completion_note = job.completion_note
         if event_name == "queue_ready":
             run.discovered_episodes = int(event.get("totalEpisodes") or 0)
             run.selected_episodes = int(event.get("selectedEpisodes") or 0)
@@ -7707,7 +7721,9 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             )
             if not job.error:
                 job.error = f"프로세스 종료 코드 {exit_code}"
-        self.log(f"작업 종료: {job.state} (code={exit_code})", job_id=job.job_id)
+        self.log(f"작업 종료: {download_status_label(job)} (code={exit_code})", job_id=job.job_id)
+        if job.state == "완료" and job.completion_note:
+            self.log(job.completion_note, job_id=job.job_id)
         context.run.state = job.state
         context.run.progress = job.progress
         context.run.error = job.error
@@ -9475,7 +9491,7 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         plan = notification_event_plan(
             kind,
             title=job.title,
-            detail=job.error or job.state,
+            detail=job.error or job.completion_note or job.state,
             config=self.config,
         )
         return self.deliver_notification(plan)

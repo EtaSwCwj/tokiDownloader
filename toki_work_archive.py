@@ -141,7 +141,7 @@ def plan_work_archives(job_ids, *, include_members=False):
             cleanup.extend(chapter["raw"])
         # Metadata/cover remain outside too: GUI and later rescans need them.
         for path in sorted(root.iterdir()):
-            if path.is_file() and (path.name == "metadata.json" or path.stem == "cover" and path.suffix.lower() in core.IMAGE_EXTENSIONS):
+            if path.is_file() and (path.name in {"metadata.json", ".toki-state.json"} or path.stem == "cover" and path.suffix.lower() in core.IMAGE_EXTENSIONS):
                 lib._contained(path, root)
                 members.append({**_raw_member(path, root, False), "name": path.name})
         signature = {"episodes": episodes, "members": [{k: m[k] for k in ("name", "source", "size", "mtimeNs")} for m in members]}

@@ -3802,6 +3802,8 @@ class DownloadJob:
     error: str = ""
     error_category: str = ""
     retryable_error: bool | None = None
+    pending_episode_count: int = 0
+    completion_note: str = ""
     simulation: bool = False
     external_request_confirmed: bool = False
     created_at: str = field(
@@ -3843,6 +3845,8 @@ class DownloadRun:
     error: str = ""
     error_category: str = ""
     retryable_error: bool | None = None
+    pending_episode_count: int = 0
+    completion_note: str = ""
     started_at: str = ""
     finished_at: str = ""
     created_at: str = field(
@@ -3888,9 +3892,22 @@ class DownloadRun:
             error=job.error,
             error_category=job.error_category,
             retryable_error=job.retryable_error,
+            pending_episode_count=job.pending_episode_count,
+            completion_note=job.completion_note,
             finished_at=finished_at,
             created_at=job.created_at,
         )
+
+
+def download_status_label(value: DownloadJob | DownloadRun | dict[str, Any]) -> str:
+    """O(1), filesystem-free label; keep state='완료' for filters and scheduling."""
+    data = value if isinstance(value, dict) else vars(value)
+    state = str(data.get("state") or "")
+    try:
+        missing = max(0, int(data.get("pending_episode_count") or 0))
+    except (TypeError, ValueError):
+        missing = 0
+    return f"{state} · 미수신 {missing}개" if missing else state
 
 
 def build_work_key(url: str) -> str:

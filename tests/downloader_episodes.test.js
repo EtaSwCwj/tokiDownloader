@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { inspectEpisodeViewer, EPISODE_IMAGE_SELECTOR, EPISODE_PROCESSING_MESSAGE,
     waitForEpisodeAvailability, PendingEpisodes } from '../downloader_episodes.js';
-import { classifyDownloaderError } from '../downloader_errors.js';
 import { selectEpisodeLinks } from '../downloader_policy.js';
 
 function inspect({ image = false, notice = null } = {}) {
@@ -57,21 +56,27 @@ test('pending source IDs persist independently of successful later chapters and 
     const selected = selectEpisodeLinks([first,next].map(c=>({num:String(c.number),sourceId:c.sourceId})), {
         scanMode:'new',preferEpisodeIds:true,completedEpisodeIds:new Set(state.completedEpisodeIds)});
     assert.deepEqual(selected.links.map(row=>row.sourceId), [first.sourceId]);
-    assert.throws(()=>restored.throwIfPending(1,2), error=> {
-        const result=classifyDownloaderError(error);
-        assert.equal(result.category,'source');
-        assert.equal(result.retryable,false);
-        assert.equal(result.errorCode,'episodes_pending');
-        assert.equal(result.diagnostics.completedThisRun,1);
-        return true;
-    });
+    const result = restored.completionSummary(1, 2);
+    assert.equal(result.pendingEpisodeCount, 1);
+    assert.equal(result.completedThisRun, 1);
+    assert.equal(result.pendingEpisodes[0].sourceId, first.sourceId);
+    assert.match(result.completionNote, /미수신 1개/);
     restored.resolve(first.sourceId);
-    assert.doesNotThrow(()=>restored.throwIfPending(1,1));
+    assert.equal(restored.completionSummary(1,1).pendingEpisodeCount, 0);
+    assert.equal(restored.completionSummary(1,1).completionNote, '');
 });
 
 test('a range scan cannot discard unresolved pending records outside that range', () => {
     const ledger = new PendingEpisodes([chapter(563)]);
     ledger.resolve(chapter(700).sourceId);
-    assert.throws(()=>ledger.throwIfPending(1,1), error=>error.errorCode==='episodes_pending');
+    assert.equal(ledger.completionSummary(1,1).pendingEpisodeCount, 1);
     assert.deepEqual(new PendingEpisodes(null).records, []);
+});
+
+test('all selected chapters may be unavailable without falsifying chapter completion', () => {
+    const ledger = new PendingEpisodes([chapter(1),chapter(2)]);
+    const result = ledger.completionSummary(0,2);
+    assert.equal(result.completedThisRun,0);
+    assert.equal(result.pendingEpisodeCount,2);
+    assert.equal(result.selectedEpisodes,2);
 });

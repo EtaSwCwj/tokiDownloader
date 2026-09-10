@@ -946,6 +946,7 @@ async function main() {
         };
         info.metadata.scanMode = info.metadataOnly ? 'metadata' : info.scanMode;
         info.metadata.episodes = episodeManifest;
+        info.metadata.pendingEpisodes = pendingEpisodes.records;
         info.metadata.generatedAt = new Date().toISOString();
         const coverPath = await cacheCoverImage(info.metadata, info.metadataOnly);
         saveMetadata(info.metadata);
@@ -970,7 +971,8 @@ async function main() {
             emitEvent('completed', {
                 outputPath: getContentPath(),
                 selectedEpisodes: 0,
-                metadataOnly: true
+                metadataOnly: true,
+                ...pendingEpisodes.completionSummary(0, 0)
             });
             return;
         }
@@ -1153,15 +1155,25 @@ async function main() {
                 await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
             }
         }
-        // Never emit completed / start automatic archive cleanup while source
-        // chapters are unavailable. Keep their IDs absent from completion state.
-        pendingEpisodes.throwIfPending(completedThisRun, link.length);
-        console.log('다운로드 완료');
+        // The job is finished, but missing source chapters remain absent from
+        // completed IDs. Archiving available chapters must preserve this ledger.
+        const completion = pendingEpisodes.completionSummary(completedThisRun, link.length);
+        info.metadata.pendingEpisodes = completion.pendingEpisodes;
+        info.metadata.downloadCompletion = {
+            status: completion.pendingEpisodeCount ? 'completed_with_missing' : 'completed',
+            pendingEpisodeCount: completion.pendingEpisodeCount,
+            completedThisRun, selectedEpisodes: link.length,
+            note: completion.completionNote,
+        };
+        saveMetadata(info.metadata);
+        console.log(completion.pendingEpisodeCount
+            ? `다운로드 작업 완료 · ${completion.completionNote}` : '다운로드 완료');
         emitEvent('completed', {
             outputPath: getContentPath(),
             selectedEpisodes: link.length,
             skippedExistingEpisodes,
-            scanMode: info.scanMode
+            scanMode: info.scanMode,
+            ...completion,
         });
     } catch (error) {
         console.error(error);

@@ -1,5 +1,3 @@
-import { createDownloaderError, ERROR_CATEGORIES } from './downloader_errors.js';
-
 export const EPISODE_IMAGE_SELECTOR = '.view-padding div img, .theme-viewer-images img';
 export const EPISODE_PROCESSING_MESSAGE = '이미지 처리 중인 회차입니다. 잠시 후 다시 확인해주세요.';
 
@@ -39,16 +37,13 @@ export class PendingEpisodes {
     get records() {
         return [...this.byId.values()].sort((a, b) => Number(a.number) - Number(b.number));
     }
-    throwIfPending(completedThisRun, selectedEpisodes) {
+    completionSummary(completedThisRun, selectedEpisodes) {
         const pendingEpisodes = this.records;
-        if (!pendingEpisodes.length) return;
         const titles = pendingEpisodes.slice(0, 5).map(item => item.displayTitle || item.sourceTitle).join(', ');
-        throw createDownloaderError(
-            `일부 미완료: 사이트 이미지 준비 중 ${pendingEpisodes.length}개 (${titles}${pendingEpisodes.length > 5 ? ' 외' : ''}). `
-            + `이번 실행에서 다른 회차 ${completedThisRun}개 처리를 마쳤습니다. 나중에 신규 회차 검사로 다시 시도하세요.`,
-            { errorCode: 'episodes_pending', category: ERROR_CATEGORIES.SOURCE, retryable: false,
-                diagnostics: { pendingEpisodes, completedThisRun, selectedEpisodes },
-                suggestion: '사이트 이미지 처리가 끝난 뒤 신규 회차 검사를 실행하면 미완료 회차만 다시 받습니다.' },
-        );
+        return { pendingEpisodeCount: pendingEpisodes.length, pendingEpisodes,
+            completedThisRun, selectedEpisodes,
+            completionNote: pendingEpisodes.length
+                ? `미수신 ${pendingEpisodes.length}개: ${titles}${pendingEpisodes.length > 5 ? ' 외' : ''}. 사이트 이미지 준비 후 신규 회차 검사로 다시 받을 수 있습니다.`
+                : '' };
     }
 }

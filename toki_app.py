@@ -126,6 +126,7 @@ from toki_core import (
     embedded_browser_capabilities,
     embedded_browser_navigation_plan,
     error_category_label,
+    download_status_label,
     export_diagnostics,
     export_app_settings,
     export_jobs_snapshot,
@@ -3957,7 +3958,7 @@ def run_cli(args: argparse.Namespace) -> int:
             print_json(result)
         else:
             for job in result["jobs"]:
-                print(f"{job['job_id']} | {job['state']} | {job['title']}")
+                print(f"{job['job_id']} | {download_status_label(job)} | {job['title']}")
             print(f"표시 {len(result['jobs'])} / 전체 {result['total']}")
         return 0
     if command == "info":
@@ -3976,7 +3977,7 @@ def run_cli(args: argparse.Namespace) -> int:
             job_data = result["job"]
             print(f"작품: {job_data['title']}")
             print(f"작업 ID: {job_data['job_id']} | 작품 키: {job_data['work_key']}")
-            print(f"상태: {job_data['state']} | 실행 이력: {result['runCount']}건")
+            print(f"상태: {download_status_label(job_data)} | 실행 이력: {result['runCount']}건")
             print(f"작가: {job_data.get('author') or '-'} | 그룹: {job_data.get('group') or '-'}")
             print(f"저장 폴더: {job_data.get('output_path') or job_data['output_dir']}")
             print(f"메모: {job_data.get('user_note') or '-'}")
@@ -4050,7 +4051,7 @@ def run_cli(args: argparse.Namespace) -> int:
             for run in result["runs"]:
                 requested = f"{run.get('requested_start') or '처음'}~{run.get('requested_last') or '끝'}"
                 print(
-                    f"{run['run_id']} | {run['state']} | {run['progress']}% | "
+                    f"{run['run_id']} | {download_status_label(run)} | {run['progress']}% | "
                     f"시도 {run.get('attempt_count', 0)}/{run.get('retry_limit', 0) + 1} | "
                     f"범위 {requested} | {run['created_at']}"
                 )
@@ -4064,7 +4065,7 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.json:
             print_json(result)
         else:
-            print(f"실행 ID: {run.run_id} | 상태: {run.state} | 진행률: {run.progress}%")
+            print(f"실행 ID: {run.run_id} | 상태: {download_status_label(run)} | 진행률: {run.progress}%")
             print(f"작품 키: {run.work_key} | PID: {run.process_pid or '-'}")
             print(
                 f"시도: {run.attempt_count}/{run.retry_limit + 1} | "

@@ -3172,7 +3172,7 @@ class WorkSchedulerTests(unittest.TestCase):
         timers[0][1]()
         self.assertEqual(restarted, [(job.job_id, 1)])
 
-    def test_deferred_chapter_progress_counts_only_successes_and_does_not_archive(self) -> None:
+    def test_deferred_chapter_completes_with_missing_count_and_queues_archive(self) -> None:
         job = DownloadJob(job_id="pending-job", url="https://newtoki1.org/manhwa/40",
                           output_dir=r"C:\Manga", state="실행 중", retry_limit=5)
         context = ProcessContext(job=job, run=DownloadRun.from_job(job), process=_ProcessStub(), attempt_count=1)
@@ -3200,15 +3200,33 @@ class WorkSchedulerTests(unittest.TestCase):
             event("episode_completed", index=2, total=2, number=563, completedCount=1)
             self.assertEqual(job.progress, 50)
             self.assertEqual(context.run.processed_episodes, 1)
-            event("error", category="source", retryable=False, message="일부 미완료: 은혼 563화 이미지 준비 중")
-            MainWindow._process_finished(harness, job.job_id, 1, None)
-        self.assertEqual(job.state, "오류")
-        self.assertEqual(job.error_category, "source")
-        self.assertFalse(job.retryable_error)
-        self.assertEqual(job.progress, 50)
-        self.assertEqual(archived, [])
+            event("completed", pendingEpisodeCount=1, completionNote="미수신 1개: 은혼 563화")
+            MainWindow._process_finished(harness, job.job_id, 0, None)
+        self.assertEqual(job.state, "완료")
+        self.assertEqual(job.error_category, "")
+        self.assertEqual(job.error, "")
+        self.assertEqual(job.progress, 100)
+        self.assertEqual(job.pending_episode_count, 1)
+        self.assertEqual(context.run.pending_episode_count, 1)
+        self.assertEqual(context.run.processed_episodes, 1)
+        self.assertEqual(toki_gui.download_status_label(job), "완료 · 미수신 1개")
+        self.assertEqual(archived, [job.job_id])
         self.assertEqual(scheduled, [250])  # Next work proceeds, no immediate process retry.
         self.assertNotIn(job.job_id, harness.active_contexts)
+
+    def test_resolved_missing_chapter_clears_completion_warning(self) -> None:
+        job = DownloadJob(job_id="resolved", url="https://newtoki1.org/manhwa/40",
+                          output_dir=r"C:\Manga", pending_episode_count=1, completion_note="미수신 1개")
+        context = ProcessContext(job=job, run=DownloadRun.from_job(job))
+        harness = SimpleNamespace(active_contexts={job.job_id:context}, _schedule_job_card_update=lambda *_: None)
+        with patch("toki_gui.save_runs"):
+            MainWindow._handle_downloader_event(harness, job.job_id,
+                {"event":"completed", "pendingEpisodeCount":0, "completionNote":""})
+        self.assertEqual(job.pending_episode_count, 0)
+        self.assertEqual(context.run.pending_episode_count, 0)
+        self.assertEqual(job.completion_note, "")
+        job.state = "완료"
+        self.assertEqual(toki_gui.download_status_label(job), "완료")
 
     def test_authentication_failure_is_terminal_without_automatic_retry(self) -> None:
         job = DownloadJob(

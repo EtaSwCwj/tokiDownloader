@@ -155,6 +155,68 @@ class WholeWorkArchiveTests(legacy.unittest.TestCase):
             capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.assertEqual(node.stdout.strip(), '1', node.stderr)
 
+    def test_missing_chapter_survives_cli_archive_cleanup_then_fills_gap_in_same_zip(self):
+        job, root, first = self.work()
+        last = add_chapter(root, 3, '작품 a 143화')
+        state_path = root / '.toki-state.json'
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        pending = {'number':2, 'sourceId':'/manhwa/a/2', 'sourceTitle':'작품 a 142화',
+                   'sourceUrl':'https://newtoki1.org/manhwa/a/2', 'folderName':'작품 a 142화',
+                   'displayTitle':'작품 a 142화', 'reason':'site_episode_processing'}
+        state['episodes'].append(pending)
+        state['pendingEpisodes'] = [pending]
+        state_path.write_text(json.dumps(state), encoding='utf-8')
+        job.pending_episode_count = 1
+        job.completion_note = '미수신 1개: 작품 a 142화'
+        core.save_jobs([job])
+        core.save_runs([core.DownloadRun.from_job(job)])
+        self.assertEqual(core.load_job_by_id(job.job_id).pending_episode_count, 1)
+        self.assertEqual(core.load_run(job.job_id).pending_episode_count, 1)
+        (self.root / '.library-cli-test').touch()
+        command = [sys.executable, '-X', 'utf8', str(core.ROOT_DIR / 'tests/fixtures/library_cli_host.py'), str(self.root)]
+        def cli(*args):
+            proc = subprocess.run([*command, *args], cwd=core.ROOT_DIR, capture_output=True,
+                text=True, encoding='utf-8', timeout=20, creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            return json.loads(proc.stdout)
+        info = cli('info', '--job', job.job_id, '--json')
+        self.assertEqual(info['job']['pending_episode_count'], 1)
+        result = cli('library', 'archive', '--job', job.job_id, '--execute', '--yes', '--remove-originals', '--json')
+        self.assertTrue(result['success'], result)
+        archive = Path(result['results'][0]['archivePath'])
+        with zipfile.ZipFile(archive) as bundle:
+            old_pages = [bundle.read(n) for n in bundle.namelist() if n.endswith('.jpg')]
+            saved = json.loads(bundle.read('.toki-state.json'))
+            self.assertEqual(saved['pendingEpisodes'][0]['sourceId'], pending['sourceId'])
+            self.assertNotIn(pending['sourceId'], saved['completedEpisodeIds'])
+        self.assertFalse(first.exists() or last.exists())
+        self.assertEqual(json.loads(state_path.read_text(encoding='utf-8'))['pendingEpisodes'], [pending])
+        archived_ids = {e['sourceId'] for e in archived_episodes(root)}
+        self.assertNotIn(pending['sourceId'], archived_ids)
+        self.assertEqual(len(archived_ids), 2)
+        # The source later becomes available; new download has only the missing ID.
+        state['episodes'] = [e for e in state['episodes'] if e['sourceId'] != pending['sourceId']]
+        state_path.write_text(json.dumps(state), encoding='utf-8')
+        add_chapter(root, 2, '작품 a 142화')
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        state['pendingEpisodes'] = []
+        state_path.write_text(json.dumps(state), encoding='utf-8')
+        job.pending_episode_count = 0
+        job.completion_note = ''
+        core.save_jobs([job])
+        updated = cli('library', 'archive', '--job', job.job_id, '--execute', '--yes', '--remove-originals', '--json')
+        self.assertTrue(updated['success'], updated)
+        self.assertEqual(updated['results'][0]['archivePath'], str(archive))
+        with zipfile.ZipFile(archive) as bundle:
+            names = [n for n in bundle.namelist() if n.endswith('.jpg')]
+            self.assertEqual(len(names), 9)
+            self.assertEqual([n.split('/')[0] for n in names[::3]], [
+                '000001 작품 a 141.0화', '000002 작품 a 142화', '000003 작품 a 143화'])
+            self.assertTrue(all(page in [bundle.read(n) for n in names] for page in old_pages))
+            self.assertEqual(json.loads(bundle.read('.toki-state.json'))['pendingEpisodes'], [])
+        self.assertEqual(len(list(archive.parent.glob('*.zip'))), 1)
+        print('[CLI missing chapter] completion count persisted; ZIP preserved pending ID; cleanup and later insertion kept existing pages')
+
     def test_rescan_renumbering_applies_to_archived_only_chapters(self):
         job, root, _ = self.work()
         first = lib.archive_library_items([job.job_id], execute=True, remove_originals=True)
