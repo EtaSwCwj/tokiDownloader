@@ -9,12 +9,13 @@ import { renameWithRetry, writeJsonAtomically } from './downloader_files.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import { collectEpisodeListPages } from './downloader_pagination.js';
 import { assignReadingOrder } from './downloader_reading_order.js';
-import { EPISODE_IMAGE_SELECTOR, PendingEpisodes, waitForEpisodeAvailability,
+import { collectEpisodeImages } from './downloader_image_list.js';
+import { downloadEpisodeImages } from './downloader_image_resume.js';
+import { PendingEpisodes, waitForEpisodeAvailability,
     isDamagedImageError, imageFailureDeferral } from './downloader_episodes.js';
 import {
     episodeStateUsesStableIds,
     normalizeAndSortEpisodeLinks,
-    requireEpisodeImages,
     resolveEpisodeCompletion,
     selectEpisodeLinks,
     validateImageBuffer,
@@ -1013,7 +1014,7 @@ async function main() {
         for (let i = 0; i < link.length; i++) {
             await requestPacer.wait();
             await Promise.all([page.goto(link[i].src), page.waitForNavigation()]);
-            await sleep(2000);
+            if (info.site === 'booktoki') await sleep(2000);
             const safeEpisodeName = sanitizePathSegment(link[i].fileName, '회차');
             const episodeRecord = link[i].episode || buildEpisodeManifestRecord(
                 {
@@ -1066,7 +1067,6 @@ async function main() {
             }
             // 뉴토끼, 마나토끼
             else {
-                const imageSelector = EPISODE_IMAGE_SELECTOR;
                 const availability = await waitForEpisodeAvailability(page);
                 if (availability.status === 'processing') {
                     // A full scan can encounter a now-pending source whose local
@@ -1083,40 +1083,18 @@ async function main() {
                     }
                     continue;
                 }
-                // 이미지 가져오기
-                let imgLists = await page.evaluate((selector) => {
-                    let imgLists = Array.from(document.querySelectorAll(selector));
-                    let returnList = [];
-                    // 화면에 보이지 않는 이미지라면 리스트에서 제거
-                    for (let j = 0; j < imgLists.length;) {
-                        if (imgLists[j].checkVisibility() === false)
-                            imgLists.splice(j, 1);
-                        else {
-                            try {
-                                // 구형 뷰어의 지연 로딩 경로와 신형 뷰어의 CDN 주소를 모두 지원한다.
-                                const legacyPath = imgLists[j].outerHTML.match(/\/data[^"]+/)?.[0];
-                                const rawSrc = legacyPath || imgLists[j].currentSrc || imgLists[j].getAttribute('src');
-                                const src = new URL(rawSrc, location.origin).href;
-                                const extension = new URL(src).pathname.match(/\.[a-zA-Z0-9]+$/)?.[0] || '.jpg';
-                                returnList.push({ src, extension });
-                            }
-                            catch (error) {}
-                            j++;
-                        }
-                    }
-                    return returnList;
-                }, imageSelector);
-                imgLists = requireEpisodeImages(imgLists, {
-                    episodeNumber: Number.parseInt(link[i].num),
-                    sourceId: episodeRecord.sourceId,
-                    sourceUrl: link[i].src,
-                });
+                // A failed revalidation must not retain a stale completion bit.
+                // Archived episodes were filtered earlier and are not inspected.
+                completedEpisodes.delete(parseInt(link[i].num));
+                completedEpisodeIds.delete(episodeRecord.sourceId);
+                completedEpisodeFallbacks.delete(parseInt(link[i].num));
+                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
+                const imgLists = await collectEpisodeImages(page);
                 console.log(`이미지 ${imgLists.length}개 감지`);
                 emitEvent('images_found', {
                     episodeNumber: parseInt(link[i].num),
                     count: imgLists.length
                 });
-                let downloadTasks = [];
                 let completedImages = 0;
                 const reportImage = (imageIndex, skipped) => {
                     completedImages++;
@@ -1128,48 +1106,12 @@ async function main() {
                         skipped
                     });
                 };
-                // 이미지들을 다운로드한다.
-                const episodePath = path.join(getContentPath(), episodeRecord.folderName);
-                const existingImageIndexes = new Set();
-                let hasLegacyImageFiles = false;
-                if (fs.existsSync(episodePath)) {
-                    for (const entry of fs.readdirSync(episodePath, { withFileTypes: true })) {
-                        if (!entry.isFile())
-                            continue;
-                        const numbered = entry.name.match(/^(\d{4})\.[a-zA-Z0-9]+$/);
-                        const legacy = entry.name.match(/image(\d{4})\.[a-zA-Z0-9]+$/i);
-                        if (!numbered && !legacy)
-                            continue;
-                        const existingPath = path.join(episodePath, entry.name);
-                        const validImage = existingImageFileIsValid(existingPath);
-                        if (numbered && validImage)
-                            existingImageIndexes.add(Number.parseInt(numbered[1]));
-                        if (legacy) {
-                            if (validImage)
-                                existingImageIndexes.add(Number.parseInt(legacy[1]));
-                            hasLegacyImageFiles = true;
-                        }
-                    }
-                }
-                const useLegacyImageNames = Boolean(link[i].legacyFolder || hasLegacyImageFiles);
-                for (let j = 0; j < imgLists.length; j++) {
-                    const imageNumber = j.toString().padStart(4, '0');
-                    const fileName = useLegacyImageNames
-                        ? `${link[i].num} ${safeEpisodeName} image${imageNumber}${imgLists[j].extension}`
-                        : `${imageNumber}${imgLists[j].extension}`;
-                    // 파일명만 같은 0 byte/손상 파일은 skip하지 않는다.
-                    if (existingImageIndexes.has(j)) {
-                        reportImage(j, true);
-                    }
-                    else {
-                        downloadTasks.push(async () => {
-                            await saveImage(episodePath, fileName, imgLists[j].src);
-                            reportImage(j, false);
-                        });
-                    }
-                }
                 try {
-                    await runDownloadTasks(downloadTasks, info.imageConcurrency);
+                    await downloadEpisodeImages(getContentPath(), episodeRecord, imgLists, {
+                        validateFile: existingImageFileIsValid, saveImage, runTasks: runDownloadTasks,
+                        concurrency: info.imageConcurrency, report: reportImage, log: message => console.log(message),
+                        verifyList: () => collectEpisodeImages(page),
+                    });
                 } catch (error) {
                     const deferral = imageFailureDeferral(error);
                     if (!deferral) throw error;

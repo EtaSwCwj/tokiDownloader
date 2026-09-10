@@ -35,6 +35,24 @@ class WholeWorkArchiveTests(legacy.unittest.TestCase):
     setUp = legacy.LibraryTests.setUp
     work = legacy.LibraryTests.work
 
+    def test_resume_objects_and_reversible_backups_are_not_zip_input_or_original_cleanup(self):
+        job, root, _ = self.work()
+        hidden = []
+        for relative in ('.toki-image-resume/test/objects/cached.jpg',
+                         '.toki-trash/image-resume/test/0000.jpg'):
+            target = root / relative
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b'preserved recovery image')
+            hidden.append(target)
+        result = lib.archive_library_items([job.job_id], execute=True, remove_originals=True)
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['removedOriginalCount'], 3)
+        archive = Path(result['jobs'][0]['archives'][0]['path'])
+        with zipfile.ZipFile(archive) as bundle:
+            self.assertEqual(len([name for name in bundle.namelist() if name.endswith('.jpg')]), 3)
+            self.assertFalse(any('.toki-image-resume' in name or '.toki-trash' in name for name in bundle.namelist()))
+        self.assertTrue(all(target.read_bytes() == b'preserved recovery image' for target in hidden))
+
     def test_one_zip_multiple_chapters_decimal_split_order_and_update_after_cleanup(self):
         job, root, first = self.work()
         for number, title in ((2, '작품 a 141.2화'), (3, '작품 a 141.5화'), (4, '작품 a 142-1화'), (5, '작품 a 142-2화')):
