@@ -4,6 +4,7 @@ export const ERROR_CATEGORIES = Object.freeze({
     NETWORK: 'network',
     SITE_STRUCTURE: 'site_structure',
     FILESYSTEM: 'filesystem',
+    SOURCE: 'source',
     UNKNOWN: 'unknown'
 });
 

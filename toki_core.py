@@ -369,6 +369,7 @@ PERSISTED_DOWNLOADER_EVENTS = frozenset(
         "queue_ready",
         "episode_started",
         "episode_completed",
+        "episode_deferred",
         "youtube_started",
         "youtube_item",
         "youtube_item_completed",

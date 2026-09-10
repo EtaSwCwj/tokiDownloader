@@ -8,6 +8,7 @@ import { ImageTransport } from './downloader_transport.js';
 import { renameWithRetry, writeJsonAtomically } from './downloader_files.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import { collectEpisodeListPages } from './downloader_pagination.js';
+import { EPISODE_IMAGE_SELECTOR, PendingEpisodes, waitForEpisodeAvailability } from './downloader_episodes.js';
 import {
     episodeStateUsesStableIds,
     normalizeAndSortEpisodeLinks,
@@ -340,6 +341,7 @@ function loadEpisodeState() {
             episodes: Array.isArray(state.episodes)
                 ? mergeEpisodeManifestRecords([], state.episodes)
                 : [],
+            pendingEpisodes: Array.isArray(state.pendingEpisodes) ? state.pendingEpisodes : [],
         };
     }
     catch (error) {
@@ -602,7 +604,7 @@ function loadEpisodeCompletion(state, links, manifest) {
         physicalEpisodeIds,
     });
 }
-async function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes) {
+async function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes, pendingEpisodes = []) {
     const contentPath = getContentPath();
     fs.mkdirSync(contentPath, { recursive: true });
     const statePath = completionStatePath();
@@ -610,6 +612,7 @@ async function saveEpisodeState(completedEpisodes, completedEpisodeIds, episodes
         version: 2,
         completedEpisodes: [...completedEpisodes].sort((a, b) => a - b),
         completedEpisodeIds: [...completedEpisodeIds].filter(Boolean).sort(),
+        pendingEpisodes,
         episodes: [...episodes].sort((left, right) => (
             Number(left.number) - Number(right.number)
             || String(left.sourceId).localeCompare(String(right.sourceId))
@@ -898,6 +901,7 @@ async function main() {
             throw new Error('회차 목록에서 유효한 양의 정수 순번을 찾지 못했습니다.');
         const totalEpisodeCount = link.length;
         const episodeState = loadEpisodeState();
+        const pendingEpisodes = new PendingEpisodes(episodeState.pendingEpisodes);
         episodeState.episodes = mergeEpisodeManifestRecords(
             episodeState.episodes,
             loadEpisodeMetadataManifest(),
@@ -913,7 +917,8 @@ async function main() {
             completedEpisodes = completion.completedEpisodes;
             completedEpisodeIds = completion.completedEpisodeIds;
             completedEpisodeFallbacks = completion.completedEpisodeFallbacks;
-            await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
+            for (const sourceId of completedEpisodeIds) pendingEpisodes.resolve(sourceId);
+            await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
         }
         const selection = selectEpisodeLinks(link, {
             metadataOnly: info.metadataOnly,
@@ -969,6 +974,7 @@ async function main() {
             });
             return;
         }
+        let completedThisRun = 0;
         // 페이지 방문하기
         for (let i = 0; i < link.length; i++) {
             await requestPacer.wait();
@@ -992,6 +998,7 @@ async function main() {
                 sourceTitle: link[i].fileName,
                 folderName: episodeRecord.folderName,
                 sourceId: episodeRecord.sourceId,
+                completedCount: completedThisRun,
             });
             // 북토끼
             if (info.site === "booktoki") {
@@ -1006,6 +1013,7 @@ async function main() {
                 const bookFileName = `${link[i].num} ${safeEpisodeName}.txt`;
                 if (!fs.existsSync(path.join(bookPath, bookFileName)))
                     saveBook(bookPath, bookFileName, fileContent);
+                completedThisRun++;
                 emitEvent('episode_completed', {
                     index: i + 1,
                     total: link.length,
@@ -1014,16 +1022,33 @@ async function main() {
                     sourceTitle: link[i].fileName,
                     folderName: episodeRecord.folderName,
                     sourceId: episodeRecord.sourceId,
+                    completedCount: completedThisRun,
                 });
                 completedEpisodes.add(parseInt(link[i].num));
                 if (episodeRecord.sourceId)
                     completedEpisodeIds.add(episodeRecord.sourceId);
-                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
+                pendingEpisodes.resolve(episodeRecord.sourceId);
+                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
             }
             // 뉴토끼, 마나토끼
             else {
-                const imageSelector = '.view-padding div img, .theme-viewer-images img';
-                await page.waitForSelector(imageSelector, { timeout: 60000 });
+                const imageSelector = EPISODE_IMAGE_SELECTOR;
+                const availability = await waitForEpisodeAvailability(page);
+                if (availability.status === 'processing') {
+                    // A full scan can encounter a now-pending source whose local
+                    // chapter was already completed. Never discard that completion.
+                    if (!completedEpisodeIds.has(episodeRecord.sourceId)) {
+                        const pending = pendingEpisodes.defer(episodeRecord, availability.message);
+                        await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
+                        console.log(`미완료 보류: ${episodeRecord.displayTitle} · 사이트 이미지 준비 중. 다음 회차를 진행합니다.`);
+                        emitEvent('episode_deferred', { ...pending, index: i + 1, total: link.length,
+                            completedCount: completedThisRun, pendingCount: pendingEpisodes.records.length });
+                    } else {
+                        completedThisRun++;
+                        console.log(`기존 완료 파일 보존: ${episodeRecord.displayTitle} · 사이트 이미지 준비 중`);
+                    }
+                    continue;
+                }
                 // 이미지 가져오기
                 let imgLists = await page.evaluate((selector) => {
                     let imgLists = Array.from(document.querySelectorAll(selector));
@@ -1110,6 +1135,7 @@ async function main() {
                     }
                 }
                 await runDownloadTasks(downloadTasks, info.imageConcurrency);
+                completedThisRun++;
                 emitEvent('episode_completed', {
                     index: i + 1,
                     total: link.length,
@@ -1118,13 +1144,18 @@ async function main() {
                     sourceTitle: link[i].fileName,
                     folderName: episodeRecord.folderName,
                     sourceId: episodeRecord.sourceId,
+                    completedCount: completedThisRun,
                 });
                 completedEpisodes.add(parseInt(link[i].num));
                 if (episodeRecord.sourceId)
                     completedEpisodeIds.add(episodeRecord.sourceId);
-                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest);
+                pendingEpisodes.resolve(episodeRecord.sourceId);
+                await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
             }
         }
+        // Never emit completed / start automatic archive cleanup while source
+        // chapters are unavailable. Keep their IDs absent from completion state.
+        pendingEpisodes.throwIfPending(completedThisRun, link.length);
         console.log('다운로드 완료');
         emitEvent('completed', {
             outputPath: getContentPath(),

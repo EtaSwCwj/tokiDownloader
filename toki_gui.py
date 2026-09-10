@@ -5477,6 +5477,7 @@ class ProcessContext:
     paused: bool = False
     attempt_count: int = 0
     retry_generation: int = 0
+    completed_episode_count: int | None = None
 
 
 @dataclass
@@ -7503,6 +7504,10 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             return
         job = context.job
         event_name = event.get("event")
+        if event_name == "queue_ready":
+            context.completed_episode_count = None
+        elif "completedCount" in event:
+            context.completed_episode_count = max(0, int(event["completedCount"]))
         if event_name == "youtube_started":
             job.site = "youtube"
             job.provider = "youtube"
@@ -7569,6 +7574,10 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             job.image_total = int(event.get("total") or job.image_total)
         elif event_name == "episode_completed":
             job.episode_index = int(event.get("index") or job.episode_index)
+        elif event_name == "episode_deferred":
+            job.episode_index = int(event.get("index") or job.episode_index)
+            job.episode_number = int(event.get("number") or job.episode_number)
+            job.image_current = job.image_total = 0
         elif event_name == "completed":
             job.progress = 100
         elif event_name == "error":
@@ -7582,6 +7591,12 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             job.progress = min(99, int(((completed_before + fraction) / job.episode_total) * 100))
             if event_name == "episode_completed":
                 job.progress = min(99, int((job.episode_index / job.episode_total) * 100))
+            if context.completed_episode_count is not None:
+                if event_name in {"episode_completed", "episode_deferred", "error"}:
+                    fraction = 0.0
+                job.progress = min(99, int(
+                    ((context.completed_episode_count + fraction) / job.episode_total) * 100
+                ))
         if event_name == "completed":
             job.progress = 100
         run = context.run
@@ -7593,8 +7608,11 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
         if event_name == "queue_ready":
             run.discovered_episodes = int(event.get("totalEpisodes") or 0)
             run.selected_episodes = int(event.get("selectedEpisodes") or 0)
-        elif event_name in {"episode_started", "episode_completed"}:
-            run.processed_episodes = int(event.get("index") or run.processed_episodes)
+        elif event_name in {"episode_started", "episode_completed", "episode_deferred"}:
+            run.processed_episodes = (
+                context.completed_episode_count if context.completed_episode_count is not None
+                else int(event.get("index") or run.processed_episodes)
+            )
             run.last_episode_number = int(event.get("number") or job.episode_number)
         elif event_name in {"youtube_item", "youtube_progress", "youtube_item_completed"}:
             run.discovered_episodes = int(event.get("itemTotal") or run.discovered_episodes)

@@ -1119,6 +1119,10 @@ class CoreContractTests(unittest.TestCase):
         self.assertTrue(completed["persistRun"])
         self.assertTrue(completed["terminal"])
         self.assertTrue(metadata["persistRun"])
+        deferred = downloader_event_update_policy("episode_deferred")
+        self.assertTrue(deferred["known"])
+        self.assertTrue(deferred["persistRun"])
+        self.assertFalse(deferred["terminal"])
 
     def test_window_geometry_preserves_valid_monitor_and_recovers_missing_screen(self) -> None:
         screens = [
