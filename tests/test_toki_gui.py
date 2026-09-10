@@ -3191,8 +3191,12 @@ class WorkSchedulerTests(unittest.TestCase):
         with patch("toki_gui.save_runs"), patch("toki_gui.QTimer.singleShot", side_effect=lambda delay, cb: scheduled.append(delay)):
             event("queue_ready", selectedEpisodes=2, totalEpisodes=711)
             event("episode_started", index=1, total=2, number=562, completedCount=0)
-            event("episode_deferred", index=1, total=2, number=562, completedCount=0, pendingCount=1)
+            event("episode_deferred", index=1, total=2, number=562, completedCount=0, pendingCount=1,
+                  reason="source_image_validation_failed", message="이미지 검증 실패 2장",
+                  completionNote="미수신 1개 · 이미지 검증 실패 2장")
             self.assertEqual(job.progress, 0)
+            self.assertEqual(job.completion_note, "미수신 1개 · 이미지 검증 실패 2장")
+            self.assertEqual(context.run.completion_note, job.completion_note)
             self.assertEqual(context.run.processed_episodes, 0)
             event("episode_started", index=2, total=2, number=563, completedCount=0)
             event("images_found", count=17)

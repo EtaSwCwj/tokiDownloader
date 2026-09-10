@@ -8,7 +8,8 @@ import { ImageTransport } from './downloader_transport.js';
 import { renameWithRetry, writeJsonAtomically } from './downloader_files.js';
 import { loadArchivedEpisodes, hasArchivedEpisode } from './downloader_archives.js';
 import { collectEpisodeListPages } from './downloader_pagination.js';
-import { EPISODE_IMAGE_SELECTOR, PendingEpisodes, waitForEpisodeAvailability } from './downloader_episodes.js';
+import { EPISODE_IMAGE_SELECTOR, PendingEpisodes, waitForEpisodeAvailability,
+    isDamagedImageError, imageFailureDeferral } from './downloader_episodes.js';
 import {
     episodeStateUsesStableIds,
     normalizeAndSortEpisodeLinks,
@@ -759,12 +760,15 @@ async function writeImageBufferAtomically(
     return { destinationPath, validation };
 }
 
-async function saveImage(directoryPath, fileName, src) {
+async function saveImage(directoryPath, fileName, src, {
+    download = downloadBuffer, wait = sleep, backoffSeconds = info.providerBackoffSeconds,
+} = {}) {
     let imageBuffer;
     let lastError;
+    const failures = [];
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const candidate = await downloadBuffer(src, {
+            const candidate = await download(src, {
                 'User-Agent': 'Mozilla/5.0',
                 'Referer': `${info.protocolDomain}/`
             });
@@ -776,12 +780,20 @@ async function saveImage(directoryPath, fileName, src) {
         }
         catch (error) {
             lastError = error;
+            failures.push(error);
             if (attempt < 3)
-                await sleep(Math.min(60, info.providerBackoffSeconds * (2 ** (attempt - 1))) * 1000);
+                await wait(Math.min(60, backoffSeconds * (2 ** (attempt - 1))) * 1000);
         }
     }
-    if (!imageBuffer)
-        throw new Error(`이미지 다운로드 실패: ${src}\n${lastError}`);
+    if (!imageBuffer) {
+        const error = new Error(`이미지 다운로드 실패: ${src}\n${lastError}`, { cause: lastError });
+        if (failures.length === 3 && failures.every(isDamagedImageError)) {
+            error.code = 'source_image_unavailable';
+            error.diagnostics = { sourceUrl: src, fileName, attempts: failures.length,
+                ...lastError.diagnostics };
+        }
+        throw error;
+    }
     // 새 버퍼 검증이 끝나기 전에는 기존 파일을 건드리지 않는다.
     await writeImageBufferAtomically(directoryPath, fileName, imageBuffer);
 }
@@ -802,14 +814,21 @@ async function runDownloadTasks(tasks, concurrency = 5) {
                 await tasks[index]();
             }
             catch (error) {
-                errors.push(error);
+                errors.push({ index, error });
             }
         }
     }
     const workerCount = Math.min(concurrency, tasks.length);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    if (errors.length > 0)
-        throw new Error(`${errors.length}개 이미지 다운로드 실패\n${errors[0]}`);
+    if (errors.length > 0) {
+        const failures = errors.sort((a, b) => a.index - b.index).map(item => item.error);
+        // Surface a real operational error first if it coincides with bad images.
+        const primary = failures.find(error => error.code !== 'source_image_unavailable') || failures[0];
+        const error = new AggregateError(failures,
+            `${failures.length}개 이미지 다운로드 실패\n${primary}`, { cause: primary });
+        error.code = 'image_downloads_failed';
+        throw error;
+    }
 }
 
 async function main() {
@@ -1136,7 +1155,26 @@ async function main() {
                         });
                     }
                 }
-                await runDownloadTasks(downloadTasks, info.imageConcurrency);
+                try {
+                    await runDownloadTasks(downloadTasks, info.imageConcurrency);
+                } catch (error) {
+                    const deferral = imageFailureDeferral(error);
+                    if (!deferral) throw error;
+                    // Even an older completion must not cover a now-incomplete
+                    // revalidated chapter. Keep every existing file for resumption.
+                    completedEpisodes.delete(parseInt(link[i].num));
+                    completedEpisodeIds.delete(episodeRecord.sourceId);
+                    completedEpisodeFallbacks.delete(parseInt(link[i].num));
+                    const pending = pendingEpisodes.defer(episodeRecord, deferral.message, deferral);
+                    await saveEpisodeState(completedEpisodes, completedEpisodeIds, episodeManifest, pendingEpisodes.records);
+                    console.log(`미수신 보류: ${episodeRecord.displayTitle} · ${deferral.message}`);
+                    for (const failure of deferral.failedImages)
+                        console.log(`미수신 이미지: ${failure.sourceUrl} · ${failure.reason} (${failure.expectedFormat} → ${failure.detectedFormat})`);
+                    emitEvent('episode_deferred', { ...pending, index: i + 1, total: link.length,
+                        completedCount: completedThisRun, pendingCount: pendingEpisodes.records.length,
+                        completionNote: pendingEpisodes.completionSummary(completedThisRun, link.length).completionNote });
+                    continue;
+                }
                 completedThisRun++;
                 emitEvent('episode_completed', {
                     index: i + 1,
@@ -1205,6 +1243,8 @@ if (isDirectExecution) {
 }
 
 export {
+    saveImage,
+    runDownloadTasks,
     existingImageFileIsValid,
     existingImageFileValidation,
     writeImageBufferAtomically,

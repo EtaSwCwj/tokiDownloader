@@ -217,6 +217,34 @@ class WholeWorkArchiveTests(legacy.unittest.TestCase):
         self.assertEqual(len(list(archive.parent.glob('*.zip'))), 1)
         print('[CLI missing chapter] completion count persisted; ZIP preserved pending ID; cleanup and later insertion kept existing pages')
 
+    def test_damaged_chapter_partial_images_are_not_archived_or_cleaned(self):
+        job, root, _ = self.work()
+        partial = add_chapter(root, 2, '작품 a 142화')
+        add_chapter(root, 3, '작품 a 143화')
+        state_path = root / '.toki-state.json'
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        pending = next(row.copy() for row in state['episodes'] if row['number'] == 2)
+        pending.update(reason='source_image_validation_failed', failedImages=[{
+            'sourceUrl':'https://cdn.example/p002.jpg', 'reason':'extension_signature_mismatch',
+            'expectedFormat':'jpeg', 'detectedFormat':'bmp', 'attempts':3}])
+        state['pendingEpisodes'] = [pending]
+        state['completedEpisodes'].remove(2)
+        state['completedEpisodeIds'].remove(pending['sourceId'])
+        state_path.write_text(json.dumps(state), encoding='utf-8')
+        original = {p.name:p.read_bytes() for p in partial.iterdir()}
+        result = lib.archive_library_items([job.job_id], execute=True, remove_originals=True)
+        self.assertTrue(result['success'], result)
+        self.assertEqual(result['removedOriginalCount'], 6)
+        self.assertEqual({p.name:p.read_bytes() for p in partial.iterdir()}, original)
+        archive = Path(result['jobs'][0]['archives'][0]['path'])
+        with zipfile.ZipFile(archive) as bundle:
+            images = [n for n in bundle.namelist() if n.endswith('.jpg')]
+            self.assertEqual(len(images), 6)
+            self.assertFalse(any('142화' in n for n in images))
+            saved = json.loads(bundle.read('.toki-state.json'))
+            self.assertEqual(saved['pendingEpisodes'], [pending])
+        self.assertEqual(len(archived_episodes(root, verify_crc=True)), 2)
+
     def test_rescan_renumbering_applies_to_archived_only_chapters(self):
         job, root, _ = self.work()
         first = lib.archive_library_items([job.job_id], execute=True, remove_originals=True)

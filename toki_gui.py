@@ -7584,7 +7584,10 @@ class MainWindow(LibraryWindowMixin, QMainWindow):
             job.episode_number = int(event.get("number") or job.episode_number)
             job.image_current = job.image_total = 0
             job.pending_episode_count = int(event.get("pendingCount") or job.pending_episode_count)
-            job.completion_note = f"미수신 {job.pending_episode_count}개 · 사이트 이미지 준비 중"
+            job.completion_note = str(event.get("completionNote") or (
+                f"미수신 {job.pending_episode_count}개 · "
+                + str(event.get("message") or "사이트 이미지 준비 중")
+            ))
         elif event_name == "completed":
             job.progress = 100
             if "pendingEpisodeCount" in event:
