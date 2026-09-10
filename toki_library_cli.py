@@ -1,5 +1,6 @@
 import time
 from toki_library import archive_library_items, delete_library_items, restore_library_trash
+from toki_archive_cleanup import cleanup_empty_episode_folders
 
 
 def configure_library_cli(subparsers):
@@ -17,7 +18,7 @@ def configure_library_cli(subparsers):
     cancel.add_argument("--json", action="store_true")
     close = commands.add_parser("close", help="선택 작품 처리 창 닫기")
     close.add_argument("--json", action="store_true")
-    for name in ("delete", "archive", "restore", "cancel-downloads"):
+    for name in ("delete", "archive", "restore", "cancel-downloads", "cleanup-folders"):
         parser = commands.add_parser(name)
         if name != "restore":
             parser.add_argument("--job", action="append", required=True, help="작품 ID (반복 가능)")
@@ -25,6 +26,7 @@ def configure_library_cli(subparsers):
             parser.add_argument("--manifest", required=True, help=".toki-trash의 manifest.json 경로")
         if name == "delete":
             parser.add_argument("--kind", choices=("records", "files", "archives"), default="records")
+        if name in {"delete", "cleanup-folders"}:
             parser.add_argument("--plan-token", help="미리보기의 planToken; 대상 변경 시 중단")
         if name == "archive":
             parser.add_argument("--remove-originals", action="store_true", help="작품당 ZIP 하나 생성·CRC 검증 후 회차 원본 정리 (메타데이터/표지 보존)")
@@ -64,7 +66,7 @@ def run_library_cli(args, app):
             raise app.ControlError("복구는 --dry-run 확인 후 --execute --yes로 실행하세요.")
         app.ensure_gui_running()
         app.print_json(app.control_request({"action": "library_dialog", "jobIds": ids,
-            "archive": command == "archive", "operation": action, "preview": args.dry_run}))
+            "archive": command in {"archive", "cleanup-folders"}, "operation": action, "preview": args.dry_run}))
         return 0
     if app.gui_is_running() or command == "cancel-downloads":
         app.ensure_gui_running()
@@ -87,6 +89,8 @@ def run_library_cli(args, app):
         result = archive_library_items(ids, execute=args.execute, remove_originals=remove)
     elif command == "delete":
         result = delete_library_items(ids, args.kind, execute=args.execute, plan_token=args.plan_token)
+    elif command == "cleanup-folders":
+        result = cleanup_empty_episode_folders(ids, execute=args.execute, plan_token=args.plan_token)
     else:
         result = restore_library_trash(args.manifest, execute=args.execute)
     app.print_json(result)

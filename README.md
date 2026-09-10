@@ -130,6 +130,12 @@ ZIP 내부는 `000001 회차 전체 제목/000001.jpg`처럼 회차 폴더와 �
 탐색기와 압축 뷰어의 이름 오름차순 정렬로 이어서 볼 수 있습니다.
 원본 정리를 선택하면 ZIP 작성·CRC 검사·카탈로그 저장이 성공한 뒤에만 회차 원본을
 지웁니다. 메타데이터와 표지는 ZIP 안에도 넣고 작품 폴더에도 보존합니다.
+원본 정리 후 완료 기록과 ZIP 카탈로그가 일치하는 **빈 회차 폴더**도 정리합니다.
+OneDrive 읽기 전용 폴더는 해당 빈 폴더의 읽기 전용 속성만 해제해 제한적으로 재시도합니다.
+폴더 정리 실패는 ZIP 실패가 아닌 별도 경고로 표시하고, 남은 빈 폴더는
+**작품 전체 ZIP 압축... → 남은 빈 회차 폴더 정리** 버튼으로 다시 처리할 수 있습니다.
+이 재정리는 ZIP 전체 CRC를 반복 검사하지 않으며, ZIP 크기/수정시각과 카탈로그·완료 기록을
+확인합니다. 미완료 회차, 파일/하위 폴더가 있는 회차, 링크, 메타데이터 및 복구 보관함은 보존합니다.
 새 회차를 추가하면 ZIP에만 남아 있는 이전 회차까지 합쳐 같은 작품 ZIP을 갱신합니다.
 기존 회차별 ZIP도 합칠 수 있지만 기존 ZIP 자체는 자동 삭제하지 않습니다.
 원본은 ZIP에서 복원할 수 있습니다. 압축 뷰어는 설정의 압축 파일 연결 프로그램을 사용합니다.
@@ -153,6 +159,9 @@ Windows 휴지통과 다르며, 복구 전까지 디스크 공간을 계속 사�
 .\toki-cli.cmd library delete --job 작품ID1 --kind archives --execute --yes --wait --json
 .\toki-cli.cmd library archive --job 작품ID1 --remove-originals --execute --yes --wait --json
 .\toki-cli.cmd library archive --job 작품ID1 --show-gui
+.\toki-cli.cmd library cleanup-folders --job 작품ID1 --dry-run --wait --json
+.\toki-cli.cmd library cleanup-folders --job 작품ID1 --execute --yes --plan-token 미리보기토큰 --wait --json
+.\toki-cli.cmd library cleanup-folders --job 작품ID1 --show-gui --dry-run
 .\toki-cli.cmd library cancel-downloads --job 작품ID1 --execute --yes --wait
 .\toki-cli.cmd library status --json
 .\toki-cli.cmd library cancel --operation 작업ID --json

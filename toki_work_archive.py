@@ -13,6 +13,7 @@ import toki_core as core
 import toki_library as lib
 from toki_archive_catalog import archived_episodes
 from toki_reading_order import assign_reading_order
+from toki_archive_cleanup import cleanup_root
 
 
 def _sort(value):
@@ -216,7 +217,7 @@ def archive_works(job_ids, *, execute, remove_originals, cancelled, progress):
     plan = {**plan_work_archives(job_ids), "removeOriginals": remove_originals, "preservesOriginals": not remove_originals}
     if not execute:
         return plan
-    created = skipped = removed = 0
+    created = skipped = removed = removed_folders = warning_count = 0
     results = []
     for item in plan["jobs"]:
         try:
@@ -267,6 +268,7 @@ def archive_works(job_ids, *, execute, remove_originals, cancelled, progress):
                         temporary.unlink(missing_ok=True)
                     backup.unlink(missing_ok=True)
                     created += 1
+                cleanup_report = {}
                 if remove_originals:
                     # All raw pages must still match; never delete metadata/cover.
                     expected_stamp = (index[target.name]["size"], int(index[target.name]["mtimeNs"]))
@@ -280,15 +282,19 @@ def archive_works(job_ids, *, execute, remove_originals, cancelled, progress):
                         source = _check_raw(member, root)
                         source.unlink()
                         removed += 1
-                    for folder in {Path(m["path"]).parent for m in archive["cleanup"]}:
-                        lib._contained(folder, root)
-                        if folder.is_dir() and not any(folder.iterdir()):
-                            folder.rmdir()
+                    try:
+                        cleanup_report = cleanup_root(root)
+                    except (OSError, ValueError) as error:
+                        cleanup_report = {"removedFolderCount": 0, "cleanupWarningCount": 1,
+                                          "cleanupWarnings": [{"path": str(root), "message": str(error)}]}
+                    removed_folders += cleanup_report["removedFolderCount"]
+                    warning_count += cleanup_report["cleanupWarningCount"]
                 progress({"jobId": item["jobId"], "archive": target.name, "createdCount": created})
-                results.append({"jobId": item["jobId"], "success": True, "archivePath": str(target)})
+                results.append({"jobId": item["jobId"], "success": True, "archivePath": str(target), **cleanup_report})
         except Exception as error:
             results.append({"jobId": item["jobId"], "success": False, "error": str(error)})
             if cancelled():
                 break
     return {**plan, "executed": True, "success": len(results) == len(plan["jobs"]) and all(r["success"] for r in results),
-            "cancelled": cancelled(), "createdCount": created, "skippedCount": skipped, "removedOriginalCount": removed, "results": results}
+            "cancelled": cancelled(), "createdCount": created, "skippedCount": skipped, "removedOriginalCount": removed,
+            "removedFolderCount": removed_folders, "cleanupWarningCount": warning_count, "results": results}

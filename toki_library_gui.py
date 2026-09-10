@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QButtonGroup, QGridLay
 
 import toki_core as core
 from toki_library import archive_library_items, delete_library_items, restore_library_trash
+from toki_archive_cleanup import cleanup_empty_episode_folders
 
 
 class _Signals(QObject):
@@ -39,7 +40,7 @@ class LibraryDialog(QDialog):
         self.operation_id = ""
         self.plan = None
         self.confirm_after_preview = False
-        self.setWindowTitle("선택 작품 ZIP 압축" if archive else "선택 작품 처리 · Delete")
+        self.setWindowTitle("선택 작품 ZIP 압축 / 빈 폴더 정리" if archive else "선택 작품 처리 · Delete")
         self.resize(740, 560)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"선택한 작품 {len(ids)}개 · " + (
@@ -49,30 +50,34 @@ class LibraryDialog(QDialog):
         self.action_buttons = {}
         self.action_group = QButtonGroup(self)
         self.action_group.setExclusive(True)
-        if not archive:
-            choices = [
+        choices = [
+                ("작품 전체 ZIP 압축", "archive"),
+                ("남은 빈 회차 폴더 정리\nZIP·메타데이터·미완료 회차 보존", "cleanup-folders"),
+            ] if archive else [
                 ("목록만 삭제\n다운로드 파일 보존", "delete:records"),
                 ("다운로드 파일 삭제\n압축·목록 보존 · 앱 휴지통으로 이동", "delete:files"),
                 ("압축 파일만 삭제\n원본·목록 보존 · 앱 휴지통으로 이동", "delete:archives"),
                 ("다운로드 취소\n선택한 대기·진행 작업 중지", "cancel-downloads"),
             ]
-            grid = QGridLayout()
-            for index, (text, action) in enumerate(choices):
-                button = QPushButton(text)
-                button.setObjectName("library_" + action.replace(":", "_"))
-                button.setCheckable(True)
-                button.setAutoDefault(False)
-                button.setStyleSheet(
-                    "QPushButton { min-height: 60px; padding: 6px 10px; }"
-                    "QPushButton:checked { background: #2f7de1; color: white; border: 2px solid #6ab2ff; }"
-                )
-                button.clicked.connect(lambda _checked, action=action: self.request_action(action))
-                self.action_group.addButton(button)
-                self.action_buttons[action] = button
-                grid.addWidget(button, index // 2, index % 2)
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(1, 1)
-            layout.addLayout(grid)
+        grid = QGridLayout()
+        for index, (text, action) in enumerate(choices):
+            button = QPushButton(text)
+            button.setObjectName("library_" + action.replace(":", "_"))
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setStyleSheet(
+                "QPushButton { min-height: 60px; padding: 6px 10px; }"
+                "QPushButton:checked { background: #2f7de1; color: white; border: 2px solid #6ab2ff; }"
+            )
+            button.clicked.connect(lambda _checked, action=action: self.request_action(action))
+            self.action_group.addButton(button)
+            self.action_buttons[action] = button
+            grid.addWidget(button, index // 2, index % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        if archive:
+            self.action_buttons["archive"].setChecked(True)
         self.remove_originals = QCheckBox("ZIP 무결성 검사 성공 후 원본 정리 (ZIP에서 복원 가능)")
         self.remove_originals.setChecked(bool(owner.config.get("archiveRemoveOriginals", True)))
         self.remove_originals.setVisible(archive)
@@ -108,6 +113,12 @@ class LibraryDialog(QDialog):
         if action not in self.action_buttons and not (self.selected_action == "archive" and action == "archive"):
             raise ValueError(f"이 창에서 선택할 수 없는 작업입니다: {action}")
         self.selected_action = action
+        self.remove_originals.setVisible(action == "archive")
+        self.stop_button.setVisible(action == "archive")
+        if action == "cleanup-folders":
+            self.info.setText("ZIP과 완료 기록이 일치하는 빈 회차 폴더만 정리합니다.\n파일·하위 폴더가 남은 회차, 미완료 회차, 링크는 보존합니다. ZIP 전체를 다시 검사하지 않습니다.")
+        elif action == "archive":
+            self.info.setText("작품 전체를 ZIP 하나로 저장합니다. 검증 후 원본 정리 시 빈 회차 폴더도 정리합니다.\n메타데이터·표지·미완료 회차는 보존합니다.")
         if action in self.action_buttons:
             self.action_buttons[action].setChecked(True)
         self.invalidate()
@@ -138,6 +149,7 @@ class LibraryDialog(QDialog):
             "delete:files": f"선택한 작품의 다운로드 파일 {(self.plan or {}).get('fileCount', 0):,}개를 앱 휴지통으로 이동할까요?\n\n압축 파일과 목록 기록은 보존합니다.",
             "delete:archives": f"선택한 작품의 압축 파일 {(self.plan or {}).get('fileCount', 0):,}개를 앱 휴지통으로 이동할까요?\n\n원본 파일과 목록 기록은 보존합니다.",
             "cancel-downloads": f"선택한 작품 {len(self.ids)}개의 대기·진행 중 다운로드를 취소할까요?\n\n이미 받은 파일은 보존합니다.",
+            "cleanup-folders": f"완료·압축이 확인된 빈 회차 폴더 {(self.plan or {}).get('folderCount', 0):,}개를 정리할까요?\n\n파일은 삭제하지 않습니다. ZIP·메타데이터·미완료 회차는 보존합니다.",
         }.get(action, self.details.toPlainText()[:1800] + "\n\n위 대상을 처리할까요?")
         if execute and self.plan.get("skippedJobCount"):
             explanation += f"\n\n모의 작업 {self.plan['skippedJobCount']}개는 제외하고 처리 가능한 {self.plan['eligibleJobCount']}개 작품만 처리합니다."
@@ -180,14 +192,18 @@ class LibraryDialog(QDialog):
         if error:
             self.details.setPlainText(error)
             return
-        heading = "취소됨" if result.get("cancelled") else "일부 실패" if result.get("success") is False else "처리 완료"
+        heading = "취소됨" if result.get("cancelled") else "일부 실패" if result.get("success") is False else "처리 완료 (폴더 정리 경고)" if result.get("cleanupWarningCount") else "처리 완료"
         lines = [f"{heading if result.get('executed') else '미리보기 — 아직 변경하지 않았습니다.'}",
                  f"작품 {result.get('jobCount', len(self.ids))}개 · 파일 {result.get('fileCount', 0):,}개 · ZIP {result.get('archiveCount', 0):,}개"]
         if "eligibleJobCount" in result:
             lines.append(f"처리 가능 {result['eligibleJobCount']}개 작품 · 모의 작업 제외 {result['skippedJobCount']}개 · 대상 파일 없음 {result['emptyJobCount']}개 작품")
         if not can_execute:
             kind_label = "압축 파일" if result.get("kind") == "archives" else "다운로드 파일"
-            lines.insert(0, f"삭제할 {kind_label}이 없습니다. 파일과 목록을 변경하지 않았습니다.")
+            lines.insert(0, "정리 가능한 빈 회차 폴더가 없습니다." if result.get("kind") == "empty-folders" else f"삭제할 {kind_label}이 없습니다. 파일과 목록을 변경하지 않았습니다.")
+        if "folderCount" in result:
+            lines.append(f"빈 회차 폴더 {result['folderCount']:,}개 · 파일은 삭제하지 않음")
+        if result.get("executed") and "removedFolderCount" in result:
+            lines.append(f"빈 폴더 정리 {result['removedFolderCount']:,}개 · 정리 경고 {result.get('cleanupWarningCount', 0)}개")
         for skipped in result.get("skippedJobs", [])[:30]:
             lines.append(f"제외: {skipped['title']} — {skipped['reason']}")
         if result.get("skippedJobCount", 0) > 30:
@@ -202,6 +218,8 @@ class LibraryDialog(QDialog):
             elif self.selected_action == "archive":
                 lines.append(f"ZIP 생성 {result.get('createdCount', 0)}개 · 기존 유지 {result.get('skippedCount', 0)}개 · 정리된 원본 {result.get('removedOriginalCount', 0)}개")
         for entry in result.get("results", [])[:50]:
+            for warning in entry.get("cleanupWarnings", [])[:20]:
+                lines.append(f"정리 경고: {warning['path']} — {warning['message']}")
             if "cancellable" in entry:
                 lines.append(f"{entry['title']}: {'취소 요청됨' if entry['cancelRequested'] else '취소 가능' if entry['cancellable'] else '진행 중인 다운로드 없음'}")
             if entry.get("error"):
@@ -213,6 +231,8 @@ class LibraryDialog(QDialog):
             lines.append(f"\n{job['title']}\n{job.get('outputPath', '')}")
             if job.get("incompleteCount"):
                 lines.append(f"미완료/확인 불가 {job['incompleteCount']}회차는 압축하지 않고 보존합니다.")
+            for warning in job.get("warnings", [])[:20]:
+                lines.append(f"정리 제외: {warning['path']} — {warning['message']}")
             targets = job.get("targets") or [a["path"] for a in job.get("archives", [])]
             shown = min(30, remaining, len(targets))
             root = Path(job.get("outputPath") or ".")
@@ -350,6 +370,8 @@ class LibraryWindowMixin:
                 return delete_library_items(ids, action.split(":", 1)[1], execute=execute, plan_token=plan_token)
             if action == "restore":
                 return restore_library_trash(manifest, execute=execute)
+            if action == "cleanup-folders":
+                return cleanup_empty_episode_folders(ids, execute=execute, plan_token=plan_token)
             raise ValueError(f"지원하지 않는 처리: {action}")
         task = _Task(key, operation)
         task.signals.finished.connect(self._library_finished)
@@ -389,6 +411,9 @@ class LibraryWindowMixin:
         self.log(f"선택 작품 처리 완료: {context.action} · {error or json.dumps(summary, ensure_ascii=False)}",
                  "ERROR" if error or result.get("success") is False else "INFO")
         for entry in result.get("results", []):
+            for warning in entry.get("cleanupWarnings", []):
+                self.log(f"빈 폴더 정리 경고 (파일/ZIP 보존): {warning['path']} — {warning['message']}",
+                         "WARNING", entry.get("jobId"))
             if entry.get("error") or entry.get("trashManifest"):
                 self.log(entry.get("error") or f"복구 기록: {entry['trashManifest']}",
                          "ERROR" if entry.get("error") else "INFO", entry.get("jobId"))

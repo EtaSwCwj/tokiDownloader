@@ -76,6 +76,22 @@ class LibraryCliIntegrationTests(unittest.TestCase):
                 self.assertEqual(deleted_files["movedFileCount"], 3)
                 self.assertFalse(list(first_episode.glob("*.jpg")))
                 self.assertTrue(Path(archive_path).is_file())
+                # New cleanup command uses the same real GUI worker and service.
+                cleanup_args = ("library", "cleanup-folders", "--job", first.job_id)
+                preview = self.cli(*cleanup_args, "--dry-run", "--wait", "--json")["result"]
+                self.assertEqual(preview["folderCount"], 1)
+                self.assertTrue(first_episode.exists())
+                self.cli(*cleanup_args, "--execute", "--json", expected=1)
+                self.cli(*cleanup_args, "--show-gui", "--json")
+                cleaned = self.cli(*cleanup_args, "--execute", "--yes", "--plan-token", preview["planToken"], "--wait", "--json")["result"]
+                self.assertEqual(cleaned["removedFolderCount"], 1)
+                self.assertTrue(cleaned["success"])
+                self.assertFalse(first_episode.exists())
+                self.assertTrue(Path(archive_path).is_file())
+                self.assertTrue((first_root / ".toki-state.json").is_file())
+                self.assertFalse(self.cli(*cleanup_args, "--dry-run", "--wait", "--json")["result"]["canExecute"])
+                self.cli("library", "close", "--json")
+                print("[CLI integration] cleanup-folders preview, explicit confirmation, GUI worker, removal 1, repeated no-op; ZIP/state preserved")
                 self.cli("library", "restore", "--manifest", deleted_files["results"][0]["trashManifest"],
                          "--execute", "--yes", "--wait", "--json")
                 self.assertEqual(len(list(first_episode.glob("*.jpg"))), 3)

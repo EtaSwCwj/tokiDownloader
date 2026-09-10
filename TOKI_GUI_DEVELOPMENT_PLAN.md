@@ -318,6 +318,7 @@ set-concurrency --works N --images N
 - [x] 파일 작업 진행률, 취소와 실패 복구
 - [x] 회차별 ZIP 생성, 완료 후 자동 압축 및 검증 후 원본 정리 옵션
 - [x] ZIP 전용 회차의 다운로드 완료 판정·파일 검사·미리보기 연결
+- [x] 압축 후 빈 회차 폴더 정리·OneDrive 읽기 전용 재시도·정리 경고 분리·기존 빈 폴더 재정리 CLI/GUI (2026-09-11)
 - [x] 선택 파일의 앱 휴지통 이동과 덮어쓰기 없는 복구 CLI
 
 2026-09-08 ZIP/삭제: `toki_library.py` 공용 서비스와 `library` CLI·GUI를 연결했다.
@@ -345,6 +346,8 @@ convert-images --job ID --format FORMAT --execute --yes --progress-json
 convert-images --close
 cancel-conversion --job ID
 library archive --job ID --remove-originals --execute --yes --wait --json
+library cleanup-folders --job ID --dry-run --wait --json
+library cleanup-folders --job ID --execute --yes --plan-token TOKEN --wait --json
 library delete --job ID --job OTHER_ID --kind files --dry-run --json
 library restore --manifest PATH --dry-run --json
 ```

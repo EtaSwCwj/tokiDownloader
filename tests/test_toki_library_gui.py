@@ -218,6 +218,40 @@ class LibraryGuiTests(unittest.TestCase):
             window.io_thread_pool.waitForDone()
             window.close()
 
+    def test_empty_folder_cleanup_button_preview_confirmation_and_worker(self):
+        from toki_library import archive_library_items
+        job, root, episode = self.work()
+        archive_library_items([job.job_id], execute=True, remove_originals=True)
+        episode.mkdir(exist_ok=True)
+        window = Harness([job])
+        try:
+            window.show_library_dialog([job.job_id], archive=True)
+            dialog = window.active_library_dialog
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question:
+                dialog.action_buttons["cleanup-folders"].click()
+                self.wait_task(window)
+                question.assert_called_once()
+            self.assertEqual(dialog.plan["folderCount"], 1)
+            self.assertFalse(dialog.plan["executed"])
+            self.assertTrue(episode.exists())
+            self.assertTrue(dialog.remove_originals.isHidden())
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                dialog.execute_button.click()
+                self.wait_task(window)
+            self.assertEqual(dialog.plan["removedFolderCount"], 1)
+            self.assertFalse(episode.exists())
+            self.assertIn("빈 폴더 정리 1개", dialog.details.toPlainText())
+            dialog.start(False)
+            self.wait_task(window)
+            self.assertFalse(dialog.execute_button.isEnabled())
+            self.assertIn("정리 가능한 빈 회차 폴더가 없습니다", dialog.details.toPlainText())
+            dialog.select_action("archive")
+            self.assertFalse(dialog.remove_originals.isHidden())
+        finally:
+            window.io_thread_pool.waitForDone()
+            window.active_library_dialog.close()
+            window.close()
+
     def test_library_cli_requires_confirmation_and_routes_multiple_ids(self):
         job, root, _ = self.work()
         args = toki_app.build_parser().parse_args(["library", "delete", "--job", job.job_id, "--execute"])
